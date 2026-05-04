@@ -1,17 +1,14 @@
 // 11. Lower Third Autofit (без анимации opacity)
 //
-// Делает три вещи:
+// Делает четыре вещи:
 //   1) парсит текст из слоя-источника на строки (разделители \n, \r, \r\n);
 //   2) следит, чтобы строк было не больше MAX_LINES — лишнее склеивает в последнюю;
 //   3) автоуменьшает шрифт и трекинг, если самая длинная строка длиннее BASE_CHARS_PER_LINE;
-//   4) сдвигает Null-слой по Y в зависимости от числа строк.
+//   4) раскидывает строки по текстовым слоям LINE_LAYERS (неиспользуемые слоты очищает);
+//   5) сдвигает Null-слой по Y в зависимости от числа строк.
 //
-// Результаты парсинга и расчёта автофита кладутся в local.*:
-//   local.lines          - массив итоговых строк
-//   local.lineCount      - их количество (0..MAX_LINES)
-//   local.finalSize      - итоговый размер шрифта
-//   local.finalTracking  - итоговый трекинг
-// На сами текстовые слои они должны прокидываться AE-выражениями, читающими local.*.
+// local.finalSize / local.finalTracking не применяются напрямую - подразумевается,
+// что их читают AE-выражения на текстовых слоях (Font Size, Tracking).
 
 var BASE_CHARS_PER_LINE    = 40;
 var MAX_LINES              = 3;
@@ -24,6 +21,7 @@ var SHIFT_WHEN_ONE_LINE    = 20;
 
 var COMP_NAME    = "Comp 1";
 var SOURCE_LAYER = "MainText";
+var LINE_LAYERS  = ["TextLine 1", "TextLine 2", "TextLine 3"];
 var NULL_LAYER   = "Null 1";
 
 // === СБРОС КЭША (раскомментировать, если двигали Null вручную) ===
@@ -64,6 +62,11 @@ if (local.lastRawText !== srcText) {
 
         var k = (finalSize - MIN_FONT_SIZE) / (BASE_FONT_SIZE - MIN_FONT_SIZE);
         finalTracking = MIN_TRACKING + k * (BASE_TRACKING - MIN_TRACKING);
+    }
+
+    for (var s = 0; s < LINE_LAYERS.length; s++) {
+        var ll = mainComp.layer(LINE_LAYERS[s]);
+        ll.text.sourceText.setValue(s < lines.length ? lines[s] : "");
     }
 
     local.lines         = lines;
