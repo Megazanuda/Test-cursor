@@ -1,11 +1,9 @@
 // 11. Lower Third Autofit
 //
 // Парсит MainText, режет на строки, лишнее склеивает в последнюю,
-// считает автошрифт/трекинг и пишет их в первый Text Animator каждого
-// из TextLine 1..3, гасит пустые слоты по opacity, сдвигает Null по Y.
-//
-// Требование к шаблону: на каждом слое TextLine 1..3 должен быть один
-// Text Animator ("Animator 1") со свойствами Font Size и Tracking Amount.
+// считает автошрифт/трекинг и пишет их напрямую в TextLine 1..3
+// через l.TextSource.* (PascalCase - .NET-объект под ClearScript),
+// гасит пустые слоты по opacity, сдвигает Null по Y под число строк.
 
 var MAX_CHARS = 40, MAX_LINES = 3;
 var BASE_SIZE = 49, MIN_SIZE = 25, MIN_TRACK = -50;
@@ -20,7 +18,7 @@ var slots = ["TextLine 1", "TextLine 2", "TextLine 3"];
 // local.baseY = undefined;
 
 var lines = [];
-var raw = src.text.sourceText.split(/[\r\n]+/);
+var raw = src.TextSource.Text.split(/[\r\n]+/);
 for (var i = 0; i < raw.length; i++) {
     var t = raw[i].replace(/^\s+|\s+$/g, "");
     if (t) lines.push(t);
@@ -42,9 +40,10 @@ var tracking = MIN_TRACK * (1 - k);
 for (i = 0; i < slots.length; i++) {
     var l = comp.layer(slots[i]);
     var on = i < lines.length;
-    l.text.sourceText = on ? lines[i] : "";
-    l.text.animator(1).property("ADBE Text Size").setValue(size);
-    l.text.animator(1).property("ADBE Text Tracking Amount").setValue(tracking);
+    var ts = l.TextSource;
+    ts.Text = on ? lines[i] : "";
+    ts.FontSize = size;
+    ts.Tracking = tracking;
     l.transform.opacity.setValue(on ? 100 : 0);
 }
 
