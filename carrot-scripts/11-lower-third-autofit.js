@@ -1,13 +1,8 @@
-// 11. Lower Third Autofit (минимальная версия, без AE-выражений)
+// 11. Lower Third Autofit (минимальная версия)
 //
 // Парсит текст из MainText, режет на строки, лишнее склеивает в последнюю,
-// считает автошрифт/трекинг, раскидывает строки по TextLine 1..3 через
-// property("Source Text").setValue(), гасит пустые слоты по opacity,
-// сдвигает Null по Y под число строк.
-//
-// ВАЖНО: в Carrot layer.text.sourceText возвращает СТРОКУ, а не Property,
-// поэтому .setValue() на нём не работает. Нужен универсальный доступ
-// layer.property("Source Text") - он возвращает объект-свойство.
+// считает автошрифт/трекинг, пишет строки прямо в TextLine 1..3,
+// гасит пустые слоты по opacity, сдвигает Null по Y под число строк.
 
 var MAX_CHARS = 40, MAX_LINES = 3;
 var BASE_SIZE = 49, MIN_SIZE = 25, MIN_TRACK = -50;
@@ -41,7 +36,7 @@ var tracking = MIN_TRACK * (1 - k);
 for (i = 0; i < slots.length; i++) {
     var l = comp.layer(slots[i]);
     var on = i < lines.length;
-    l.property("Source Text").setValue(on ? lines[i] : "");
+    l.text.sourceText = on ? lines[i] : "";
     l.transform.opacity.setValue(on ? 100 : 0);
 }
 
