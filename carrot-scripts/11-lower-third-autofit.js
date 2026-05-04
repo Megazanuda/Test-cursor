@@ -1,7 +1,7 @@
 // 11. Lower Third Autofit (минимальная версия)
 //
-// Парсит текст из MainText, режет на строки, лишнее склеивает в последнюю,
-// считает автошрифт/трекинг, пишет строки прямо в TextLine 1..3,
+// Парсит MainText, режет на строки, лишнее склеивает в последнюю,
+// считает автошрифт/трекинг и пишет ИХ НАПРЯМУЮ в TextLine 1..3,
 // гасит пустые слоты по opacity, сдвигает Null по Y под число строк.
 
 var MAX_CHARS = 40, MAX_LINES = 3;
@@ -12,6 +12,9 @@ var comp  = app.project.item("Comp 1");
 var src   = comp.layer("MainText");
 var nul   = comp.layer("Null 1");
 var slots = ["TextLine 1", "TextLine 2", "TextLine 3"];
+
+// === СБРОС КЭША позиции Null (раскомментировать один раз, если Null двигали вручную) ===
+// local.baseY = undefined;
 
 var lines = [];
 var raw = src.text.sourceText.split(/[\r\n]+/);
@@ -37,6 +40,8 @@ for (i = 0; i < slots.length; i++) {
     var l = comp.layer(slots[i]);
     var on = i < lines.length;
     l.text.sourceText = on ? lines[i] : "";
+    l.text.fontSize = size;
+    l.text.tracking = tracking;
     l.transform.opacity.setValue(on ? 100 : 0);
 }
 
