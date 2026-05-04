@@ -1,8 +1,11 @@
-// 11. Lower Third Autofit (минимальная версия)
+// 11. Lower Third Autofit
 //
 // Парсит MainText, режет на строки, лишнее склеивает в последнюю,
-// считает автошрифт/трекинг и пишет ИХ НАПРЯМУЮ в TextLine 1..3,
-// гасит пустые слоты по opacity, сдвигает Null по Y под число строк.
+// считает автошрифт/трекинг и пишет их в первый Text Animator каждого
+// из TextLine 1..3, гасит пустые слоты по opacity, сдвигает Null по Y.
+//
+// Требование к шаблону: на каждом слое TextLine 1..3 должен быть один
+// Text Animator ("Animator 1") со свойствами Font Size и Tracking Amount.
 
 var MAX_CHARS = 40, MAX_LINES = 3;
 var BASE_SIZE = 49, MIN_SIZE = 25, MIN_TRACK = -50;
@@ -40,8 +43,8 @@ for (i = 0; i < slots.length; i++) {
     var l = comp.layer(slots[i]);
     var on = i < lines.length;
     l.text.sourceText = on ? lines[i] : "";
-    l.text.fontSize = size;
-    l.text.tracking = tracking;
+    l.text.animator(1).property("ADBE Text Size").setValue(size);
+    l.text.animator(1).property("ADBE Text Tracking Amount").setValue(tracking);
     l.transform.opacity.setValue(on ? 100 : 0);
 }
 
