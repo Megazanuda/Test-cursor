@@ -1,17 +1,13 @@
-// 11. Lower Third Autofit (минимальная версия)
+// 11. Lower Third Autofit (минимальная версия, без AE-выражений)
 //
 // Парсит текст из MainText, режет на строки, лишнее склеивает в последнюю,
-// автоуменьшает шрифт/трекинг, публикует результат в local.*,
-// гасит неиспользуемые TextLine-слоты через opacity, сдвигает Null по Y.
+// считает автошрифт/трекинг, раскидывает строки по TextLine 1..3 через
+// property("Source Text").setValue(), гасит пустые слоты по opacity,
+// сдвигает Null по Y под число строк.
 //
-// На слоях TextLine 1/2/3 должны стоять AE-выражения на Source Text:
-//     local.lines[0]   // для TextLine 1
-//     local.lines[1]   // для TextLine 2
-//     local.lines[2]   // для TextLine 3
-// И аналогично на Font Size / Tracking - local.finalSize / local.finalTracking.
-//
-// Примечание: в Carrot text.sourceText возвращает строку напрямую (не Property),
-// поэтому .setValue() на нём не работает - текст прокидывается выражениями.
+// ВАЖНО: в Carrot layer.text.sourceText возвращает СТРОКУ, а не Property,
+// поэтому .setValue() на нём не работает. Нужен универсальный доступ
+// layer.property("Source Text") - он возвращает объект-свойство.
 
 var MAX_CHARS = 40, MAX_LINES = 3;
 var BASE_SIZE = 49, MIN_SIZE = 25, MIN_TRACK = -50;
@@ -40,13 +36,13 @@ var size = longest > MAX_CHARS
     ? Math.max(MIN_SIZE, BASE_SIZE * MAX_CHARS / longest)
     : BASE_SIZE;
 var k = (size - MIN_SIZE) / (BASE_SIZE - MIN_SIZE);
-
-local.lines         = lines;
-local.finalSize     = size;
-local.finalTracking = MIN_TRACK * (1 - k);
+var tracking = MIN_TRACK * (1 - k);
 
 for (i = 0; i < slots.length; i++) {
-    comp.layer(slots[i]).transform.opacity.setValue(i < lines.length ? 100 : 0);
+    var l = comp.layer(slots[i]);
+    var on = i < lines.length;
+    l.property("Source Text").setValue(on ? lines[i] : "");
+    l.transform.opacity.setValue(on ? 100 : 0);
 }
 
 if (local.baseY === undefined) {
