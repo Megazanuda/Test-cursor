@@ -1,10 +1,10 @@
 // 11. Lower Third Autofit (без анимации opacity)
 //
-// Делает четыре вещи:
+// Делает:
 //   1) парсит текст из слоя-источника на строки (разделители \n, \r, \r\n);
 //   2) следит, чтобы строк было не больше MAX_LINES — лишнее склеивает в последнюю;
 //   3) автоуменьшает шрифт и трекинг, если самая длинная строка длиннее BASE_CHARS_PER_LINE;
-//   4) раскидывает строки по текстовым слоям LINE_LAYERS (неиспользуемые слоты очищает);
+//   4) раскидывает строки по слоям LINE_LAYERS: заполненные - opacity 100, пустые - 0;
 //   5) сдвигает Null-слой по Y в зависимости от числа строк.
 //
 // local.finalSize / local.finalTracking не применяются напрямую - подразумевается,
@@ -66,7 +66,9 @@ if (local.lastRawText !== srcText) {
 
     for (var s = 0; s < LINE_LAYERS.length; s++) {
         var ll = mainComp.layer(LINE_LAYERS[s]);
-        ll.text.sourceText.setValue(s < lines.length ? lines[s] : "");
+        var hasLine = s < lines.length;
+        ll.text.sourceText.setValue(hasLine ? lines[s] : "");
+        ll.transform.opacity.setValue(hasLine ? 100 : 0);
     }
 
     local.lines         = lines;
