@@ -2,20 +2,21 @@
 //
 // Парсит MainText, режет на строки, лишнее склеивает в последнюю,
 // считает автошрифт/трекинг и пишет их напрямую в TextLine 1..3
-// через l.TextSource.* (PascalCase - .NET-объект под ClearScript),
-// гасит пустые слоты по opacity, сдвигает Null по Y под число строк.
+// через l.TextSource.*, гасит пустые слоты по opacity,
+// двигает Null по Y относительно константы BASE_Y под число строк.
 
 var MAX_CHARS = 40, MAX_LINES = 3;
 var BASE_SIZE = 49, MIN_SIZE = 25, MIN_TRACK = -50;
 var SHIFT_1 = 20, SHIFT_N = 15;
 
+// Поставь сюда X и Y позиции Null-слоя в AE при 3 строках (как он стоит в шаблоне).
+var BASE_X = 960;
+var BASE_Y = 540;
+
 var comp  = app.project.item("Comp 1");
 var src   = comp.layer("MainText");
 var nul   = comp.layer("Null 1");
 var slots = ["TextLine 1", "TextLine 2", "TextLine 3"];
-
-// === СБРОС КЭША позиции Null (раскомментировать один раз, если Null двигали вручную) ===
-// local.baseY = undefined;
 
 var lines = [];
 var raw = src.TextSource.Text.split(/[\r\n]+/);
@@ -47,10 +48,7 @@ for (i = 0; i < slots.length; i++) {
     l.transform.opacity.setValue(on ? 100 : 0);
 }
 
-if (local.baseY === undefined) {
-    var p = nul.transform.position.value;
-    local.baseX = p[0];
-    local.baseY = p[1];
-}
 var shift = (lines.length === 1 ? SHIFT_1 : SHIFT_N) * (MAX_LINES - lines.length);
-nul.transform.position.setValue([local.baseX, local.baseY + shift, 0]);
+var newY = BASE_Y + shift;
+nul.transform.position.setValue([BASE_X, newY, 0]);
+alert("lines=" + lines.length + " shift=" + shift + " newY=" + newY + " actualY=" + nul.transform.position.value[1]);
