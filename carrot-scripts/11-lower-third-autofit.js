@@ -1,15 +1,18 @@
-// 11. Lower Third Autofit
+// 11. Lower Third Autofit (размер через transform.scale)
 //
 // Парсит MainText, режет на строки, лишнее склеивает в последнюю,
-// считает автошрифт/трекинг и пишет их напрямую в TextLine 1..3
-// через l.TextSource.*, гасит пустые слоты по opacity,
-// двигает Null по Y относительно константы BASE_Y под число строк.
+// масштабирует TextLine 1..3 через transform.scale при длинном тексте,
+// гасит пустые слоты по opacity, двигает Null по Y под число строк.
+//
+// Базовый размер шрифта задаётся в After Effects - скрипт только масштабирует
+// от 100% вниз до MIN_SCALE%.
+//
+// Следи за Anchor Point на TextLine 1..3: масштаб идёт от него.
 
 var MAX_CHARS = 40, MAX_LINES = 3;
-var BASE_SIZE = 49, MIN_SIZE = 25, MIN_TRACK = -50;
+var MIN_SCALE = 51;
 var SHIFT_1 = 20, SHIFT_N = 15;
 
-// Поставь сюда X и Y позиции Null-слоя в AE при 3 строках (как он стоит в шаблоне).
 var BASE_X = 960;
 var BASE_Y = 540;
 
@@ -32,23 +35,17 @@ var longest = 0;
 for (i = 0; i < lines.length; i++)
     if (lines[i].length > longest) longest = lines[i].length;
 
-var size = longest > MAX_CHARS
-    ? Math.max(MIN_SIZE, BASE_SIZE * MAX_CHARS / longest)
-    : BASE_SIZE;
-var k = (size - MIN_SIZE) / (BASE_SIZE - MIN_SIZE);
-var tracking = MIN_TRACK * (1 - k);
+var scalePct = longest > MAX_CHARS
+    ? Math.max(MIN_SCALE, 100 * MAX_CHARS / longest)
+    : 100;
 
 for (i = 0; i < slots.length; i++) {
     var l = comp.layer(slots[i]);
     var on = i < lines.length;
-    var ts = l.TextSource;
-    ts.Text = on ? lines[i] : "";
-    ts.FontSize = size;
-    ts.Tracking = tracking;
+    l.TextSource.Text = on ? lines[i] : "";
+    l.transform.scale.setValue([scalePct, scalePct, 100]);
     l.transform.opacity.setValue(on ? 100 : 0);
 }
 
 var shift = (lines.length === 1 ? SHIFT_1 : SHIFT_N) * (MAX_LINES - lines.length);
-var newY = BASE_Y + shift;
-nul.transform.position.setValue([BASE_X, newY, 0]);
-alert("lines=" + lines.length + " shift=" + shift + " newY=" + newY + " actualY=" + nul.transform.position.value[1]);
+nul.transform.position.setValue([BASE_X, BASE_Y + shift, 0]);
