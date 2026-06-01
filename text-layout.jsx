@@ -38,12 +38,12 @@ for (i = 0; i < slots.length; i++) {
     var w = l.sourceRectAtTime(false).width;
     if (w > longestPx) longestPx = w;
 }
-// Подгоняем ширину солида-подложки под самую длинную строку, якорь — пропорционально
-var bgSrc   = bg.source;
-var bgAp    = bg.transform.anchorPoint.value;
-var bgRatio = bgSrc.width > 0 ? bgAp[0] / bgSrc.width : 0.5;
-bgSrc.width = Math.max(1, Math.round(longestPx + BG_PAD * 2));
-bg.transform.anchorPoint.setValue([bgSrc.width * bgRatio, bgAp[1], bgAp[2] || 0]);
+// Подгоняем ширину солида-подложки: меняем только scale.x под нужную видимую
+// ширину внутри LINES, scale.y и source оставляем как есть
+var bgSrcW  = bg.source.width;
+var bgScale = bg.transform.scale.value;
+var bgScaleX = (longestPx + BG_PAD * 2) / bgSrcW * 100;
+bg.transform.scale.setValue([bgScaleX, bgScale[1], bgScale[2] || 100]);
 // Измерение коэффициента изменения размера текста
 var scalePctPx = longestPx > MAX_PX ? 100 * (MAX_PX / longestPx) : 100;
 writeLn(longestPx);
