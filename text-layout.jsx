@@ -5,6 +5,8 @@ var SHIFT_1 = 17, SHIFT_N = 12;
 // Базовая позиция прекомпозиции со строками
 var BASE_X = 1045.5;
 var BASE_Y = 34.8;
+// Отступ солида-подложки по бокам от самой длинной строки (px)
+var BG_PAD = 30;
 // Элементы композиции
 var comp  = app.project.item("Comp 1");
 var preComp = app.project.item("LINES");
@@ -12,6 +14,7 @@ var preCompLayer = comp.layer("LINES");
 var src   = comp.layer("MainText");
 var nul   = comp.layer("Null 1");
 var slots = ["TextLine 1", "TextLine 2", "TextLine 3"];
+var bg    = preComp.layer("Bg"); // солид-подложка под строками; при необходимости поменяй имя
 var timeFragments = app.project.item("TIMEFRAGMENTS");
 var fragments = ["Hours", "Minutes"];
 var hours = timeFragments.layer("Hours");
@@ -27,14 +30,20 @@ for (var i = 0; i < raw.length; i++) {
 if (lines.length > MAX_LINES) {
     lines = lines.slice(0, MAX_LINES - 1).concat(lines.slice(MAX_LINES - 1).join(" "));
 }
-// Заполняем строки
+// Заполняем строки (текст ставим до замера, чтобы ширина была актуальной)
 var longestPx = 0;
 for (i = 0; i < slots.length; i++) {
     var l = preComp.layer(slots[i]);
+    l.TextSource.Text = i < lines.length ? lines[i] : "";
     var w = l.sourceRectAtTime(false).width;
     if (w > longestPx) longestPx = w;
-    l.TextSource.Text = i < lines.length ? lines[i] : "";
 }
+// Подгоняем ширину солида-подложки под самую длинную строку, якорь — пропорционально
+var bgSrc   = bg.source;
+var bgAp    = bg.transform.anchorPoint.value;
+var bgRatio = bgSrc.width > 0 ? bgAp[0] / bgSrc.width : 0.5;
+bgSrc.width = Math.max(1, Math.round(longestPx + BG_PAD * 2));
+bg.transform.anchorPoint.setValue([bgSrc.width * bgRatio, bgAp[1], bgAp[2] || 0]);
 // Измерение коэффициента изменения размера текста
 var scalePctPx = longestPx > MAX_PX ? 100 * (MAX_PX / longestPx) : 100;
 writeLn(longestPx);
