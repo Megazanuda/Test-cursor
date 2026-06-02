@@ -5,10 +5,7 @@ var SHIFT_1 = 17, SHIFT_N = 12;
 // Базовая позиция прекомпозиции со строками
 var BASE_X = 960;
 var BASE_Y = 540;
-// Отступ солида-подложки по бокам от самой длинной строки.
-// Внимание: единицы должны совпадать с тем, что возвращает sourceRectAtTime у текстовых слотов
-// (если slot.sourceRectAtTime(false).width выходит «мелкими» числами вроде 1.92, то и BG_PAD
-// нужно делать мелким, например 0.3, иначе плашка получится огромной).
+// Отступ солида-подложки по бокам от самой длинной строки (в пикселях)
 var BG_PAD = 30;
 // Элементы композиции
 var comp  = app.project.item("Comp 1");
@@ -47,10 +44,14 @@ for (i = 0; i < slots.length; i++) {
 // Подгоняем ширину плашки: меняем только scale.x под нужную видимую ширину,
 // scale.y оставляем как есть (высота плашки не меняется, якорь живёт
 // в координатах источника, поэтому остаётся валидным автоматически).
-// В Carrot Broadcast нет source.width — берём «нативную» ширину через sourceRectAtTime.
-var plRectW  = Plaska.sourceRectAtTime(false).width;
+// Берём нативную ширину плашки в пикселях через свойство слоя .width — у текстовых
+// слотов и у плашки тогда единицы совпадают (пиксели), формула не «улетает».
+// Если в твоей сборке Carrot Broadcast Plaska.width недоступна — используй закомментированную
+// строку с sourceRectAtTime * 1000 (Carrot возвращает sourceRect плашки в "тысячных пикселя").
+var plSrcW   = Plaska.width;
+// var plSrcW = Plaska.sourceRectAtTime(false).width * 1000; // fallback
 var plScale  = Plaska.transform.scale.value;
-var plScaleX = (longestPx + BG_PAD * 2) / plRectW * 100;
+var plScaleX = (longestPx + BG_PAD * 2) / plSrcW * 100;
 Plaska.transform.scale.setValue([plScaleX, plScale[1], plScale[2] || 100]);
 // Измерение коэффициента изменения размера текста
 var scalePctPx = longestPx > MAX_PX ? 100 * (MAX_PX / longestPx) : 100;
