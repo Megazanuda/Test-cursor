@@ -42,17 +42,20 @@ for (i = 0; i < slots.length; i++) {
     if (w > longestPx) longestPx = w;
 }
 // Подгоняем ширину плашки: меняем только scale.x под нужную видимую ширину,
-// scale.y оставляем как есть (высота плашки не меняется, якорь живёт
-// в координатах источника, поэтому остаётся валидным автоматически).
-// Берём нативную ширину плашки в пикселях через свойство слоя .width — у текстовых
-// слотов и у плашки тогда единицы совпадают (пиксели), формула не «улетает».
-// Если в твоей сборке Carrot Broadcast Plaska.width недоступна — используй закомментированную
-// строку с sourceRectAtTime * 1000 (Carrot возвращает sourceRect плашки в "тысячных пикселя").
-var plSrcW   = Plaska.width;
-// var plSrcW = Plaska.sourceRectAtTime(false).width * 1000; // fallback
+// scale.y оставляем как есть.
+// В Carrot Broadcast Plaska.sourceRectAtTime(false).width возвращает значение в
+// "тысячных пикселя" (~1.92 при нативной ширине ~1920 px), а у текстовых слотов
+// то же sourceRectAtTime отдаёт нормальные пиксели. Поэтому множим на PLASKA_UNIT_TO_PX,
+// чтобы привести к единицам longestPx.
+var PLASKA_UNIT_TO_PX = 1000;
+var plSrcW   = Plaska.sourceRectAtTime(false).width * PLASKA_UNIT_TO_PX;
 var plScale  = Plaska.transform.scale.value;
 var plScaleX = (longestPx + BG_PAD * 2) / plSrcW * 100;
-Plaska.transform.scale.setValue([plScaleX, plScale[1], plScale[2] || 100]);
+// Защита от NaN/0/отрицательных — не трогаем scale.x, если расчёт некорректен,
+// иначе плашка сломается и в следующий прогон scale.x будет NaN.
+if (plSrcW > 0 && isFinite(plScaleX) && plScaleX > 0) {
+    Plaska.transform.scale.setValue([plScaleX, plScale[1], plScale[2] || 100]);
+}
 // Измерение коэффициента изменения размера текста
 var scalePctPx = longestPx > MAX_PX ? 100 * (MAX_PX / longestPx) : 100;
 writeLn(longestPx);
