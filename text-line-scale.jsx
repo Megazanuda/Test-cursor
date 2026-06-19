@@ -6,13 +6,22 @@
 var COMP_NAME  = "Comp 1";    // имя композиции
 var LAYER_NAME = "MainText";  // имя текстового слоя
 
-// Базовая X-позиция слоя (нейтральная, до возможного сдвига).
-// Скрипт всегда выставляет X = BASE_X + сдвиг, поэтому здесь должна быть
-// та позиция, в которой слой стоит, когда CONTROL_VAR != 0.
+// Базовая позиция слоя (нейтральная, до возможного сдвига).
+// Скрипт всегда выставляет X = BASE_X + сдвиг, Y = BASE_Y - компенсация,
+// поэтому здесь должна быть та позиция, в которой слой стоит при scale = 100
+// и CONTROL_VAR != 0.
 var BASE_X = 960;
+var BASE_Y = 540;
 
 // На сколько пикселей сдвинуть слой вправо, когда CONTROL_VAR == 0
 var SHIFT_X = 50;
+
+// Компенсация вертикальной позиции при уменьшении scale.
+// Текст с анкером на бейзлайне визуально съезжает вниз при scale < 100% —
+// компенсируем подъёмом. Y_LIFT_AT_ZERO — насколько поднять слой при
+// гипотетическом scale = 0; при scale = 100% подъём нулевой, между ними
+// линейная интерполяция. Подбери по визуалу.
+var Y_LIFT_AT_ZERO = 60;
 
 // Контрольная переменная. Подставь сюда нужный источник значения:
 //   - просто число (как сейчас, для проверки);
@@ -38,10 +47,13 @@ var scalePct = nLines <= 2 ? 100 : 172 / nLines;
 var oldScale = txt.transform.scale.value;
 txt.transform.scale.setValue([scalePct, scalePct, oldScale[2] || 100]);
 
-// 3. Сдвиг позиции вправо, если контрольная переменная равна 0.
-//    Y не трогаем — берём текущее значение слоя.
-var pos  = txt.transform.position.value;
-var newX = BASE_X + (CONTROL_VAR === 0 ? SHIFT_X : 0);
-txt.transform.position.setValue([newX, pos[1], pos[2] || 0]);
+// 3. Позиция:
+//    X = BASE_X + сдвиг (если CONTROL_VAR == 0)
+//    Y = BASE_Y - компенсация (тем больше, чем меньше scale)
+var newX  = BASE_X + (CONTROL_VAR === 0 ? SHIFT_X : 0);
+var yLift = Y_LIFT_AT_ZERO * (1 - scalePct / 100);
+var newY  = BASE_Y - yLift;
+var pos   = txt.transform.position.value;
+txt.transform.position.setValue([newX, newY, pos[2] || 0]);
 
-writeLn("nLines=" + nLines + " scalePct=" + scalePct + " CONTROL_VAR=" + CONTROL_VAR + " posX=" + newX);
+writeLn("nLines=" + nLines + " scalePct=" + scalePct + " CONTROL_VAR=" + CONTROL_VAR + " posX=" + newX + " posY=" + newY);
