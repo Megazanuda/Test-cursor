@@ -58,5 +58,3 @@ if (extraLines < 0) extraLines = 0;
 var newY = BASE_Y + Y_STEP * extraLines;
 var pos  = txt.transform.position.value;
 txt.transform.position.setValue([newX, newY, pos[2] || 0]);
-
-writeLn("nLines=" + nLines + " scalePct=" + scalePct + " CONTROL_VAR=" + CONTROL_VAR + " posX=" + newX + " posY=" + newY);
