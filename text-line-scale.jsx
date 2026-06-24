@@ -6,22 +6,24 @@
 var COMP_NAME  = "Comp 1";    // имя композиции
 var LAYER_NAME = "MainText";  // имя текстового слоя
 
-// Базовая позиция слоя (нейтральная, до возможного сдвига).
-// Скрипт всегда выставляет X = BASE_X + сдвиг, Y = BASE_Y - компенсация,
-// поэтому здесь должна быть та позиция, в которой слой стоит при scale = 100
-// и CONTROL_VAR != 0.
+// Базовая X-позиция слоя (нейтральная, до возможного сдвига).
+// Скрипт всегда выставляет X = BASE_X + сдвиг, поэтому здесь должна быть
+// та X, в которой слой стоит, когда CONTROL_VAR != 0.
 var BASE_X = 960;
-var BASE_Y = 540;
 
 // На сколько пикселей сдвинуть слой вправо, когда CONTROL_VAR == 0
 var SHIFT_X = 50;
 
-// Компенсация вертикальной позиции при уменьшении scale.
-// Текст с анкером на бейзлайне визуально съезжает вниз при scale < 100% —
-// компенсируем подъёмом. Y_LIFT_AT_ZERO — насколько поднять слой при
-// гипотетическом scale = 0; при scale = 100% подъём нулевой, между ними
-// линейная интерполяция. Подбери по визуалу.
-var Y_LIFT_AT_ZERO = 60;
+// Y-позиция в зависимости от количества строк.
+// Якорь у слоя выставлен в After Effects в правый нижний угол.
+//   1-3 строки   → Y = BASE_Y
+//   4 строки     → Y = BASE_Y + Y_STEP
+//   5 строк      → Y = BASE_Y + Y_STEP * 2
+//   ...
+// На пользовательских измерениях: 2-3 строки → 955, 4 строки → 966.
+var BASE_Y = 955;
+var Y_STEP = 11;
+var Y_STEP_FROM = 3; // прибавлять Y_STEP начиная со строки (Y_STEP_FROM + 1)
 
 // Контрольная переменная. Подставь сюда нужный источник значения:
 //   - просто число (как сейчас, для проверки);
@@ -49,11 +51,12 @@ txt.transform.scale.setValue([scalePct, scalePct, oldScale[2] || 100]);
 
 // 3. Позиция:
 //    X = BASE_X + сдвиг (если CONTROL_VAR == 0)
-//    Y = BASE_Y - компенсация (тем больше, чем меньше scale)
-var newX  = BASE_X + (CONTROL_VAR === 0 ? SHIFT_X : 0);
-var yLift = Y_LIFT_AT_ZERO * (1 - scalePct / 100);
-var newY  = BASE_Y - yLift;
-var pos   = txt.transform.position.value;
+//    Y = BASE_Y + Y_STEP * (nLines - Y_STEP_FROM), но не меньше BASE_Y
+var newX = BASE_X + (CONTROL_VAR === 0 ? SHIFT_X : 0);
+var extraLines = nLines - Y_STEP_FROM;
+if (extraLines < 0) extraLines = 0;
+var newY = BASE_Y + Y_STEP * extraLines;
+var pos  = txt.transform.position.value;
 txt.transform.position.setValue([newX, newY, pos[2] || 0]);
 
 writeLn("nLines=" + nLines + " scalePct=" + scalePct + " CONTROL_VAR=" + CONTROL_VAR + " posX=" + newX + " posY=" + newY);
