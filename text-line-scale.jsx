@@ -1,17 +1,16 @@
 // Скрипт для текстового слоя с динамическим количеством строк.
 // - Скейл текста: 100% при 1-2 строках, 172/N при N>=3.
-// - Anchor автоматически выставляется в правый нижний угол ТЕКУЩЕГО source rect,
-//   чтобы визуальная позиция не "плавала" при смене текста.
-// - Позиция (визуальный bottom-right текста) ставится в (BASE_X, BASE_Y),
-//   с возможным сдвигом по X на SHIFT_X, если внешняя переменная `control` > 5.
+// - Позиция компенсируется так, чтобы визуальный правый нижний угол текста
+//   всегда оказывался в (BASE_X, BASE_Y) независимо от того, сколько в тексте
+//   строк и какой у слоя стоит якорь.
 
 // === Параметры (поправь под свой проект) ===
 var COMP_NAME  = "Comp 1";    // имя композиции
 var LAYER_NAME = "text";      // имя текстового слоя
 
-// Куда попадёт визуальный правый нижний угол текста после прогона скрипта.
-// Эти координаты теперь работают как абсолютные — никаких Y_STEP-таблиц
-// больше не нужно, поскольку якорь автоматически синхронизируется с source rect.
+// Куда должен попадать визуальный правый нижний угол текста.
+// Эти координаты задаются один раз — скрипт сам считает, какую position
+// присвоить слою, чтобы реально видимый bottom-right оказался ровно тут.
 var BASE_X = 1577;
 var BASE_Y = 955;
 
@@ -40,23 +39,27 @@ var scalePct = nLines <= 2 ? 100 : 172 / nLines;
 var oldScale = txt.transform.scale.value;
 txt.transform.scale.setValue([scalePct, scalePct, oldScale[2] || 100]);
 
-// 3. Якорь — автоматически в правый нижний угол текущего source rect.
-//    Важно: якорь, выставленный вручную в After Effects, "застывает" в одной точке
-//    source coords. При смене текста source rect меняется (другое количество строк,
-//    другая длина), а якорь остаётся там же — и уже не совпадает с реальным
-//    правым нижним углом. Из-за этого визуальная позиция плывёт, хотя
-//    transform.position в инспекторе остаётся прежней (955).
-//    Перевыставляя якорь на каждом прогоне, мы гарантируем, что position
-//    действительно совпадает с визуальным bottom-right текста.
-var srcRect = txt.sourceRectAtTime(false);
-txt.transform.anchorPoint.setValue([
-    srcRect.left + srcRect.width,
-    srcRect.top + srcRect.height,
-    0
-]);
+// 3. Считаем компенсацию позиции.
+//    Геометрия в After Effects: visible_bottom_right (в координатах комп) =
+//        position + (sourceRectBottomRight - anchorPoint) * scale
+//    Якорь у тебя зафиксирован вручную (в правом нижнем углу при том количестве
+//    строк, при котором ты настраивал). source rect меняется при смене текста,
+//    поэтому при 3+ строках появляется ненулевая разница (sourceRectBR - anchor),
+//    и position нужно компенсировать, чтобы видимый bottom-right всё равно
+//    попал в (BASE_X, BASE_Y).
+//
+//    Для 2-строчного случая (под который и настраивался якорь) разница нулевая,
+//    компенсация нулевая, position = (BASE_X, BASE_Y) — текст стоит ровно там,
+//    где ты его выставлял изначально.
+var srcRect   = txt.sourceRectAtTime(false);
+var anchor    = txt.transform.anchorPoint.value;
+var brOffsetX = (srcRect.left + srcRect.width)  - anchor[0];
+var brOffsetY = (srcRect.top  + srcRect.height) - anchor[1];
+var scaleNow  = txt.transform.scale.value;
+var sx        = scaleNow[0] / 100;
+var sy        = scaleNow[1] / 100;
 
-// 4. Позиция: визуальный правый нижний угол окажется ровно в (newX, BASE_Y),
-//    независимо от количества строк и скейла.
-var newX = BASE_X + (control > 5 ? SHIFT_X : 0);
 var pos  = txt.transform.position.value;
-txt.transform.position.setValue([newX, BASE_Y, pos[2] || 0]);
+var newX = BASE_X + (control > 5 ? SHIFT_X : 0) - brOffsetX * sx;
+var newY = BASE_Y                                - brOffsetY * sy;
+txt.transform.position.setValue([newX, newY, pos[2] || 0]);
