@@ -29,6 +29,14 @@ var TARGET_TOP_Y = 890.178;
 // На сколько пикселей сдвинуть слой вправо, когда control > 5
 var SHIFT_X = 125;
 
+// Дополнительный сдвиг вниз для каждой строки сверх Y_SHIFT_FROM_LINES.
+// Накладывается ПОВЕРХ геометрической компенсации (которая фиксирует верх текста).
+// Нужен потому, что scale-формула 172/N даёт константную видимую высоту текста при N>=3,
+// и 4-строчный текст без этого сдвига выглядит точно так же, как 3-строчный.
+// Поставь 0 — никакого дополнительного смещения. Поставь 10-20 — 4+ строки начнут уходить вниз.
+var Y_SHIFT_PER_EXTRA_LINE = 0;
+var Y_SHIFT_FROM_LINES     = 3;
+
 // === Внешняя логика Carrot Broadcast ===
 ageRating = thisComp.layer("variable").TextSource.Text;
 EnabledRating(ageRating);
@@ -68,7 +76,11 @@ var sy         = scaleNow[1] / 100;
 var srcRight   = srcRect.left + srcRect.width;
 var srcTop     = srcRect.top;
 
+var extraLines = nLines - Y_SHIFT_FROM_LINES;
+if (extraLines < 0) extraLines = 0;
+var manualYShift = extraLines * Y_SHIFT_PER_EXTRA_LINE;
+
 var pos  = txt.transform.position.value;
 var newX = BASE_X        + (control > 5 ? SHIFT_X : 0) + (anchor[0] - srcRight) * sx;
-var newY = TARGET_TOP_Y                                + (anchor[1] - srcTop)   * sy;
+var newY = TARGET_TOP_Y                                + (anchor[1] - srcTop)   * sy + manualYShift;
 txt.transform.position.setValue([newX, newY, pos[2] || 0]);
