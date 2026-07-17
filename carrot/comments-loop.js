@@ -1,35 +1,32 @@
 /* =====================================================================
-   Carrot Broadcast — поочерёдный вывод комментариев (Comment 1 / Comment 2)
+   Carrot Broadcast — комментарии + раскладка плашки/времени
    ---------------------------------------------------------------------
-   Композиция:
-     - State LOOP (длится 60 c): два текстовых слоя "Comment 1" и
-       "Comment 2" по очереди появляются и исчезают. Сама анимация
-       видимости — на кёйфреймах в композиции, скрипт её НЕ трогает.
-     - State OUT: аутро, текст не меняем.
-     - Слой "MainText" — источник строк. Каждая непустая строка
-       по очереди подставляется в Comment 1 и Comment 2.
+   Скрипт состоит из двух независимых частей:
 
-   Тайминги композиции:
-     - START_TIME  0.18 c — когда впервые появляется Comment 1
-     - PERIOD      5.98 c — период чередования (появление -> появление)
-     - GAP         0.2  c — пауза между полным исчезновением одного
-                            и началом появления другого
+   1) ЧЕРЕДОВАНИЕ КОММЕНТАРИЕВ (Comment 1 / Comment 2)
+      - State LOOP (длится 60 c): два текстовых слоя по очереди
+        появляются и исчезают (анимация видимости — на кёйфреймах в
+        композиции, скрипт её НЕ трогает).
+      - Слой "MainText" — источник строк. Comment 1 показывает строки
+        0,2,4,...  Comment 2 — 1,3,5,...  => на экране 0,1,2,3,...
+      - Смена текста делается в СЕРЕДИНЕ "скрытого окна" плашки, чтобы
+        не было ни рассинхрона, ни мигания.
 
-   Как избегаем рассинхрона:
-     Текст плашки меняем в СЕРЕДИНЕ её "скрытого окна" — когда она
-     заведомо невидима и до её следующего появления ещё ~3 c. Такой
-     большой запас с обеих сторон гарантирует, что мелкий дрейф за
-     60 c не приведёт ни к опозданию текста, ни к миганию.
-
-   Логика подстановки строк:
-     - Comment 1 показывает строки 0,2,4,...  Comment 2 — 1,3,5,...
-     - на экране строки идут последовательно 0,1,2,3,... с зацикливанием.
+   2) РАСКЛАДКА (каждый кадр, updateLayout)
+      - строки из "MainText" -> слои Line1/Line2 прекомпа "LINES";
+      - ширина солида-подложки "Plaska" подгоняется под самую длинную строку;
+      - строка "Time" (ЧЧ:ММ) раскладывается по слоям Hours/Minutes
+        прекомпа "TIMEFRAGMENTS", а "Dots"/"Minutes" сдвигаются вплотную
+        к "Hours";
+      - прекомп "LINES" сдвигается по вертикали в зависимости от числа строк.
    ===================================================================== */
 
 
 /* =====================================================================
    STARTUP  (объявления переменных и функции — выполняется один раз)
    ===================================================================== */
+
+/* ---------- Часть 1: чередование комментариев ---------- */
 
 // --- Тайминги композиции ---
 var START_TIME = 0.18;   // первое появление Comment 1
@@ -46,26 +43,6 @@ var nextSlot;         // номер следующего появления, к�
 var nextChangeTime;   // время, когда меняем текст для nextSlot
 var prevTime;         // время предыдущего кадра (для детекта зацикливания)
 
-// --- (опционально) автоподгон масштаба текста по ширине ---
-function autoScale(layer)
-{
-    var maxWidth = 400;  // подставь ширину своей плашки
-    var textWidth = layer.sourceRectAtTime().width;
-    var result = 100;
-
-    if (textWidth > maxWidth)
-        result = maxWidth / textWidth * 100;
-
-    layer.transform.scale = [result, result, 100];
-}
-
-// Установка текста в слой (+ при желании автоподгон масштаба).
-function setComment(name, str)
-{
-    thisComp.layer(name).TextSource.Text = str;
-    // autoScale(thisComp.layer(name));   // раскомментируй, если нужно вписывать по ширине
-}
-
 // Разбить текст MainText на непустые строки.
 function buildLines(txt)
 {
@@ -79,6 +56,12 @@ function buildLines(txt)
     }
 
     return res;
+}
+
+// Установка текста в комментарий.
+function setComment(name, str)
+{
+    thisComp.layer(name).TextSource.Text = str;
 }
 
 // (Пере)инициализация цикла. Используется и в SetState, и при зацикливании.
@@ -104,26 +87,8 @@ function initLoop()
     prevTime = 0;
 }
 
-
-/* =====================================================================
-   SETSTATE  (выполняется при входе в state; имя state — в statename)
-   ===================================================================== */
-
-if (statename == "LOOP")
-{
-    initLoop();
-}
-
-
-/* =====================================================================
-   PROCESSFRAME  (каждый кадр; time — текущее время композиции)
-   ===================================================================== */
-
-if (statename != "LOOP")
-{
-    prevTime = time;
-}
-else if (arrLocation && arrLocation.length > 0)
+// Смена текста скрытых комментариев по расписанию (вызывать каждый кадр в LOOP).
+function updateComments()
 {
     // Композиция залупилась -> начинаем цикл заново (снова строки 0 и 1).
     if (time < prevTime)
@@ -143,3 +108,135 @@ else if (arrLocation && arrLocation.length > 0)
 
     prevTime = time;
 }
+
+
+/* ---------- Часть 2: раскладка плашки / строк / времени ---------- */
+
+var MAX_LINES = 2;                 // максимум строк (лишние сливаются в последнюю)
+var SHIFT_1 = 17, SHIFT_N = 12;    // сдвиг строк по вертикали
+var BASE_X = 960, BASE_Y = 540;    // базовая позиция прекомпа LINES
+var BG_PAD = 30;                   // отступ подложки по бокам от текста (px)
+var PLASKA_UNIT_TO_PX = 1024;      // перевод единиц ширины солида в пиксели
+
+var LINE_SLOTS = ["Line1", "Line2"];
+var TIME_FRAGMENTS = ["Hours", "Minutes"];
+
+// Разбор MainText в строки; всё, что сверх MAX_LINES, сливается в последнюю.
+function parseLines(txt)
+{
+    var lines = [];
+    var raw = txt.split(/[\r\n]+/);
+
+    for (var i = 0; i < raw.length; i++)
+    {
+        var t = raw[i].trim();
+        if (t) lines.push(t);
+    }
+
+    if (lines.length > MAX_LINES)
+        lines = lines.slice(0, MAX_LINES - 1).concat(lines.slice(MAX_LINES - 1).join(" "));
+
+    return lines;
+}
+
+// Заполняем Line1/Line2 и возвращаем ширину самой длинной строки (px).
+// Текст ставим ДО замера, иначе ширина посчитается для старого текста.
+function fillSlots(preComp, lines)
+{
+    var longestPx = 0;
+
+    for (var i = 0; i < LINE_SLOTS.length; i++)
+    {
+        var l = preComp.layer(LINE_SLOTS[i]);
+        l.TextSource.Text = i < lines.length ? lines[i] : "";
+
+        var w = l.sourceRectAtTime(false).width;
+        if (w > longestPx) longestPx = w;
+    }
+
+    return longestPx;
+}
+
+// Подгоняем ширину подложки под текст: меняем только scale.x.
+function fitPlaska(preComp, plaska, longestPx)
+{
+    var preCompScaleX = preComp.layer("Line1").transform.scale.value[0];
+    var textVisiblePx = longestPx * (preCompScaleX / 100);
+
+    var plSrcW   = plaska.sourceRectAtTime(false).width * PLASKA_UNIT_TO_PX;
+    var plScale  = plaska.transform.scale.value;
+    var plScaleX = (textVisiblePx + BG_PAD * 2) / plSrcW * 100;
+
+    // Защита от NaN/0/отрицательных — не трогаем scale.x, если расчёт некорректен.
+    if (plSrcW > 0 && isFinite(plScaleX) && plScaleX > 0)
+        plaska.transform.scale.setValue([plScaleX, plScale[1], plScale[2] || 100]);
+}
+
+// Сдвиг прекомпа LINES по вертикали в зависимости от числа строк.
+function placeLines(preCompLayer, lineCount)
+{
+    var shift = (lineCount === 1 ? SHIFT_1 : SHIFT_N) * (MAX_LINES - lineCount);
+    preCompLayer.transform.position.setValue([BASE_X, BASE_Y + shift, 0]);
+}
+
+// Раскладка строки "Time" (ЧЧ:ММ) по Hours/Minutes + подгон Dots/Minutes.
+function updateTime(comp, timeFragments)
+{
+    var hours = timeFragments.layer("Hours");
+    // Ширину Hours берём по текущему тексту (до его обновления) — как в исходнике.
+    var rect = hours.sourceRectAtTime(false);
+
+    var frg = comp.layer("Time").TextSource.Text.split(":");
+    for (var i = 0; i < TIME_FRAGMENTS.length; i++)
+        timeFragments.layer(TIME_FRAGMENTS[i]).TextSource.Text = frg[i] || "";
+
+    var rightX = hours.transform.position.value[0]
+               + (rect.left + rect.width)
+               - hours.transform.anchorPoint.value[0];
+
+    var dotsPos = timeFragments.layer("Dots").transform.position.value;
+    timeFragments.layer("Dots").transform.position.setValue([rightX + 10, dotsPos[1], 0]);
+
+    var minPos = timeFragments.layer("Minutes").transform.position.value;
+    timeFragments.layer("Minutes").transform.position.setValue([rightX + 17, minPos[1], 0]);
+}
+
+// Полная раскладка кадра.
+function updateLayout()
+{
+    var comp          = app.project.item("Comp 1");
+    var preComp       = app.project.item("LINES");
+    var timeFragments = app.project.item("TIMEFRAGMENTS");
+    var preCompLayer  = comp.layer("LINES");
+    var src           = comp.layer("MainText");
+    var plaska        = comp.layer("Plaska");
+
+    var lines = parseLines(src.TextSource.Text);
+    var longestPx = fillSlots(preComp, lines);
+
+    fitPlaska(preComp, plaska, longestPx);
+    updateTime(comp, timeFragments);
+    placeLines(preCompLayer, lines.length);
+}
+
+
+/* =====================================================================
+   SETSTATE  (выполняется при входе в state; имя state — в statename)
+   ===================================================================== */
+
+if (statename == "LOOP")
+{
+    initLoop();
+}
+
+
+/* =====================================================================
+   PROCESSFRAME  (каждый кадр; time — текущее время композиции)
+   ===================================================================== */
+
+if (statename != "LOOP")
+    prevTime = time;
+else if (arrLocation && arrLocation.length > 0)
+    updateComments();
+
+updateLayout();
