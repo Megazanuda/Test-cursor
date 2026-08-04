@@ -128,20 +128,22 @@ splitTextToLayers(
 Сниппет [`name-follow.js`](./name-follow.js) — текст `Name` едет за `Null 2`,
 проходя путь, зависящий от своей ширины (шире текст → длиннее путь).
 
-Модель выведена из рабочей точки (ширина `466` → коэффициент `2.35`):
+Модель подтверждена двумя замерами (`466 → 2.35`, `761.3 → 1.73`). Так как
+делится абсолютная позиция, определяющая величина — конечная позиция текста
+`NULL_END / C`; она растёт ровно на ширину текста, поэтому:
 
-- путь null'а `NULL_TRAVEL = 1913 − 326 = 1587`;
-- путь текста при 466 = `1587 / 2.35 ≈ 675` → значит `путь = ширина + REVEAL`, где `REVEAL ≈ 209`;
-- коэффициент `C(width) = 1587 / (width + REVEAL)`.
+\[ C(width) = \frac{NULL\_END}{width + K} = \frac{1913}{width + 346} \]
 
-Рекомендуется вместо деления `Null2.x / C` использовать явное линейное
-отображение `nameX(nullX, width)` — тогда старт текста фиксирован, а с шириной
-меняется только длина пути:
+где `K ≈ 346` откалибровано по обеим точкам (`1913/2.35 − 466 ≈ 348`,
+`1913/1.73 − 761.3 ≈ 344.5`).
 
 ```js
-function nameX(nullX, width) {
-    var p = (nullX - NULL_START) / NULL_TRAVEL;
-    return TEXT_START + p * (width + REVEAL);
+function speedCoeff(width) { return 1913 / (width + 346); }
+
+function setEndPos() {
+    var width = thisComp.layer("Name").sourceRectAtTime(false).width;
+    thisComp.layer("Name").transform.position.x =
+        thisComp.layer("Null 2").transform.position.x / speedCoeff(width);
 }
 ```
 
