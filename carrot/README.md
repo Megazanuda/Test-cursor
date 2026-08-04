@@ -110,6 +110,19 @@ l.TextSource.Text = i < lines.length ? lines[i] : "";
 fitTextWidth(l, MAX_PX);   // где MAX_PX — нужная максимальная ширина
 ```
 
+## Утилита `splitTextToLayers`
+
+Сниппет [`split-text.js`](./split-text.js) — разбивка текста одного слоя по
+строкам в другие слои. Режет текст `src` на непустые строки и раскладывает
+их по одной в слои массива `targets` (лишние слои очищаются).
+
+```js
+splitTextToLayers(
+    thisComp.layer("MainText"),
+    [thisComp.layer("Line1"), thisComp.layer("Line2")]
+);
+```
+
 ## История правок
 
 - **v4:** причёсан и разбит на функции блок раскладки (плашка/строки/время),
