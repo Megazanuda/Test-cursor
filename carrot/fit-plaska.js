@@ -2,9 +2,12 @@
    fitPlaska — растянуть solid-подложку по ширине текста
    ---------------------------------------------------------------------
    Меняет только scale.x подложки так, чтобы её видимая ширина стала равна
-   ширине текста + отступы. Обе ширины берутся из sourceRectAtTime (это
-   натуральная ширина без учёта собственного scale), поэтому функция
-   идемпотентна — можно звать хоть каждый кадр.
+   ширине текста + отступы.
+
+   Важно: натуральную ширину солида берём из plaska.width (ширина
+   исходника в пикселях, не зависит от scale), а НЕ из sourceRectAtTime —
+   у солида sourceRectAtTime может возвращать ширину в других единицах
+   (из-за чего раньше требовался костыль * PLASKA_UNIT_TO_PX).
 
    textLayer — текстовый слой
    plaska    — слой-подложка (solid/shape)
@@ -15,12 +18,12 @@ function fitPlaska(textLayer, plaska, pad)
 {
     pad = pad || 0;
 
-    // Видимая ширина текста (с учётом его собственного масштаба).
+    // Видимая ширина текста (с учётом его собственного масштаба), px.
     var tScale = textLayer.transform.scale.value;
     var textW  = textLayer.sourceRectAtTime(false).width * (tScale[0] / 100);
 
-    // Натуральная ширина подложки.
-    var plW = plaska.sourceRectAtTime(false).width;
+    // Натуральная ширина подложки в пикселях.
+    var plW    = plaska.width;                       // при недоступности: plaska.source.width
     var pScale = plaska.transform.scale.value;
 
     var scaleX = (textW + pad * 2) / plW * 100;
