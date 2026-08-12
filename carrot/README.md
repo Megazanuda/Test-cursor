@@ -168,22 +168,19 @@ function setEndPos() {
 
 ## Растяжка подложки (`fit-plaska.js`)
 
-Сниппет [`fit-plaska.js`](./fit-plaska.js) — `fitPlaska(textLayer, plaska, pad)`
-растягивает solid-подложку по ширине текста, меняя только `scale.x`. Ширины
-текста и подложки берутся из `sourceRectAtTime().width` (натуральные, без учёта
-scale), поэтому функция идемпотентна.
+Сниппет [`fit-plaska.js`](./fit-plaska.js) —
+`fitPlaska(textLayer, plaska, plaskaWidthPx, pad)` растягивает solid-подложку по
+ширине текста, меняя только `scale.x`.
 
 ```js
-fitPlaska(thisComp.layer("Name"), thisComp.layer("Plaska"), 30);
+fitPlaska(thisComp.layer("Name"), thisComp.layer("Plaska"), 1920, 30);
 ```
 
-Упрощена относительно старого варианта: без хардкода имени слоя, без магической
-константы `PLASKA_UNIT_TO_PX` и глобального `BG_PAD` (отступ — параметр).
-
-Натуральная ширина солида берётся из `plaska.width` (ширина исходника в px,
-не зависит от scale), а не из `sourceRectAtTime` — у солида он может отдавать
-ширину в других единицах (из-за чего раньше был костыль `* 1024`). Если
-`plaska.width` в движке недоступен — используй `plaska.source.width`.
+Ширина солида передаётся числом (`plaskaWidthPx`), потому что в движке
+`plaska.width` / `plaska.source.width` недоступны, а `sourceRectAtTime()` у
+солида возвращает ширину не в пикселях. `plaskaWidthPx` — реальный размер солида
+в px при `scale.x = 100` (из его настроек). Формула:
+`scale.x = (ширина_текста + 2·pad) / plaskaWidthPx · 100`.
 
 ## История правок
 
