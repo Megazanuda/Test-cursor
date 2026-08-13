@@ -1,12 +1,13 @@
 /* =====================================================================
-   Подчёркивание слов с "www" через richText
+   Подчёркивание слов с "www" — через Unicode (без HTML-тегов)
    ---------------------------------------------------------------------
-   Подчёркивает любое слово, в котором встречается "www" (регистр не важен),
-   тегом <u>…</u>. Движок уже понимает <font>/<div>/<br>; подчёркивание
-   обычно делается <u> (HTML-подмножество, напр. Qt richtext). Если <u> не
-   рендерится — внизу запасной вариант через CSS-<span>.
+   Движок рендерит <font color>, но игнорирует <u> и text-decoration —
+   подчёркивание через разметку недоступно. Поэтому подчёркиваем символом
+   U+0332 (COMBINING LOW LINE): ставим его после каждого символа слова,
+   и рендерер рисует линию под ними. Работает без поддержки HTML.
 
-   Оформляем ПОСТРОЧНО, чтобы теги не пересекали переносы строк.
+   Подчёркивается любое слово, в котором встречается "www" (регистр не важен).
+   Оформляем ПОСТРОЧНО, чтобы не задеть переносы.
    ===================================================================== */
 
 function GetPlainString(v8Text)
@@ -17,26 +18,36 @@ function GetPlainString(v8Text)
     return s;
 }
 
+// Ставим U+0332 после каждого символа слова -> визуальное подчёркивание.
+function underlineWord(w)
+{
+    var out = "";
+    for (var i = 0; i < w.length; i++)
+        out += w.charAt(i) + "\u0332";
+    return out;
+}
+
 var txt = thisComp.layer("TEXT");
 
-// richtext-разметку -> обычные переносы + убираем старое подчёркивание
+// richtext-разметку -> обычные переносы + убираем старое подчёркивание (U+0332)
 var text = GetPlainString(txt.TextSource.Text)
     .replace(/<br\s*\/?>/gi, "\n")
     .replace(/<\/div\s*>/gi, "")
     .replace(/<div\b[^>]*>/gi, "\n")
-    .replace(/<\/?u>/gi, "")
+    .replace(/\u0332/g, "")
     .replace(/^\n+/, "");
 
 var lines = text.split("\n");
 
 for (var i = 0; i < lines.length; i++)
-    lines[i] = lines[i].replace(/([^\s]*www[^\s]*)/gi, "<u>$1</u>");
+{
+    var words = lines[i].split(" ");
 
-text = lines.join("\n");
+    for (var j = 0; j < words.length; j++)
+        if (/www/i.test(words[j]))
+            words[j] = underlineWord(words[j]);
 
-// --- Запасной вариант, если <u> не рендерится: CSS-<span> ---
-// text = text
-//     .replace(/<u>/g, '<span style="text-decoration:underline">')
-//     .replace(/<\/u>/g, "</span>");
+    lines[i] = words.join(" ");
+}
 
-txt.TextSource.Text = text;
+txt.TextSource.Text = lines.join("\n");
