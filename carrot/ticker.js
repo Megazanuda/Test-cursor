@@ -1,12 +1,16 @@
 /* =====================================================================
    Бегущая строка (только текст) + зелёная подложка
    ---------------------------------------------------------------------
-   Версия под проект БЕЗ медиа-разделителей и цветовых слоёв.
-   В композиции есть только:
-     - тексты          myText 1 … myText 12
-     - подложки        dark_green_line 1, dark_green_line 2, …
-     - управляющий null "master" (к нему привязаны тексты и подложки)
-     - слой-источник строк "ticker_text" (многострочный текст)
+   Версия под проект, где ВСЕ слои строки лежат в прекомпозиции.
+
+   Структура композиций:
+     - главная композиция (thisComp): слой-источник строк "inputext";
+     - прекомпозиция "linesPreComp": тексты myText 1 … myText 12,
+       подложки dark_green_line 1…, управляющий null "master".
+       Тексты и подложки ПРИВЯЗАНЫ к master (parent внутри прекомпа).
+
+   Доступ к слоям внутри прекомпа — через app.project.item("linesPreComp"),
+   как в comments-loop.js (thisComp.layer видит только слои главной комп.).
 
    Подложка (dark_green_line) стоит под КАЖДЫМ НЕЧЁТНЫМ текстом:
      myText 1 -> dark_green_line 1
@@ -16,14 +20,13 @@
 
    Подложка растягивается по ширине текста + PLATE_PAD (26px) с каждой
    стороны и держится по центру текста. Обновляется там же, где ставится
-   текст: в ticker("init") и при переносе в хвост (frame % 17) — каждый
-   кадр не нужно, т.к. подложка привязана к master и едет вместе с ним.
+   текст: в ticker("init") и при переносе в хвост (frame % 17).
 
    Что настроить в композиции:
-     1) тексты и подложки ПРИВЯЗАТЬ к master (parent);
+     1) тексты и подложки ПРИВЯЗАТЬ к master (parent) — всё внутри linesPreComp;
      2) якорь подложки — по ЦЕНТРУ (симметричный рост, ровные отступы);
      3) PLATE_BASE_PX = реальная ширина солида в px при scale.x = 100;
-     4) подложку положить НИЖЕ своего текста в стеке слоёв.
+     4) подложку положить НИЖЕ своего текста в стеке слоёв прекомпа.
 
    Разбивка по полям Carrot — см. маркеры // STARTUP / // SETSTATE / // PROCESSFRAME.
    ===================================================================== */
@@ -50,9 +53,12 @@ var Logger = {
 
 
 // ---------------------- Settings ----------------------
+var LINES_COMP_NAME = "linesPreComp"; // прекомп со всеми слоями строки
+var SOURCE_LAYER    = "inputext";     // источник строк (в главной композиции)
+
 var padding         = 20;    // расстояние между текстами, px
-var region_start    = 1920;  // старт полосы по X (где начинается движение)
-var region_end      = 0;     // X, где элемент переносится в хвост (0 = за краем экрана)
+var region_start    = 1920;  // старт полосы по X (в координатах прекомпа)
+var region_end      = 0;     // X, где элемент переносится в хвост (0 = за краем)
 var speed           = 3;     // скорость анимации, px/кадр
 var TTL             = 0;     // сколько раз проиграть полосу (0 = бесконечно)
 var text_cont_count = 12;    // количество текст-слоёв (myText 1 … myText N)
@@ -73,26 +79,34 @@ var elementsWidth   = [];
 var lastElement     = 0;
 var readyToOut      = true;
 
-var master          = thisComp.layer("master"); // управляющий null
+var lc;                      // ссылка на прекомп linesPreComp (кэш)
+var master;                  // управляющий null внутри прекомпа
 var cycleOffset     = 0;
 var anim_i          = 0;     // индекс элемента, с которым работает anim
 var frame           = 0;
 var changeLayer     = false;
 
 var clearStat;
-var layerNameSet    = {};    // множество имён слоёв (быстрая проверка наличия)
+var layerNameSet    = {};    // множество имён слоёв прекомпа (быстрая проверка)
 
 
-// Собрать множество имён всех слоёв (для безопасной проверки наличия слоя).
-function buildLayerNameSet(){
-    layerNameSet = {};
-    for (var n = 1; n <= thisComp.numLayers; n++)
-        layerNameSet[thisComp.layer(n).name] = true;
+// Прекомп со слоями строки (кэшируем).
+function getLC(){
+    if (!lc) lc = app.project.item(LINES_COMP_NAME);
+    return lc;
 }
 
-// Безопасно получить слой по имени (null, если такого нет).
+// Собрать множество имён слоёв прекомпа (для безопасной проверки наличия).
+function buildLayerNameSet(){
+    layerNameSet = {};
+    var c = getLC();
+    for (var n = 1; n <= c.numLayers; n++)
+        layerNameSet[c.layer(n).name] = true;
+}
+
+// Безопасно получить слой прекомпа по имени (null, если такого нет).
 function getLayer(name){
-    return layerNameSet[name] ? thisComp.layer(name) : null;
+    return layerNameSet[name] ? getLC().layer(name) : null;
 }
 
 // Подложка для текста: только у нечётных myText, нумерация подложек своя.
@@ -106,8 +120,8 @@ function plateForText(textLayer){
 }
 
 // Растянуть подложку по ширине текста + PLATE_PAD с двух сторон и
-// поставить по центру текста. Координаты локальные: текст и plate
-// привязаны к master, поэтому считаем в системе master.
+// поставить по центру текста. Координаты локальные (внутри прекомпа):
+// текст и plate привязаны к master, поэтому считаем в системе master.
 function placePlate(plate, textLayer){
     if (!plate) return;
 
@@ -144,15 +158,16 @@ function check_out(){
 // Инициализация / очистка полосы.
 function ticker(action){
     buildLayerNameSet();
+    master = getLayer("master");
 
-    // TTL — необязательный управляющий слой; нет слоя -> бесконечно (0).
+    // TTL — необязательный слой прекомпа; нет слоя -> бесконечно (0).
     var ttlLayer = getLayer("TTL");
     TTL = ttlLayer ? parseInt(ttlLayer.property("Source Text").value) : 0;
     if (isNaN(TTL)) TTL = 0;
 
-    // Источник строк — обязателен.
-    var srcLayer = getLayer("ticker_text");
-    if (!srcLayer){ Logger.error("Нет слоя ticker_text"); return; }
+    // Источник строк — в ГЛАВНОЙ композиции.
+    var srcLayer = thisComp.layer(SOURCE_LAYER);
+    if (!srcLayer){ Logger.error("Нет слоя " + SOURCE_LAYER); return; }
     ticker_elements = srcLayer.property("Source Text").value.split(/\r?\n/);
 
     ticker_element = 0;
@@ -215,7 +230,7 @@ function ticker(action){
                 textLayer.property("Source Text").setValue("");
                 textLayer.scale[0] = 100;
                 textLayer.transform.position.x = 0;
-                master.transform.position.x = region_start;
+                if (master) master.transform.position.x = region_start;
 
                 if (plate){
                     plate.scale[0] = 100;
@@ -228,6 +243,7 @@ function ticker(action){
 
 // Кадр анимации: двигаем master; ушедшие за region_end элементы — в хвост.
 function ticker_anim(){
+    if (!master) master = getLayer("master");
     master.transform.position.x -= speed;
 
     var textLayer;
