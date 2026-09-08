@@ -79,21 +79,21 @@ var elementsWidth   = [];
 var lastElement     = 0;
 var readyToOut      = true;
 
-var lc;                      // ссылка на прекомп linesPreComp (кэш)
-var master;                  // управляющий null внутри прекомпа
+var master          = null;  // управляющий null внутри прекомпа
 var cycleOffset     = 0;
 var anim_i          = 0;     // индекс элемента, с которым работает anim
 var frame           = 0;
 var changeLayer     = false;
 
-var clearStat;
+var clearStat       = false;
 var layerNameSet    = {};    // множество имён слоёв прекомпа (быстрая проверка)
 
 
-// Прекомп со слоями строки (кэшируем).
+// Прекомп со слоями строки.
+// ВАЖНО: не кэшируем в отдельную переменную — в движке Carrot чтение
+// объявленной-но-неинициализированной переменной даёт ReferenceError.
 function getLC(){
-    if (!lc) lc = app.project.item(LINES_COMP_NAME);
-    return lc;
+    return app.project.item(LINES_COMP_NAME);
 }
 
 // Собрать множество имён слоёв прекомпа (для безопасной проверки наличия).
