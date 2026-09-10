@@ -167,8 +167,17 @@ class CarrotClient {
                 }
 
                 if (!res.ok) {
-                    throw new CarrotError('HTTP ' + res.status + ' ' + res.statusText,
-                        { httpStatus: res.status });
+                    const preview = text ? text.replace(/\s+/g, ' ').slice(0, 220) : '';
+                    var hint = '';
+                    if (res.status === 404) {
+                        hint = ' Путь не найден. В .env нужен http://хост:порт/api — без /auth/generate на конце и без второго /api.';
+                    }
+                    throw new CarrotError(
+                        'HTTP ' + res.status + ' ' + res.statusText +
+                        ' [' + method + ' ' + url + ']' + hint +
+                        (preview ? ' | ответ: ' + preview : ''),
+                        { httpStatus: res.status, url: url }
+                    );
                 }
 
                 const data = json ? json.data : null;

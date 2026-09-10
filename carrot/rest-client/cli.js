@@ -76,6 +76,44 @@ function parseArgs(argv) {
     return out;
 }
 
+function previewText(text) {
+    return String(text || '').replace(/\s+/g, ' ').slice(0, 160);
+}
+
+async function probe(method, url, body) {
+    try {
+        const res = await fetch(url, {
+            method: method,
+            headers: { 'Content-Type': 'application/json' },
+            body: (body !== undefined) ? JSON.stringify(body) : undefined,
+            signal: AbortSignal.timeout(5000)
+        });
+        const text = await res.text();
+        return {
+            ok: res.ok,
+            status: res.status,
+            ctype: res.headers.get('content-type') || '',
+            text: text,
+            preview: previewText(text)
+        };
+    } catch (err) {
+        const cause = err && err.cause;
+        return { error: (cause && cause.message) || err.message };
+    }
+}
+
+function swaggerAuthPaths(jsonText) {
+    try {
+        const spec = JSON.parse(jsonText);
+        const paths = spec.paths || {};
+        return Object.keys(paths).filter(function (p) {
+            return /auth|generate|token|login/i.test(p);
+        });
+    } catch (e) {
+        return [];
+    }
+}
+
 function usage() {
     console.log([
         'Carrot ticker REST client',
@@ -159,9 +197,62 @@ async function main() {
 
     switch (cmd) {
         case 'check': {
-            console.log('CARROT_BASE_URL из .env: ' + (env('CARROT_BASE_URL') || '(не задан)'));
+            var rawBase = env('CARROT_BASE_URL') || '';
+            console.log('CARROT_BASE_URL из .env: ' + (rawBase || '(не задан)'));
             console.log('куда стучимся:           ' + client.baseUrl);
             console.log('логин:                   ' + (env('CARROT_LOGIN') || '(не задан)'));
+            if (/\/auth\/generate\/?$/i.test(rawBase)) {
+                console.log('ВНИМАНИЕ: в URL не должно быть /auth/generate — это путь запроса, не база.');
+            }
+            if (/\/api\/api(\/|$)/i.test(client.baseUrl)) {
+                console.log('ВНИМАНИЕ: /api повторён дважды.');
+            }
+
+            var origin;
+            try { origin = new URL(client.baseUrl).origin; }
+            catch (e) { throw new Error('Некорректный CARROT_BASE_URL'); }
+
+            var q = '?MessageId=1&Time=' + encodeURIComponent(new Date().toISOString()) +
+                '&SenderId=ticker-client&ReceiverId=carrot-server';
+            var loginBody = {
+                login: env('CARROT_LOGIN') || '',
+                password: env('CARROT_PASSWORD') || '',
+                notificationsEnabled: false
+            };
+            var candidates = [
+                ['POST', client.baseUrl + '/auth/generate' + q],
+                ['POST', origin + '/api/auth/generate' + q],
+                ['POST', origin + '/auth/generate' + q],
+                ['POST', origin + '/api/Auth/Generate' + q],
+                ['GET',  origin + '/swagger/v1/swagger.json'],
+                ['GET',  origin + '/swagger/index.html'],
+                ['GET',  origin + '/api']
+            ];
+            // убрать дубликаты URL
+            var seen = {};
+            console.log('');
+            console.log('Пробую типичные пути:');
+            for (var i = 0; i < candidates.length; i++) {
+                var method = candidates[i][0];
+                var url = candidates[i][1];
+                if (seen[method + ' ' + url]) continue;
+                seen[method + ' ' + url] = true;
+                var r = await probe(method, url, method === 'POST' ? loginBody : undefined);
+                if (r.error) {
+                    console.log(method + ' ' + url);
+                    console.log('  ошибка: ' + r.error);
+                    continue;
+                }
+                console.log(method + ' ' + url);
+                console.log('  HTTP ' + r.status + (r.ctype ? '  ' + r.ctype.split(';')[0] : '') +
+                    (r.preview ? '  ' + r.preview : ''));
+                if (/swagger\.json/i.test(url) && r.ok) {
+                    var found = swaggerAuthPaths(r.text);
+                    if (found.length) console.log('  пути auth в swagger: ' + found.join(', '));
+                }
+            }
+
+            console.log('');
             client.maxRetries = 0;
             await client.authenticate();
             console.log('OK: сервер ответил, токен получен');
