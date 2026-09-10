@@ -29,16 +29,34 @@ Startup / SetState / ProcessFrame внутри Carrot. Этот каталог �
 
 ---
 
-## 1. Установка на компьютере, с которого будешь управлять
+## 1. Установка на Windows
 
-Нужен Node.js 18+ (`node -v`). Затем:
+1. Поставь **Node.js 18 или новее** с [nodejs.org](https://nodejs.org/) (Windows Installer, галочка «Add to PATH»).
+2. Открой **командную строку** или PowerShell и проверь:
 
-```bash
-cd carrot/rest-client
-cp .env.example .env
+```bat
+node -v
 ```
 
-Открой `.env` и заполни как минимум:
+Должно быть `v18` или выше. Если «не является внутренней командой» — Node не в PATH, перелогинься или переустанови с галочкой PATH.
+
+3. Перейди в папку клиента и создай конфиг (команды для **cmd.exe**):
+
+```bat
+cd путь\к\репозиторию\carrot\rest-client
+copy .env.example .env
+notepad .env
+```
+
+В PowerShell то же самое, только копия так:
+
+```powershell
+cd путь\к\репозиторию\carrot\rest-client
+Copy-Item .env.example .env
+notepad .env
+```
+
+4. В `.env` заполни минимум (файл сохрани как **UTF-8**, не «Юникод»/UTF-16 из старого Блокнота):
 
 ```
 CARROT_BASE_URL=http://АДРЕС-СЕРВЕРА:ПОРТ/api
@@ -47,17 +65,22 @@ CARROT_PASSWORD=твой_пароль
 ```
 
 Порт REST в PDF не указан — это адрес, по которому у вас поднят REST API
-Carrot (часто тот же хост, что Carrot Server, но **не** WebSocket-порты
-24710/24712). Если не знаешь URL — спроси у того, кто ставил сервер.
+Carrot (часто тот же хост, что Carrot Server, но **не** порты `24710`/`24712`).
+Если не знаешь URL — спроси у того, кто ставил сервер. С Windows-машины
+сервер должен быть доступен по сети (файрвол, VPN).
 
-Проверка, что сервер отвечает:
+5. Проверь связь. Из той же папки:
 
-```bash
-node cli.js events
+```bat
+cli.cmd events
 ```
 
+или без обёртки: `node cli.js events`.
+
 Должен появиться список событий (`id` и имя). Если 401 — неверный логин/пароль.
-Если не коннектится — неверный `CARROT_BASE_URL`.
+Если не коннектится — неверный `CARROT_BASE_URL` или сервер недоступен с этой машины.
+
+Дальше везде в примерах можно писать `cli.cmd` вместо `node cli.js` — это одно и то же, `cli.cmd` ещё включает UTF-8 в консоли (кириллица в `add "..."`).
 
 ---
 
@@ -65,9 +88,9 @@ node cli.js events
 
 ### Строки (событие + переменная)
 
-```bash
-node cli.js events                  # найти имя/id события бегущей строки
-node cli.js vars --event-name "ИМЯ" # посмотреть переменные
+```bat
+.\cli.cmd events
+.\cli.cmd vars --event-name "ИМЯ"
 ```
 
 В `.env` пропиши **одно** из:
@@ -86,8 +109,8 @@ CARROT_TICKER_VAR=inputext
 
 Проверка:
 
-```bash
-node cli.js list
+```bat
+.\cli.cmd list
 ```
 
 ### Эфир (элемент сценария)
@@ -98,9 +121,9 @@ node cli.js list
 
 **B. Не знаешь** — найди плейлист и элемент:
 
-```bash
-node cli.js playlists
-node cli.js find-item --playlist GUID_ПЛЕЙЛИСТА --event-name "ИМЯ"
+```bat
+.\cli.cmd playlists
+.\cli.cmd find-item --playlist GUID_ПЛЕЙЛИСТА --event-name "ИМЯ"
 ```
 
 В `.env`:
@@ -117,18 +140,19 @@ CARROT_PLAYLIST_ID=guid-плейлиста
 
 ## 3. Повседневная работа
 
-Все команды ниже запускаются из `carrot/rest-client` (после заполненного `.env`).
+Все команды ниже запускаются из папки `carrot\rest-client` (после заполненного `.env`).
+В **cmd** можно писать `cli.cmd ...`, в **PowerShell** — `.\cli.cmd ...`. Текст в кавычках — **двойных**.
 
 ### Строки
 
-```bash
-node cli.js list                         # текущие строки с индексами
-node cli.js add "Срочная новость: ..."   # в конец
-node cli.js add "Молния!" --at 0         # в начало (позиция 0)
-node cli.js rm 2                         # удалить строку с индексом 2
-node cli.js rm --match "устарело"        # удалить все, где есть подстрока
-node cli.js set-file lines.txt           # заменить всё содержимым файла
-node cli.js clear                        # очистить
+```bat
+.\cli.cmd list
+.\cli.cmd add "Срочная новость: ..."
+.\cli.cmd add "Молния!" --at 0
+.\cli.cmd rm 2
+.\cli.cmd rm --match "устарело"
+.\cli.cmd set-file lines.txt
+.\cli.cmd clear
 ```
 
 `--at` у команды `add` — это **позиция строки**, не время эфира.
@@ -142,21 +166,21 @@ node cli.js clear                        # очистить
 
 Обычный цикл:
 
-```bash
-node cli.js status     # Unloaded / Loading / Ready / Active
-node cli.js air-on     # прогрузить (если надо) → дождаться Ready → выдать
-node cli.js air-off    # снять (Closing State / OUT)
-node cli.js unload     # выгрузить из памяти, когда строка больше не нужна
+```bat
+.\cli.cmd status
+.\cli.cmd air-on
+.\cli.cmd air-off
+.\cli.cmd unload
 ```
 
 Тонкие команды, если хочешь управлять шагами сам:
 
-```bash
-node cli.js load                 # только прогрузить
-node cli.js in                   # выдать (элемент уже должен быть Ready)
-node cli.js out                  # снять
-node cli.js in --at 2026-09-10T12:00:00Z --duration 3600
-node cli.js out --at 2026-09-10T12:05:00Z
+```bat
+.\cli.cmd load
+.\cli.cmd in
+.\cli.cmd out
+.\cli.cmd in --at 2026-09-10T12:00:00Z --duration 3600
+.\cli.cmd out --at 2026-09-10T12:05:00Z
 ```
 
 `--at` у `in` / `out` / `air-on` / `air-off` — это **UTC-время** выдачи/снятия.
@@ -177,7 +201,8 @@ node cli.js out --at 2026-09-10T12:05:00Z
 
 | Файл                 | Нужен тебе? | Зачем                                        |
 | -------------------- | ----------- | -------------------------------------------- |
-| `cli.js`             | да          | запускаешь команды (`node cli.js ...`)       |
+| `cli.cmd`            | да          | запуск на Windows (`.\cli.cmd list`)         |
+| `cli.js`             | да          | сама программа (или `node cli.js ...`)       |
 | `.env`               | да          | **создаёшь сам** из `.env.example`, секреты  |
 | `.env.example`       | как образец | в git, без паролей                           |
 | `carrot-client.js`   | нет         | ядро REST (логин, запросы)                   |

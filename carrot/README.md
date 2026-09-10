@@ -303,11 +303,14 @@ centerRowX([thisComp.layer("Date"), thisComp.layer("Time")], 1117, 20);
 Без зависимостей, нужен Node.js >= 18. Как пользоваться — по шагам в
 [`rest-client/README.md`](./rest-client/README.md). Коротко:
 
-```bash
-cd carrot/rest-client && cp .env.example .env   # URL, логин, событие, элемент
-node cli.js events / vars / playlists           # найти id
-node cli.js list / add "..." / rm 2 / clear     # строки
-node cli.js air-on / air-off / status / unload  # эфир
+```bat
+cd carrot\rest-client
+copy .env.example .env
+.\cli.cmd events
+.\cli.cmd list
+.\cli.cmd add "..."
+.\cli.cmd air-on
+.\cli.cmd air-off
 ```
 
 Чтобы менять строки, пока графика уже в эфире, у события должен быть включён

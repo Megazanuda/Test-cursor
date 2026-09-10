@@ -37,7 +37,8 @@ function loadEnv() {
     ];
     for (const file of candidates) {
         if (!fs.existsSync(file)) continue;
-        const raw = fs.readFileSync(file, 'utf8');
+        var raw = fs.readFileSync(file, 'utf8');
+        if (raw.charCodeAt(0) === 0xFEFF) raw = raw.slice(1); // BOM из Блокнота Windows
         raw.split(/\r?\n/).forEach(function (line) {
             const m = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)\s*$/);
             if (!m) return;
