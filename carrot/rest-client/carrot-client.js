@@ -211,6 +211,23 @@ class CarrotClient {
 
     async authenticate() {
         if (!this.login || !this.password) throw new Error('login/password обязательны');
+        try {
+            return await this._authenticateOnce();
+        } catch (err) {
+            // PDF пишет базу /api, живые инсталляции часто без префикса (см. swagger /auth/generate).
+            if (err && err.httpStatus === 404 && /\/api$/i.test(this.baseUrl)) {
+                this.baseUrl = this.baseUrl.replace(/\/api$/i, '');
+                return await this._authenticateOnce();
+            }
+            if (err && err.httpStatus === 404 && !/\/api$/i.test(this.baseUrl)) {
+                this.baseUrl = this.baseUrl + '/api';
+                return await this._authenticateOnce();
+            }
+            throw err;
+        }
+    }
+
+    async _authenticateOnce() {
         const data = await this._request('POST', '/auth/generate', {
             login: this.login,
             password: this.password,

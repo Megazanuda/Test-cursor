@@ -248,7 +248,11 @@ async function main() {
                     (r.preview ? '  ' + r.preview : ''));
                 if (/swagger\.json/i.test(url) && r.ok) {
                     var found = swaggerAuthPaths(r.text);
-                    if (found.length) console.log('  пути auth в swagger: ' + found.join(', '));
+                    if (found.length) {
+                        console.log('  пути auth в swagger: ' + found.join(', '));
+                        var needApi = found.some(function (p) { return p.indexOf('/api/') === 0; });
+                        console.log('  поставь в .env: CARROT_BASE_URL=' + origin + (needApi ? '/api' : ''));
+                    }
                 }
             }
 
