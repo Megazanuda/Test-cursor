@@ -287,6 +287,26 @@ fitTickerPlate(thisComp.layer("Text 2"), thisComp.layer("Plate 2"), 400, 26);
 centerRowX([thisComp.layer("Date"), thisComp.layer("Time")], 1117, 20);
 ```
 
+## REST-клиент бегущей строки (`rest-client/`)
+
+Каталог [`rest-client/`](./rest-client) — Node.js REST-клиент Carrot Broadcast
+для управления строками бегущей строки **на лету** (добавить/убрать/заменить),
+не открывая интерфейс Carrot. Строки лежат в одной многострочной переменной
+события (`inputext`), клиент читает её, меняет набор строк и пишет обратно через
+`PATCH /events/{id}/editVariables`. Без зависимостей, нужен Node.js >= 18.
+
+```bash
+cd carrot/rest-client && cp .env.example .env   # заполнить URL/логин/событие
+node cli.js list                 # показать строки
+node cli.js add "Срочно: ..."    # добавить строку
+node cli.js rm 2                  # удалить строку по индексу
+node cli.js rm --match "старое"   # удалить по подстроке
+node cli.js clear                # очистить
+```
+
+Подробности — в [`rest-client/README.md`](./rest-client/README.md). Чтобы менять
+переменные во время эфира, у события должен быть включён `allowRuntimeChange`.
+
 ## История правок
 
 - **v4:** причёсан и разбит на функции блок раскладки (плашка/строки/время),
