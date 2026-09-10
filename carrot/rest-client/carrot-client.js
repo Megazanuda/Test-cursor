@@ -152,8 +152,15 @@ class CarrotClient {
                 if (text) {
                     try { json = JSON.parse(text); }
                     catch (e) {
+                        const ctype = res.headers.get('content-type') || '(нет)';
+                        const preview = text.replace(/\s+/g, ' ').slice(0, 220);
+                        const looksHtml = /<html|<!doctype html|<head|<body/i.test(text);
                         throw new CarrotError(
-                            'Ответ не JSON (HTTP ' + res.status + '). Это не REST API Carrot. URL: ' + url,
+                            'Ответ не JSON (HTTP ' + res.status + ', Content-Type: ' + ctype + '). ' +
+                            (looksHtml
+                                ? 'Это HTML — веб-интерфейс Carrot, не REST. Порт веб-плейлиста (часто 8088) сюда не подходит; нужен отдельный URL REST API из документации (/api + JWT). '
+                                : '') +
+                            'URL: ' + url + ' | начало ответа: ' + preview,
                             { httpStatus: res.status, url: url }
                         );
                     }
