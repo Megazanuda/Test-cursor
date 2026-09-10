@@ -221,14 +221,14 @@ fitPlaska(thisComp.layer("Name"), thisComp.layer("Plaska"), 1920, 30);
 источника задаются вверху (`LINES_COMP_NAME`, `SOURCE_LAYER`). Разбит
 маркерами `// STARTUP` / `// SETSTATE` / `// PROCESSFRAME`.
 
-Зелёная подложка (`dark_green_line`) стоит под **каждым нечётным** текстом,
-нумерация подложек своя:
+Зелёная подложка (`dark_green_line`) стоит под **каждым** текстом, номер
+совпадает (1:1):
 
 ```
 myText 1 -> dark_green_line 1
-myText 3 -> dark_green_line 2
-myText 5 -> dark_green_line 3
-...        (myText N, N нечётное -> dark_green_line ((N+1)/2))
+myText 2 -> dark_green_line 2
+myText 3 -> dark_green_line 3
+...        (myText N -> dark_green_line N)
 ```
 
 Подложка:

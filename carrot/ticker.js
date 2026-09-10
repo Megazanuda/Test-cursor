@@ -109,14 +109,12 @@ function getLayer(name){
     return layerNameSet[name] ? getLC().layer(name) : null;
 }
 
-// Подложка для текста: только у нечётных myText, нумерация подложек своя.
-//   myText 1 -> dark_green_line 1,  myText 3 -> dark_green_line 2, ...
+// Подложка для текста: у каждого текста своя, номер совпадает.
+//   myText 1 -> dark_green_line 1,  myText 2 -> dark_green_line 2, ...
 function plateForText(textLayer){
     var m = textLayer.name.match(/^myText\s+(\d+)$/);
     if (!m) return null;
-    var n = parseInt(m[1], 10);
-    if (n % 2 === 0) return null;                    // чётные — без подложки
-    return getLayer("dark_green_line " + ((n + 1) / 2));
+    return getLayer("dark_green_line " + m[1]);
 }
 
 // Растянуть подложку по ширине текста + PLATE_PAD с двух сторон и
