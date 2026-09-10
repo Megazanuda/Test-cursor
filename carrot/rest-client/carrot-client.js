@@ -185,6 +185,48 @@ class CarrotClient {
         const hit = (list || []).find(function (h) { return h.name === name; });
         return hit ? hit.id : null;
     }
+
+    /* ---------------- Плейлисты / истории (для поиска элемента) ---------------- */
+
+    listPlaylists() {
+        return this._request('GET', '/playlists');
+    }
+
+    getPlaylist(playlistId) {
+        return this._request('GET', '/playlists/' + encodeURIComponent(playlistId));
+    }
+
+    getStory(storyId) {
+        return this._request('GET', '/stories/' + encodeURIComponent(storyId));
+    }
+
+    /* ---------------- Элемент сценария (проигрывание) ---------------- */
+
+    getItem(itemId) {
+        return this._request('GET', '/items/' + encodeURIComponent(itemId));
+    }
+
+    // Прогрузить элемент (готовит шаблон к эфиру: Unloaded -> Loading -> Ready).
+    loadItem(itemId) {
+        return this._request('POST', '/items/' + encodeURIComponent(itemId) + '/load');
+    }
+
+    // Выдать в эфир. body: { timeStamp?, duration? } — можно не передавать.
+    takeInItem(itemId, body) {
+        return this._request('POST',
+            '/items/' + encodeURIComponent(itemId) + '/takeIn', body || {});
+    }
+
+    // Снять с эфира (Closing State). body: { timeStamp? } — можно не передавать.
+    takeOutItem(itemId, body) {
+        return this._request('POST',
+            '/items/' + encodeURIComponent(itemId) + '/takeOut', body || {});
+    }
+
+    // Выгрузить элемент (освобождает память).
+    unloadItem(itemId) {
+        return this._request('POST', '/items/' + encodeURIComponent(itemId) + '/unload');
+    }
 }
 
 module.exports = { CarrotClient, CarrotError, ERROR_NAMES };

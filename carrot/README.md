@@ -290,22 +290,28 @@ centerRowX([thisComp.layer("Date"), thisComp.layer("Time")], 1117, 20);
 ## REST-клиент бегущей строки (`rest-client/`)
 
 Каталог [`rest-client/`](./rest-client) — Node.js REST-клиент Carrot Broadcast
-для управления строками бегущей строки **на лету** (добавить/убрать/заменить),
-не открывая интерфейс Carrot. Строки лежат в одной многострочной переменной
-события (`inputext`), клиент читает её, меняет набор строк и пишет обратно через
-`PATCH /events/{id}/editVariables`. Без зависимостей, нужен Node.js >= 18.
+для управления бегущей строкой **с компьютера**, без открытия интерфейса Carrot.
+Это отдельная программа, не скрипт шаблона.
+
+Умеет:
+
+- менять строки на лету (`list` / `add` / `rm` / `clear`) через переменную
+  события (`inputext`);
+- выдавать и снимать строку с эфира (`air-on` / `air-off`) через элемент
+  сценария (`load` → `takeIn` → `takeOut` → `unload`).
+
+Без зависимостей, нужен Node.js >= 18. Как пользоваться — по шагам в
+[`rest-client/README.md`](./rest-client/README.md). Коротко:
 
 ```bash
-cd carrot/rest-client && cp .env.example .env   # заполнить URL/логин/событие
-node cli.js list                 # показать строки
-node cli.js add "Срочно: ..."    # добавить строку
-node cli.js rm 2                  # удалить строку по индексу
-node cli.js rm --match "старое"   # удалить по подстроке
-node cli.js clear                # очистить
+cd carrot/rest-client && cp .env.example .env   # URL, логин, событие, элемент
+node cli.js events / vars / playlists           # найти id
+node cli.js list / add "..." / rm 2 / clear     # строки
+node cli.js air-on / air-off / status / unload  # эфир
 ```
 
-Подробности — в [`rest-client/README.md`](./rest-client/README.md). Чтобы менять
-переменные во время эфира, у события должен быть включён `allowRuntimeChange`.
+Чтобы менять строки, пока графика уже в эфире, у события должен быть включён
+`allowRuntimeChange`.
 
 ## История правок
 
