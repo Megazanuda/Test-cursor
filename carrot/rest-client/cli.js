@@ -83,6 +83,7 @@ function usage() {
         'Использование: node cli.js <команда> [аргументы]',
         '',
         'Команды:',
+        '  check                       проверить URL и авторизацию (диагностика fetch failed)',
         '  events                      список событий (id + имя)',
         '  vars                        переменные выбранного события (имя/тип/значение)',
         '  playlists                   список плейлистов (id + имя)',
@@ -121,6 +122,9 @@ async function main() {
         return;
     }
 
+    if (env('CARROT_INSECURE_TLS') === '1')
+        process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+
     const client = new CarrotClient({
         baseUrl: env('CARROT_BASE_URL'),
         login: env('CARROT_LOGIN'),
@@ -154,6 +158,16 @@ async function main() {
     }
 
     switch (cmd) {
+        case 'check': {
+            console.log('CARROT_BASE_URL из .env: ' + (env('CARROT_BASE_URL') || '(не задан)'));
+            console.log('куда стучимся:           ' + client.baseUrl);
+            console.log('логин:                   ' + (env('CARROT_LOGIN') || '(не задан)'));
+            client.maxRetries = 0;
+            await client.authenticate();
+            console.log('OK: сервер ответил, токен получен');
+            break;
+        }
+
         case 'events': {
             const list = await client.listEvents();
             if (!list || !list.length) { console.log('(событий нет)'); break; }

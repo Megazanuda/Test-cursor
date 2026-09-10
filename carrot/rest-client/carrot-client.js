@@ -36,6 +36,8 @@ class CarrotError extends Error {
         this.httpStatus = opts.httpStatus;
         this.errorCode = opts.errorCode;
         this.description = opts.description;
+        this.url = opts.url;
+        this.code = opts.code;
     }
 }
 
@@ -43,12 +45,47 @@ function sleep(ms) {
     return new Promise(function (r) { setTimeout(r, ms); });
 }
 
+// Windows: Node fetch часто идёт на ::1 (IPv6), а сервер слушает только IPv4.
+function normalizeBaseUrl(url) {
+    return String(url).replace(/\/+$/, '')
+        .replace(/^(https?:\/\/)localhost\b/i, '$1127.0.0.1');
+}
+
+function isFatalNet(code) {
+    return /^(ECONNREFUSED|ENOTFOUND|EAI_AGAIN|ENETUNREACH|EHOSTUNREACH|ERR_INVALID_URL|UNABLE_TO_VERIFY_LEAF_SIGNATURE|CERT_HAS_EXPIRED|CERT_UNTRUSTED)$/.test(code || '');
+}
+
+function wrapNetError(err, url) {
+    const cause = err && err.cause;
+    const code = (cause && cause.code) || err.code || '';
+    const detail = (cause && cause.message) || err.message || String(err);
+    var hint = '';
+    if (code === 'ECONNREFUSED') {
+        hint = ' На этом адресе никто не слушает. В .env порт 8080 — заглушка, поставь реальный URL REST API Carrot (не порты 24710/24712).';
+    } else if (code === 'ENOTFOUND' || code === 'EAI_AGAIN') {
+        hint = ' Имя хоста не резолвится. Проверь CARROT_BASE_URL.';
+    } else if (code === 'ETIMEDOUT' || code === 'UND_ERR_CONNECT_TIMEOUT') {
+        hint = ' Таймаут. Сервер недоступен с этой машины (файрвол, VPN, неверный IP).';
+    } else if (/CERT|UNABLE_TO_VERIFY/i.test(code + detail)) {
+        hint = ' HTTPS с самоподписанным сертификатом. Добавь в .env CARROT_INSECURE_TLS=1';
+    } else if (err.name === 'AbortError' || /aborted/i.test(detail)) {
+        hint = ' Таймаут ожидания ответа. Проверь CARROT_BASE_URL и доступность сервера.';
+    } else if (detail === 'fetch failed') {
+        hint = ' Нет соединения. Проверь CARROT_BASE_URL командой: node cli.js check';
+    }
+    return new CarrotError(
+        'Сеть: ' + (code ? code + ' — ' : '') + detail + ' [' + url + ']' + hint,
+        { url: url, code: code }
+    );
+}
+
 class CarrotClient {
     constructor(opts) {
         opts = opts || {};
         if (!opts.baseUrl) throw new Error('baseUrl обязателен (напр. http://host:port/api)');
 
-        this.baseUrl = String(opts.baseUrl).replace(/\/+$/, ''); // без хвостовых слэшей
+        this.baseUrl = normalizeBaseUrl(opts.baseUrl);
+        this.timeoutMs = (opts.timeoutMs != null) ? opts.timeoutMs : 10000;
         this.login = opts.login;
         this.password = opts.password;
         this.notificationsEnabled = !!opts.notificationsEnabled;
@@ -88,11 +125,19 @@ class CarrotClient {
         let lastErr;
         for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
             try {
-                const res = await fetch(url, {
-                    method: method,
-                    headers: headers,
-                    body: (body !== undefined) ? JSON.stringify(body) : undefined
-                });
+                const ac = new AbortController();
+                const t = setTimeout(function () { ac.abort(); }, this.timeoutMs);
+                var res;
+                try {
+                    res = await fetch(url, {
+                        method: method,
+                        headers: headers,
+                        body: (body !== undefined) ? JSON.stringify(body) : undefined,
+                        signal: ac.signal
+                    });
+                } finally {
+                    clearTimeout(t);
+                }
 
                 // Токен протух — обновим и повторим ровно один раз.
                 if (res.status === 401 && needAuth && !opts._retriedAuth) {
@@ -103,7 +148,16 @@ class CarrotClient {
                 }
 
                 const text = await res.text();
-                const json = text ? JSON.parse(text) : null;
+                var json = null;
+                if (text) {
+                    try { json = JSON.parse(text); }
+                    catch (e) {
+                        throw new CarrotError(
+                            'Ответ не JSON (HTTP ' + res.status + '). Это не REST API Carrot. URL: ' + url,
+                            { httpStatus: res.status, url: url }
+                        );
+                    }
+                }
 
                 if (!res.ok) {
                     throw new CarrotError('HTTP ' + res.status + ' ' + res.statusText,
@@ -124,12 +178,11 @@ class CarrotClient {
 
                 return data;
             } catch (err) {
-                lastErr = err;
-                if (err instanceof CarrotError) throw err;   // доменные/HTTP не ретраим
-                if (attempt < this.maxRetries) {             // сетевые — ретрай с backoff
-                    await sleep(1000 * Math.pow(2, attempt));
-                    continue;
-                }
+                if (err instanceof CarrotError) throw err;
+                const wrapped = wrapNetError(err, url);
+                lastErr = wrapped;
+                if (isFatalNet(wrapped.code) || attempt >= this.maxRetries) throw wrapped;
+                await sleep(1000 * Math.pow(2, attempt));
             }
         }
         throw lastErr;
