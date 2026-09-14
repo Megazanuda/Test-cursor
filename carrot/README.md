@@ -311,7 +311,12 @@ copy .env.example .env
 .\cli.cmd add "..."
 .\cli.cmd air-on
 .\cli.cmd air-off
+.\cli.cmd stress --every 5
 ```
+
+Стресс-тест: `stress --every 5` каждые 5 минут подменяет весь текст новостей
+(файл с блоками через `---` или автогенератор). Подробности — в
+[`rest-client/README.md`](./rest-client/README.md).
 
 Чтобы менять строки, пока графика уже в эфире, у события должен быть включён
 `allowRuntimeChange`.
