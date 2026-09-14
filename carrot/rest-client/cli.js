@@ -28,6 +28,7 @@ const path = require('path');
 const { CarrotClient } = require('./carrot-client');
 const { TickerClient } = require('./ticker');
 const { PlayoutClient, STATUS_NAME } = require('./playout');
+const { runStress, parseMinutes } = require('./stress');
 
 // Минимальная загрузка .env (без зависимостей). Не перетирает уже заданные env.
 function loadEnv() {
@@ -131,6 +132,8 @@ function usage() {
         '  rm --match "substr"         удалить все строки, содержащие подстроку',
         '  set-file <path>             заменить все строки содержимым файла',
         '  clear                       очистить все строки',
+        '  stress [--every 5] [--file path] [--rounds N] [--lines N] [--once]',
+        '                              стресс-тест: каждые N минут менять весь текст новостей',
         '',
         'Эфир (элемент сценария):',
         '  status                      статус элемента (Unloaded/Loading/Ready/Active)',
@@ -336,6 +339,25 @@ async function main() {
         case 'clear': {
             await ticker.clear();
             console.log('OK, очищено');
+            break;
+        }
+
+        case 'stress': {
+            var everyMin = parseMinutes(args.flags);
+            var file = (args.flags.file != null && args.flags.file !== true)
+                ? String(args.flags.file) : null;
+            if (!file && args._[1]) file = args._[1];
+            var rounds = (args.flags.rounds != null && args.flags.rounds !== true)
+                ? parseInt(args.flags.rounds, 10) : 0;
+            var linesN = (args.flags.lines != null && args.flags.lines !== true)
+                ? parseInt(args.flags.lines, 10) : 6;
+            await runStress(ticker, {
+                everyMin: everyMin,
+                file: file,
+                rounds: Number.isNaN(rounds) ? 0 : rounds,
+                lines: Number.isNaN(linesN) ? 6 : linesN,
+                once: !!args.flags.once
+            });
             break;
         }
 
