@@ -466,18 +466,18 @@ function ticker_anim()
 				if (anim_i >= textLayers.length)
 					anim_i = 0;
 
-				var screenX = textLayer.transform.position.x + master.transform.position.x;
-				if (region_start < screenX && screenX < region_start_gap)
-				{
-					changeLayer = false;
-					lastElement = anim_i;
-					readyToOut = true;
+				// После рецикла сразу включаем слот обратно.
+				// (Старое "a < x < b" в JS почти всегда было true и как раз
+				// включало текст; узкое окно region_start..gap ломало это —
+				// плашка жила через fixMarkedText, а текст оставался opacity=0.)
+				changeLayer = false;
+				lastElement = anim_i;
+				readyToOut = true;
 
-					textLayer.Enabled = true;
-					textLayer.transform.opacity = 100;
-					if (plate) plate.Enabled = true;
-					textVisGap = 0;
-				}
+				textLayer.Enabled = true;
+				textLayer.transform.opacity = 100;
+				if (plate) plate.Enabled = true;
+				textVisGap = 0;
 			}
 		}
 	}
