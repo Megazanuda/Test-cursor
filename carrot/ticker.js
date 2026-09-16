@@ -1,11 +1,9 @@
 /* =====================================================================
    Бегущая строка — Startup
    ---------------------------------------------------------------------
-   Пустой ввод:
-     - richtext "<div></div>" / &nbsp; снимается до plain;
-     - при 0 строк → enterIdle(): все слоты скрыты, master сброшен,
-       анимация не рециклит пустые слои;
-     - когда текст снова появляется → ticker("init") заново.
+   Пустой текст: sourceRectAtTime().width = -Infinity (не 0).
+   Все замеры ширины идут через safeTextWidth().
+   Пустой ввод → enterIdle() (стоп + сброс); текст снова есть → init.
    ===================================================================== */
 
 var Logger =
@@ -118,23 +116,11 @@ function rawInputText(src)
 	return t == null ? "" : String(t);
 }
 
-// Нормализация: richtext → plain, UPPERCASE, без пустых строк.
-// Пустой ввод в Carrot часто приходит как "<div></div>" / "&nbsp;" —
-// без снятия тегов split даёт "мусорную" строку с width≈0 и ломает полосу.
+// Нормализация inputext: UPPERCASE, trim, без пустых строк.
+// "".split(/\r?\n/) -> [""] — отбрасываем.
 function parseTickerLines(raw)
 {
-	var text = (raw == null ? "" : String(raw));
-
-	text = text
-		.replace(/<br\s*\/?>/gi, "\n")
-		.replace(/<\/div\s*>/gi, "\n")
-		.replace(/<div\b[^>]*>/gi, "")
-		.replace(/<\/?p\b[^>]*>/gi, "\n")
-		.replace(/<[^>]+>/g, "")
-		.replace(/&nbsp;/gi, " ")
-		.replace(/&amp;/gi, "&")
-		.replace(/&lt;/gi, "<")
-		.replace(/&gt;/gi, ">")
+	var text = (raw == null ? "" : String(raw))
 		.replace(/\r\n/g, "\n")
 		.replace(/\r/g, "\n")
 		.replace(/\n\s*\n+/g, "\n")
@@ -148,7 +134,7 @@ function parseTickerLines(raw)
 
 	for (var i = 0; i < rawLines.length; i++)
 	{
-		var t = rawLines[i].replace(/\s+/g, " ").trim();
+		var t = rawLines[i].trim();
 		if (t) lines.push(t);
 	}
 	return lines;
@@ -162,8 +148,6 @@ function readInputLines()
 	var lines = parseTickerLines(rawInputText(src));
 	var normalized = lines.join("\n");
 
-	// Пишем обратно уже очищенный plain-текст, чтобы пустой richtext
-	// не продолжал приезжать как "<div></div>".
 	try
 	{
 		if (rawInputText(src) !== normalized)
@@ -175,6 +159,17 @@ function readInputLines()
 	catch (e2) {}
 
 	return lines;
+}
+
+// Пустой текст в движке даёт sourceRect.width = -Infinity (не 0!).
+// Любая арифметика с этим убивает elementsWidth / total_width / позиции.
+function safeTextWidth(textLayer)
+{
+	if (!textLayer) return 0;
+	var w = 0;
+	try { w = textLayer.sourceRectAtTime().width; } catch (e) { return 0; }
+	if (!isFinite(w) || w < 0) return 0;
+	return w;
 }
 
 function plateForText(textLayer)
@@ -264,9 +259,14 @@ function placePlate(plate, textLayer)
 {
 	if (!plate) return;
 
-	var r = textLayer.sourceRectAtTime();
+	var w = safeTextWidth(textLayer);
+	if (w <= 0)
+	{
+		plate.Enabled = false;
+		return;
+	}
 
-	var scaleX = (r.width + PLATE_PAD * 2) / PLATE_BASE_PX * 100;
+	var scaleX = (w + PLATE_PAD * 2) / PLATE_BASE_PX * 100;
 	if (PLATE_BASE_PX > 0 && isFinite(scaleX) && scaleX > 0)
 		plate.scale[0] = scaleX;
 
@@ -279,8 +279,8 @@ function total_width()
 
 	for (var i = 0; i < textLayers.length; i++)
 	{
-		var w = textLayers[i].sourceRectAtTime().width;
-		totalWidth += w + padding;
+		// Нельзя брать raw sourceRect.width: у пустого текста это -Infinity.
+		totalWidth += safeTextWidth(textLayers[i]) + padding;
 	}
 	return totalWidth;
 }
@@ -407,10 +407,9 @@ function ticker(action)
 
 				fixMarkedText(plate, textLayer);
 
-				var textRect     = textLayer.sourceRectAtTime();
-				var textWidth    = textRect.width;
+				var textWidth    = safeTextWidth(textLayer);
 				var layerPos     = totalWidth;
-				var elementWidth = Math.max(textWidth, 1) + padding;
+				var elementWidth = textWidth + padding;
 
 				elementsWidth.push(elementWidth);
 
@@ -501,9 +500,8 @@ function ticker_anim()
 			textLayer.property("Source Text").setValue(ticker_elements[ticker_element]);
 			fixMarkedText(plate, textLayer);
 
-			var textRect       = textLayer.sourceRectAtTime();
-			var textLayerWidth = textRect.width;
-			elementsWidth[anim_i] = Math.max(textLayerWidth, 1) + padding;
+			var textLayerWidth = safeTextWidth(textLayer);
+			elementsWidth[anim_i] = textLayerWidth + padding;
 
 			placePlate(plate, textLayer);
 			plateColor(plate, textLayer);
