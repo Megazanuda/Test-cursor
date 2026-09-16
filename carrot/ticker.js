@@ -81,7 +81,8 @@ var changeLayer     = false;
 
 var clearStat;
 var layerNameSet    = {};    // множество имён слоёв (быстрая проверка наличия)
-var tickerIdle      = false; // true = ввод пуст, полоса остановлена и ждёт текст
+var tickerIdle      = false; // true только если полоса ещё ни разу не собрана / после clear
+var lastGoodLines   = [];    // последний непустой набор строк (чтобы пустой ввод не стирал эфир)
 
 
 function getLC()
@@ -146,17 +147,23 @@ function readInputLines()
 	if (!src) return [];
 
 	var lines = parseTickerLines(rawInputText(src));
-	var normalized = lines.join("\n");
 
-	try
+	// Пустой ввод НЕ трогаем слой-источник агрессивно и НЕ затираем lastGoodLines —
+	// полоса продолжает крутить последний хороший набор, пока не придёт новый текст.
+	if (lines.length)
 	{
-		if (rawInputText(src) !== normalized)
+		lastGoodLines = lines.slice(0);
+		var normalized = lines.join("\n");
+		try
 		{
-			src.TextSource.Text = normalized;
-			try { src.property("Source Text").setValue(normalized); } catch (e) {}
+			if (rawInputText(src) !== normalized)
+			{
+				src.TextSource.Text = normalized;
+				try { src.property("Source Text").setValue(normalized); } catch (e) {}
+			}
 		}
+		catch (e2) {}
 	}
-	catch (e2) {}
 
 	return lines;
 }
@@ -442,20 +449,17 @@ function ticker_anim()
 {
 	ticker_elements = readInputLines();
 
-	// Пустой ввод: не рециклим пустые слоты — полностью останавливаем полосу.
-	if (!ticker_elements.length)
+	// Полоса ещё не собрана (старт с пустым вводом) — ждём первый текст.
+	if (tickerIdle || !textLayers.length || !elementsWidth.length)
 	{
-		if (!tickerIdle || textLayers.length)
-			enterIdle();
+		if (ticker_elements.length > 0)
+			ticker("init");
 		return;
 	}
 
-	// Текст снова появился после idle / пустого init — собираем полосу заново.
-	if (tickerIdle || !textLayers.length || !elementsWidth.length)
-	{
-		ticker("init");
-		return;
-	}
+	// Пул строк для рецикла: текущий ввод, а если его очистили —
+	// последний хороший набор. Пустую строку в слои НЕ подставляем.
+	var pool = ticker_elements.length ? ticker_elements : lastGoodLines;
 
 	master.transform.position.x -= speed;
 	var textLayer;
@@ -465,7 +469,7 @@ function ticker_anim()
 
 	if (master.transform.position.x + elementsWidth[anim_i] + cycleOffset < region_visible_end)
 	{
-		if (ticker_element >= ticker_elements.length)
+		if (pool.length && ticker_element >= pool.length)
 		{
 			ticker_element = 0;
 			TTL > 0 && (ticker_counter += 1);
@@ -495,30 +499,42 @@ function ticker_anim()
 
 			cycleOffset += elementsWidth[anim_i];
 
-			if (ticker_element >= ticker_elements.length) ticker_element = 0;
+			if (pool.length)
+			{
+				if (ticker_element >= pool.length) ticker_element = 0;
 
-			textLayer.property("Source Text").setValue(ticker_elements[ticker_element]);
-			fixMarkedText(plate, textLayer);
+				textLayer.property("Source Text").setValue(pool[ticker_element]);
+				fixMarkedText(plate, textLayer);
+				ticker_element += 1;
+			}
+			// else: ввод пуст и lastGood тоже пуст — текст на слое не трогаем
 
 			var textLayerWidth = safeTextWidth(textLayer);
-			elementsWidth[anim_i] = textLayerWidth + padding;
+			// защита от -Infinity / пустого замера
+			elementsWidth[anim_i] = (textLayerWidth > 0 ? textLayerWidth : 0) + padding;
+			if (elementsWidth[anim_i] < padding) elementsWidth[anim_i] = padding;
 
-			placePlate(plate, textLayer);
-			plateColor(plate, textLayer);
+			if (textLayerWidth > 0)
+			{
+				placePlate(plate, textLayer);
+				plateColor(plate, textLayer);
+				textLayer.Enabled = true;
+				textLayer.transform.opacity = 100;
+				if (plate) plate.Enabled = true;
+			}
+			else
+			{
+				// слой реально пустой — прячем только его, не всю полосу
+				hideSlot(textLayer, plate);
+			}
 
 			anim_i += 1;
-			ticker_element += 1;
-
 			if (anim_i >= textLayers.length)
 				anim_i = 0;
 
 			changeLayer = false;
 			lastElement = anim_i;
 			readyToOut = true;
-
-			textLayer.Enabled = true;
-			textLayer.transform.opacity = 100;
-			if (plate) plate.Enabled = true;
 			textVisGap = 0;
 		}
 	}
