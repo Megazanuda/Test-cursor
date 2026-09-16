@@ -1,15 +1,11 @@
 /* =====================================================================
-   Бегущая строка — Startup (актуальная версия пользователя + фикс пустого ввода)
+   Бегущая строка — Startup
    ---------------------------------------------------------------------
-   Проблема: при очистке inputext split давал [""], пустая строка попадала
-   в слои с width≈0 → ломались elementsWidth / cycleOffset / перенос в хвост.
-
-   Фикс:
-     - parseTickerLines() отбрасывает пустые строки;
-     - при пустом вводе слои при рецикле НЕ включаются обратно и не
-       получают пустой текст; ширина для математики не падает в 0;
-     - при init с пустым вводом полоса просто очищается и ждёт текст;
-     - ticker_anim защищён, если textLayers ещё пуст.
+   Пустой ввод:
+     - richtext "<div></div>" / &nbsp; снимается до plain;
+     - при 0 строк → enterIdle(): все слоты скрыты, master сброшен,
+       анимация не рециклит пустые слои;
+     - когда текст снова появляется → ticker("init") заново.
    ===================================================================== */
 
 var Logger =
@@ -87,6 +83,7 @@ var changeLayer     = false;
 
 var clearStat;
 var layerNameSet    = {};    // множество имён слоёв (быстрая проверка наличия)
+var tickerIdle      = false; // true = ввод пуст, полоса остановлена и ждёт текст
 
 
 function getLC()
@@ -108,23 +105,50 @@ function getLayer(name)
 	return layerNameSet[name] ? getLC().layer(name) : null;
 }
 
-// Нормализация inputext: UPPERCASE, trim, без пустых строк.
-// Важно: "".split(/\r?\n/) -> [""] — это и ломало полосу при очистке ввода.
+// Сырое значение inputext (оба API Carrot, какой сработает).
+function rawInputText(src)
+{
+	if (!src) return "";
+	var t = "";
+	try { t = src.TextSource.Text; } catch (e) {}
+	if (t == null || t === "")
+	{
+		try { t = src.property("Source Text").value; } catch (e2) {}
+	}
+	return t == null ? "" : String(t);
+}
+
+// Нормализация: richtext → plain, UPPERCASE, без пустых строк.
+// Пустой ввод в Carrot часто приходит как "<div></div>" / "&nbsp;" —
+// без снятия тегов split даёт "мусорную" строку с width≈0 и ломает полосу.
 function parseTickerLines(raw)
 {
-	var text = (raw == null ? "" : String(raw))
+	var text = (raw == null ? "" : String(raw));
+
+	text = text
+		.replace(/<br\s*\/?>/gi, "\n")
+		.replace(/<\/div\s*>/gi, "\n")
+		.replace(/<div\b[^>]*>/gi, "")
+		.replace(/<\/?p\b[^>]*>/gi, "\n")
+		.replace(/<[^>]+>/g, "")
+		.replace(/&nbsp;/gi, " ")
+		.replace(/&amp;/gi, "&")
+		.replace(/&lt;/gi, "<")
+		.replace(/&gt;/gi, ">")
+		.replace(/\r\n/g, "\n")
+		.replace(/\r/g, "\n")
+		.replace(/\n\s*\n+/g, "\n")
 		.toUpperCase()
-		.trim()
-		.replace(/\n\s*\n/g, "\n");
+		.trim();
 
 	if (!text) return [];
 
-	var rawLines = text.split(/\r?\n/);
+	var rawLines = text.split("\n");
 	var lines = [];
 
 	for (var i = 0; i < rawLines.length; i++)
 	{
-		var t = rawLines[i].trim();
+		var t = rawLines[i].replace(/\s+/g, " ").trim();
 		if (t) lines.push(t);
 	}
 	return lines;
@@ -135,12 +159,22 @@ function readInputLines()
 	var src = getLayer("inputext");
 	if (!src) return [];
 
-	// держим слой-источник в нормализованном виде
-	var normalized = parseTickerLines(src.TextSource.Text).join("\n");
-	if (src.TextSource.Text !== normalized)
-		src.TextSource.Text = normalized;
+	var lines = parseTickerLines(rawInputText(src));
+	var normalized = lines.join("\n");
 
-	return parseTickerLines(src.TextSource.Text);
+	// Пишем обратно уже очищенный plain-текст, чтобы пустой richtext
+	// не продолжал приезжать как "<div></div>".
+	try
+	{
+		if (rawInputText(src) !== normalized)
+		{
+			src.TextSource.Text = normalized;
+			try { src.property("Source Text").setValue(normalized); } catch (e) {}
+		}
+	}
+	catch (e2) {}
+
+	return lines;
 }
 
 function plateForText(textLayer)
@@ -276,6 +310,35 @@ function hideSlot(textLayer, plate)
 	}
 }
 
+// Полная остановка полосы при пустом вводе: прячем все слоты, сбрасываем математику.
+function enterIdle()
+{
+	buildLayerNameSet();
+
+	for (var k = 1; k <= text_cont_count; k++)
+	{
+		var textLayer = getLayer("myText " + k);
+		if (!textLayer) continue;
+		hideSlot(textLayer, plateForText(textLayer));
+		textLayer.scale[0] = 100;
+		textLayer.transform.position.x = 0;
+	}
+
+	master.transform.position.x = region_start;
+	textLayers     = [];
+	plateLayers    = [];
+	elementsWidth  = [];
+	ticker_element = 0;
+	ticker_counter = 0;
+	anim_i         = 0;
+	cycleOffset    = 0;
+	frame          = 0;
+	changeLayer    = false;
+	textVisGap     = 0;
+	readyToOut     = true;
+	tickerIdle     = true;
+}
+
 
 function ticker(action)
 {
@@ -309,6 +372,15 @@ function ticker(action)
 	var totalWidth = 0;
 	var hasNews = ticker_elements.length > 0;
 
+	if (action == "init" && !hasNews)
+	{
+		enterIdle();
+		return;
+	}
+
+	if (action == "init" && hasNews)
+		tickerIdle = false;
+
 	for (var k = 1; k <= text_cont_count; k++)
 	{
 		var textLayer = getLayer("myText " + k);
@@ -319,15 +391,6 @@ function ticker(action)
 		switch (action)
 		{
 			case "init":
-				// Пустой ввод: не заполняем слои пустыми строками —
-				// иначе width≈0 и полоса ломается.
-				if (!hasNews)
-				{
-					hideSlot(textLayer, plate);
-					master.transform.position.x = region_start;
-					break;
-				}
-
 				if (ticker_element >= ticker_elements.length)
 				{
 					ticker_element = 0;
@@ -347,7 +410,7 @@ function ticker(action)
 				var textRect     = textLayer.sourceRectAtTime();
 				var textWidth    = textRect.width;
 				var layerPos     = totalWidth;
-				var elementWidth = textWidth + padding;
+				var elementWidth = Math.max(textWidth, 1) + padding;
 
 				elementsWidth.push(elementWidth);
 
@@ -371,17 +434,27 @@ function ticker(action)
 				break;
 		}
 	}
+
+	if (action == "clear")
+		tickerIdle = true;
 }
 
 function ticker_anim()
 {
 	ticker_elements = readInputLines();
 
-	// Полоса ещё не собрана (init был с пустым вводом) — ждём текст.
-	if (!textLayers.length || !elementsWidth.length)
+	// Пустой ввод: не рециклим пустые слоты — полностью останавливаем полосу.
+	if (!ticker_elements.length)
 	{
-		if (ticker_elements.length > 0)
-			ticker("init");
+		if (!tickerIdle || textLayers.length)
+			enterIdle();
+		return;
+	}
+
+	// Текст снова появился после idle / пустого init — собираем полосу заново.
+	if (tickerIdle || !textLayers.length || !elementsWidth.length)
+	{
+		ticker("init");
 		return;
 	}
 
@@ -393,7 +466,7 @@ function ticker_anim()
 
 	if (master.transform.position.x + elementsWidth[anim_i] + cycleOffset < region_visible_end)
 	{
-		if (ticker_elements.length > 0 && ticker_element >= ticker_elements.length)
+		if (ticker_element >= ticker_elements.length)
 		{
 			ticker_element = 0;
 			TTL > 0 && (ticker_counter += 1);
@@ -423,62 +496,32 @@ function ticker_anim()
 
 			cycleOffset += elementsWidth[anim_i];
 
-			// Пустой ввод: не подставляем "" в слой и не включаем его обратно.
-			// Ширину оставляем прежней (>= padding), чтобы математика полосы не рухнула.
-			if (!ticker_elements.length)
-			{
-				textLayer.property("Source Text").setValue("");
-				if (elementsWidth[anim_i] < padding)
-					elementsWidth[anim_i] = padding;
+			if (ticker_element >= ticker_elements.length) ticker_element = 0;
 
-				if (plate)
-				{
-					plate.Enabled = false;
-					plate.scale[0] = 100;
-				}
+			textLayer.property("Source Text").setValue(ticker_elements[ticker_element]);
+			fixMarkedText(plate, textLayer);
 
-				anim_i += 1;
-				if (anim_i >= textLayers.length) anim_i = 0;
+			var textRect       = textLayer.sourceRectAtTime();
+			var textLayerWidth = textRect.width;
+			elementsWidth[anim_i] = Math.max(textLayerWidth, 1) + padding;
 
-				changeLayer = false;
-				lastElement = anim_i;
-				readyToOut = true;
-				textVisGap = 0;
-			}
-			else
-			{
-				if (ticker_element >= ticker_elements.length) ticker_element = 0;
+			placePlate(plate, textLayer);
+			plateColor(plate, textLayer);
 
-				textLayer.property("Source Text").setValue(ticker_elements[ticker_element]);
-				fixMarkedText(plate, textLayer);
+			anim_i += 1;
+			ticker_element += 1;
 
-				var textRect       = textLayer.sourceRectAtTime();
-				var textLayerWidth = textRect.width;
-				// защита от нулевой ширины (на всякий случай)
-				elementsWidth[anim_i] = Math.max(textLayerWidth, 1) + padding;
+			if (anim_i >= textLayers.length)
+				anim_i = 0;
 
-				placePlate(plate, textLayer);
-				plateColor(plate, textLayer);
+			changeLayer = false;
+			lastElement = anim_i;
+			readyToOut = true;
 
-				anim_i += 1;
-				ticker_element += 1;
-
-				if (anim_i >= textLayers.length)
-					anim_i = 0;
-
-				// После рецикла сразу включаем слот обратно.
-				// (Старое "a < x < b" в JS почти всегда было true и как раз
-				// включало текст; узкое окно region_start..gap ломало это —
-				// плашка жила через fixMarkedText, а текст оставался opacity=0.)
-				changeLayer = false;
-				lastElement = anim_i;
-				readyToOut = true;
-
-				textLayer.Enabled = true;
-				textLayer.transform.opacity = 100;
-				if (plate) plate.Enabled = true;
-				textVisGap = 0;
-			}
+			textLayer.Enabled = true;
+			textLayer.transform.opacity = 100;
+			if (plate) plate.Enabled = true;
+			textVisGap = 0;
 		}
 	}
 	frame += 1;
