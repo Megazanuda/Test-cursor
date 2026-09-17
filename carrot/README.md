@@ -287,6 +287,21 @@ fitTickerPlate(thisComp.layer("Text 2"), thisComp.layer("Plate 2"), 400, 26);
 centerRowX([thisComp.layer("Date"), thisComp.layer("Time")], 1117, 20);
 ```
 
+## Смена двух плашек (`plates-swap.js`)
+
+Файл [`plates-swap.js`](./plates-swap.js) — непрерывная смена двух текстовых
+плашек в state **RUN**: hold → transition → swap → hold…
+
+Кривая снята ключами каждые 5 кадров:
+
+- **EXIT** (уход): X `1047→1025`, opacity `100→0`
+- телепорт вниз на `1070` при opacity `0`
+- **ENTER** (вход): X `1070→1047`, opacity `0→100`
+
+Передняя и задняя плашки играют EXIT/ENTER **параллельно**. Настраивается:
+имена слоёв `PLATE_A_NAME` / `PLATE_B_NAME`, `HOLD_SEC`, `FPS` (для перевода
+5 кадров в секунды). Анимируются только `position.x` и `opacity`.
+
 ## REST-клиент бегущей строки (`rest-client/`)
 
 Каталог [`rest-client/`](./rest-client) — Node.js REST-клиент Carrot Broadcast
