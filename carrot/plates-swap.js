@@ -1,41 +1,44 @@
 /* =====================================================================
-   Смена myText 1 / myText 2 в linesPreComp (state RUN)
+   Смена myText 1 / myText 2 (linesPreComp), state RUN
    ---------------------------------------------------------------------
-   Тайминг — ПО КАДРАМ (не time): так надёжнее в Carrot.
-   Анимация: position.y + opacity. X не трогаем.
+   Композиция: 50 fps.
+   Опорные ключи сняты каждые 5 кадров — по ним считаем Y/opacity
+   на КАЖДЫЙ кадр (линейная интерполяция между ключами).
+   ProcessFrame двигает анимацию на 1 кадр за вызов.
 
-   Скопируй три блока ниже в Startup / SetState / ProcessFrame.
+   Startup  = всё до маркера SETSTATE
+   SetState / ProcessFrame = блоки внизу файла
    ===================================================================== */
 
 
-/* ===================== STARTUP (целиком в поле Startup) ===================== */
+/* ===================== STARTUP ===================== */
 
 var LINES_COMP   = "linesPreComp";
 var PLATE_A_NAME = "myText 1";
 var PLATE_B_NAME = "myText 2";
 
-var HOLD_SEC = 3;   // пауза на экране, секунды
-var FPS      = 25;  // fps композиции
-var KEY_STEP = 5;   // шаг ключей в кадрах
+var HOLD_SEC = 3;    // пауза на экране, секунды
+var FPS      = 50;   // fps композиции
+var KEY_STEP = 5;    // опорные ключи каждые 5 кадров
 
-// EXIT — уход вверх (Y↓), opacity 100→0
+// Опорные ключи EXIT (уход вверх): кадры 0,5,10,15,20
 var EXIT_Y = [1047, 1044, 1038, 1031, 1025];
 var EXIT_O = [100, 84, 50, 16, 0];
 
-// ENTER — вход снизу (Y 1070→1047), opacity 0→100
+// Опорные ключи ENTER (вход снизу): кадры 0,5,10,15,20,25
 var ENTER_Y = [1070, 1065, 1059, 1053, 1049, 1047];
 var ENTER_O = [0, 18, 45, 71, 91, 100];
 
-var REST_Y = EXIT_Y[0];   // 1047
-var PARK_Y = ENTER_Y[0];  // 1070
+var REST_Y = EXIT_Y[0];   // 1047 — на экране
+var PARK_Y = ENTER_Y[0];  // 1070 — ждёт снизу
 
-var HOLD_FRAMES  = Math.round(HOLD_SEC * FPS);
-var EXIT_FRAMES  = (EXIT_Y.length - 1) * KEY_STEP;   // 20
-var ENTER_FRAMES = (ENTER_Y.length - 1) * KEY_STEP;  // 25
-var TRANS_FRAMES = Math.max(EXIT_FRAMES, ENTER_FRAMES);
+var HOLD_FRAMES  = Math.round(HOLD_SEC * FPS);           // 150 при 3с / 50fps
+var EXIT_FRAMES  = (EXIT_Y.length - 1) * KEY_STEP;       // 20
+var ENTER_FRAMES = (ENTER_Y.length - 1) * KEY_STEP;      // 25
+var TRANS_FRAMES = Math.max(EXIT_FRAMES, ENTER_FRAMES);  // 25
 
-var phase = "hold";      // hold | trans
-var phaseFrame = 0;
+var phase = "hold";
+var phaseFrame = 0;   // счётчик кадров текущей фазы (каждый ProcessFrame +1)
 var frontIsA = true;
 var runInited = false;
 
@@ -60,29 +63,29 @@ function lerp(a, b, t)
 	return a + (b - a) * t;
 }
 
-// frame — кадры от начала кривой; ключи каждые KEY_STEP кадров
+// Покадровая выборка: frame = 0,1,2,... между опорными ключами (шаг KEY_STEP).
+// Пример EXIT на кадре 7: между ключами кадра 5 (1044) и 10 (1038)
+//   t = (7-5)/5 = 0.4 → Y = 1044 + (1038-1044)*0.4
 function sampleKeys(keys, frame)
 {
 	if (frame <= 0) return keys[0];
+
 	var maxF = (keys.length - 1) * KEY_STEP;
 	if (frame >= maxF) return keys[keys.length - 1];
 
-	var f = frame / KEY_STEP;
-	var i = Math.floor(f);
-	var frac = f - i;
-	if (i >= keys.length - 1) return keys[keys.length - 1];
-	return lerp(keys[i], keys[i + 1], frac);
+	var i = Math.floor(frame / KEY_STEP);
+	var local = frame - i * KEY_STEP;
+	var t = local / KEY_STEP;
+	return lerp(keys[i], keys[i + 1], t);
 }
 
 function setYO(layer, y, opacity)
 {
 	if (!layer) return;
 
-	// Как в рабочей бегущей строке: прямое присваивание компонентов
 	layer.transform.position.y = y;
 	layer.transform.opacity = opacity;
 
-	// Запасной путь через value/setValue (если движок так требует)
 	try
 	{
 		var v = layer.transform.position.value;
@@ -102,13 +105,13 @@ function applyTransition(f)
 	var front = frontIsA ? getPlate(PLATE_A_NAME) : getPlate(PLATE_B_NAME);
 	var back  = frontIsA ? getPlate(PLATE_B_NAME) : getPlate(PLATE_A_NAME);
 
-	// Передняя: EXIT, затем парковка вниз
+	// Передняя уходит вверх по кадрам 0..EXIT_FRAMES, потом паркуется вниз
 	if (f >= EXIT_FRAMES)
 		park(front);
 	else
 		setYO(front, sampleKeys(EXIT_Y, f), sampleKeys(EXIT_O, f));
 
-	// Задняя: ENTER параллельно
+	// Задняя параллельно входит снизу по кадрам 0..ENTER_FRAMES
 	if (f <= 0)
 		park(back);
 	else if (f >= ENTER_FRAMES)
@@ -140,9 +143,10 @@ function initRun()
 	frontIsA = true;
 	runInited = true;
 	startHold();
-	printLog("[plates-swap] initRun: hold " + HOLD_FRAMES + "f, trans " + TRANS_FRAMES + "f");
+	printLog("[plates-swap] init RUN @50fps hold=" + HOLD_FRAMES + "f trans=" + TRANS_FRAMES + "f");
 }
 
+// Вызывать каждый кадр из ProcessFrame
 function updateRun()
 {
 	if (!runInited)
@@ -155,39 +159,42 @@ function updateRun()
 		rest(front);
 		park(back);
 
-		phaseFrame += 1;
+		phaseFrame += 1; // +1 кадр
 		if (phaseFrame >= HOLD_FRAMES)
 		{
-			printLog("[plates-swap] start transition, front=" + (frontIsA ? PLATE_A_NAME : PLATE_B_NAME));
+			printLog("[plates-swap] transition start");
 			startTrans();
 		}
 		return;
 	}
 
-	// trans
+	// Каждый кадр transition: ставим позу для текущего phaseFrame, потом +1
 	applyTransition(phaseFrame);
 	phaseFrame += 1;
 
 	if (phaseFrame >= TRANS_FRAMES)
 	{
 		frontIsA = !frontIsA;
-		printLog("[plates-swap] swap done, now front=" + (frontIsA ? PLATE_A_NAME : PLATE_B_NAME));
+		printLog("[plates-swap] swap -> front " + (frontIsA ? PLATE_A_NAME : PLATE_B_NAME));
 		startHold();
 	}
 }
 
 
-/* ----- SETSTATE (только это в поле SetState) -----
+/* ===================== SETSTATE ===================== */
+/*
 if (isRunState())
 {
 	runInited = false;
 	initRun();
 }
------ */
+*/
 
-/* ----- PROCESSFRAME (только это в поле ProcessFrame) -----
+
+/* ===================== PROCESSFRAME ===================== */
+/*
 if (isRunState())
 {
 	updateRun();
 }
------ */
+*/
