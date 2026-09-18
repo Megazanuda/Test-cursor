@@ -1,0 +1,18 @@
+{
+  "name": "carrot-ticker-client",
+  "version": "1.0.0",
+  "description": "REST-клиент Carrot Broadcast для управления строками бегущей строки на лету",
+  "main": "carrot-client.js",
+  "type": "commonjs",
+  "bin": {
+    "carrot-ticker": "cli.js"
+  },
+  "scripts": {
+    "start": "node cli.js",
+    "help": "node cli.js help"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT"
+}
