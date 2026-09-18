@@ -308,20 +308,17 @@ var o = easeLerp(100, 0, t);        // opacity с Easy Ease
 
 ## Смена двух плашек (`plates-swap.js`)
 
-Файл [`plates-swap.js`](./plates-swap.js) — бесконечная смена двух текстов
-в state **RUN**. Слои `myText 1` / `myText 2` в прекомпе `linesPreComp`.
+Файл [`plates-swap.js`](./plates-swap.js) — бесконечная смена `myText 1` /
+`myText 2` в прекомпе `linesPreComp`, state **RUN**, **50 fps**, каждый кадр.
 
-После входа в RUN сразу видна `myText 1`. Цикл: **hold** → **transition** →
-смена ролей → снова hold…
+Движение задано конечными точками + **Easy Ease** (`easeLerp` / `easeEase`):
 
-В transition (параллельно):
+- EXIT: Y `1047→1025`, opacity `100→0` за `EXIT_FRAMES` (20);
+- парковка вниз `Y=1070`, opacity 0;
+- ENTER: Y `1070→1047`, opacity `0→100` за `ENTER_FRAMES` (25), параллельно.
 
-- передняя уходит **вверх** по Y (`1047→1025`) и гаснет (`100→0`), затем
-  паркуется **внизу** (`Y=1070`, opacity 0) до следующего своего входа;
-- задняя поднимается снизу (`1070→1047`) и проявляется (`0→100`).
-
-Ключи — каждые 5 кадров; `HOLD_SEC` / `FPS` настраиваются вверху Startup.
-Анимируются только `position.y` и `opacity`.
+Настраиваются `HOLD_SEC`, `EXIT_FRAMES`, `ENTER_FRAMES`. Таблица ключей больше
+нет — кривая как Easy Ease в AE. Анимируются только `position.y` и `opacity`.
 
 ## REST-клиент бегущей строки (`rest-client/`)
 
