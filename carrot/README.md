@@ -287,6 +287,25 @@ fitTickerPlate(thisComp.layer("Text 2"), thisComp.layer("Plate 2"), 400, 26);
 centerRowX([thisComp.layer("Date"), thisComp.layer("Time")], 1117, 20);
 ```
 
+## Easy Ease (`ease.js`)
+
+Сниппет [`ease.js`](./ease.js) — универсальное сглаживание линейного
+движения в духе **Easy Ease** в After Effects:
+
+```js
+var t = phaseFrame / EXIT_FRAMES;   // 0…1 линейно по кадрам
+var y = easeLerp(1047, 1025, t);    // Y с Easy Ease
+var o = easeLerp(100, 0, t);        // opacity с Easy Ease
+```
+
+- `easeEase(t)` — in+out (как Easy Ease на ключах);
+- `easeIn` / `easeOut` — только разгон / только торможение;
+- `easeLerp(a, b, t)` — сразу интерполяция со сглаживанием.
+
+Если ключи уже сняты с готовой AE-кривой, поверх них ease обычно не ставят
+(будет двойное сглаживание). Функция нужна, когда в скрипте движение
+задано линейно «из A в B».
+
 ## Смена двух плашек (`plates-swap.js`)
 
 Файл [`plates-swap.js`](./plates-swap.js) — бесконечная смена двух текстов
