@@ -97,86 +97,55 @@ function flattenRow(entry) {
   const row = {
     id: event.id || item.eventId || '',
     name: event.name || item.eventName || '',
-    externalId: event.externalId != null ? event.externalId : '',
-    changed: event.changed != null ? event.changed : '',
-    allowRuntimeChange: event.allowRuntimeChange != null ? event.allowRuntimeChange : '',
-    templateId: event.templateId != null ? event.templateId : '',
-    templateName: event.templateName != null ? event.templateName : '',
     storyName: story.name || '',
-    storyId: story.id || '',
-    itemId: item.id || '',
-    itemStatus: item.status != null ? item.status : '',
-    itemName: item.name || '',
+    allowRuntimeChange: event.allowRuntimeChange != null ? event.allowRuntimeChange : '',
     _event: event,
     _item: item,
     _story: story,
     _fetchError: event._fetchError || ''
   };
 
-  // Прочие скалярные поля события, которых нет в базовом наборе.
-  Object.keys(event).forEach(function (k) {
-    if (k === 'variables' || k === '_fetchError' || k.charAt(0) === '_') return;
-    if (row[k] !== undefined) return;
-    const v = event[k];
-    if (v == null || typeof v === 'object') return;
-    row[k] = v;
-  });
-
   (event.variables || []).forEach(function (v) {
     if (!v || !v.name) return;
+    // Только значение переменной; тип/лимиты — в панели деталей при выборе.
     row['var:' + v.name] = v.value != null ? v.value : '';
-    row['varType:' + v.name] = v.type != null ? v.type : '';
   });
 
   return row;
 }
 
 function collectColumns(rows) {
-  const base = [
-    { key: 'name', label: 'name' },
-    { key: 'id', label: 'id' },
-    { key: 'allowRuntimeChange', label: 'allowRuntimeChange' },
-    { key: 'externalId', label: 'externalId' },
-    { key: 'changed', label: 'changed' },
-    { key: 'templateName', label: 'templateName' },
-    { key: 'templateId', label: 'templateId' },
-    { key: 'storyName', label: 'story' },
-    { key: 'itemId', label: 'itemId' },
-    { key: 'itemStatus', label: 'itemStatus' }
+  const cols = [
+    { key: 'name', label: 'имя', cls: 'col-name' },
+    { key: 'id', label: 'id', cls: 'col-id' },
+    { key: 'storyName', label: 'story', cls: 'col-story' }
   ];
 
-  const seen = Object.create(null);
-  base.forEach(function (c) { seen[c.key] = true; });
-  const extras = [];
+  if (rows.some(function (r) {
+    return r.allowRuntimeChange !== '' && r.allowRuntimeChange != null;
+  })) {
+    cols.push({ key: 'allowRuntimeChange', label: 'runtime', cls: 'col-runtime' });
+  }
 
+  const varNames = Object.create(null);
   rows.forEach(function (r) {
     Object.keys(r).forEach(function (k) {
-      if (seen[k] || k.charAt(0) === '_') return;
-      if (typeof r[k] === 'object') return;
-      seen[k] = true;
-      extras.push({
-        key: k,
-        label: k.indexOf('var:') === 0 ? k.slice(4) : k
-      });
+      if (k.indexOf('var:') === 0) varNames[k.slice(4)] = true;
     });
   });
 
-  extras.sort(function (a, b) {
-    const av = a.key.indexOf('var:') === 0 ? 1 : 0;
-    const bv = b.key.indexOf('var:') === 0 ? 1 : 0;
-    if (av !== bv) return av - bv;
-    return a.label.localeCompare(b.label, 'ru');
+  Object.keys(varNames).sort(function (a, b) {
+    return a.localeCompare(b, 'ru');
+  }).forEach(function (name) {
+    // Не показываем пустые колонки переменных.
+    const key = 'var:' + name;
+    const hasValue = rows.some(function (r) {
+      return r[key] !== '' && r[key] != null;
+    });
+    if (hasValue) cols.push({ key: key, label: name, cls: 'col-var' });
   });
 
-  // Убираем пустые колонки (кроме name/id).
-  const used = base.concat(extras).filter(function (c) {
-    if (c.key === 'name' || c.key === 'id') return true;
-    return rows.some(function (r) {
-      const v = r[c.key];
-      return v !== '' && v != null && v !== undefined;
-    });
-  });
-  return used;
+  return cols;
 }
 
 function compareValues(a, b) {
@@ -277,6 +246,7 @@ function renderTable() {
   state.columns.forEach(function (c) {
     const th = document.createElement('th');
     th.dataset.key = c.key;
+    if (c.cls) th.className = c.cls;
     th.textContent = c.label;
     if (c.key === state.sortKey) {
       const ind = document.createElement('span');
@@ -300,9 +270,13 @@ function renderTable() {
     if (r.id === state.selectedEventId) tr.classList.add('selected');
     state.columns.forEach(function (c) {
       const td = document.createElement('td');
-      if (c.key === 'name') td.className = 'cell-name';
-      td.textContent = preview(r[c.key]);
-      td.title = preview(r[c.key]);
+      const classes = [];
+      if (c.key === 'name') classes.push('cell-name');
+      if (c.cls) classes.push(c.cls);
+      if (classes.length) td.className = classes.join(' ');
+      const text = preview(r[c.key]).replace(/\s+/g, ' ');
+      td.textContent = text;
+      td.title = text;
       tr.appendChild(td);
     });
     tr.addEventListener('click', function () { selectEvent(r.id); });
@@ -335,17 +309,18 @@ function renderDetail(row) {
     el.detailList.appendChild(dd);
   }
 
-  state.columns.forEach(function (c) {
-    if (c.key.indexOf('var:') === 0 || c.key.indexOf('varType:') === 0) return;
-    if (row[c.key] === '' || row[c.key] == null) return;
-    add(c.label, row[c.key]);
-  });
+  add('имя', row.name);
+  add('id', row.id);
+  if (row.storyName) add('story', row.storyName);
+  if (row.allowRuntimeChange !== '' && row.allowRuntimeChange != null) {
+    add('runtime', row.allowRuntimeChange);
+  }
 
   const vars = (row._event && row._event.variables) || [];
   vars.forEach(function (v) {
-    add((v.name || '?') + ' (' + (v.type || '?') + ')', v.value);
+    add(v.name || '?', v.value);
   });
-  if (row._fetchError) add('ошибка загрузки', row._fetchError);
+  if (row._fetchError) add('ошибка', row._fetchError);
 }
 
 async function selectPlaylist(pl) {

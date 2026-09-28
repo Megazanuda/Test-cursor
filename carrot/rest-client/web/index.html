@@ -4,30 +4,18 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Carrot — плейлисты и события</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Manrope:wght@500;600;700;800&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="/app.css" />
 </head>
 <body>
-  <div class="bg-grid" aria-hidden="true"></div>
-  <div class="bg-glow" aria-hidden="true"></div>
-
   <header class="top">
-    <div class="brand">
-      <span class="brand-mark" aria-hidden="true"></span>
-      <div>
-        <p class="brand-name">Carrot Control</p>
-        <p class="brand-sub">плейлисты → события</p>
-      </div>
-    </div>
-    <div class="status-line" id="statusLine">не подключено</div>
+    <strong class="brand">Carrot</strong>
+    <span class="status-line" id="statusLine">не подключено</span>
   </header>
 
   <main class="shell">
     <section class="connect" id="connectPanel">
       <h1>Подключение</h1>
-      <p class="lede">Укажи REST Carrot или оставь значения из <code>.env</code>.</p>
+      <p class="lede">REST Carrot или значения из <code>.env</code>.</p>
       <form id="connectForm" class="connect-form" autocomplete="off">
         <label>
           <span>Base URL</span>
