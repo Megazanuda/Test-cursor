@@ -90,62 +90,84 @@ function preview(value) {
   return String(value);
 }
 
+const ITEM_STATUS = {
+  0: 'Unloaded',
+  1: 'Loading',
+  2: 'Ready',
+  3: 'Active'
+};
+
+function pick(obj, keys) {
+  if (!obj) return '';
+  for (let i = 0; i < keys.length; i++) {
+    const v = obj[keys[i]];
+    if (v != null && v !== '') return v;
+  }
+  return '';
+}
+
+function formatChanged(value) {
+  if (value == null || value === '') return '';
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return String(value);
+  // Локальная дата/время без секунд.
+  const pad = function (n) { return String(n).padStart(2, '0'); };
+  return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) +
+    ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+}
+
+function formatStatus(event, item) {
+  const raw = pick(event, ['status', 'state']) || pick(item, ['status', 'state']);
+  if (raw === '') return '';
+  if (typeof raw === 'number' || /^\d+$/.test(String(raw))) {
+    const n = Number(raw);
+    return ITEM_STATUS[n] != null ? ITEM_STATUS[n] : String(raw);
+  }
+  return String(raw);
+}
+
 function flattenRow(entry) {
   const event = entry.event || {};
   const item = entry.item || {};
   const story = entry.story || {};
-  const row = {
-    id: event.id || item.eventId || '',
-    name: event.name || item.eventName || '',
-    storyName: story.name || '',
-    allowRuntimeChange: event.allowRuntimeChange != null ? event.allowRuntimeChange : '',
+  const template = event.template || item.template || {};
+
+  return {
+    name: pick(event, ['name']) || pick(item, ['eventName', 'name']),
+    templateName: pick(event, ['templateName']) ||
+      pick(template, ['name']) ||
+      pick(item, ['templateName']),
+    changed: formatChanged(pick(event, ['changed', 'modified', 'updated', 'changeDate'])),
+    changedRaw: pick(event, ['changed', 'modified', 'updated', 'changeDate']),
+    container: pick(event, ['container', 'containerName']) ||
+      pick(item, ['container', 'containerName']) ||
+      pick(story, ['name']),
+    id: pick(event, ['id']) || pick(item, ['eventId']),
+    externalId: pick(event, ['externalId']) || pick(item, ['externalId']),
+    comment: pick(event, ['comment', 'description', 'note']) ||
+      pick(item, ['comment', 'description', 'note']),
+    status: formatStatus(event, item),
     _event: event,
     _item: item,
     _story: story,
     _fetchError: event._fetchError || ''
   };
-
-  (event.variables || []).forEach(function (v) {
-    if (!v || !v.name) return;
-    // Только значение переменной; тип/лимиты — в панели деталей при выборе.
-    row['var:' + v.name] = v.value != null ? v.value : '';
-  });
-
-  return row;
 }
 
-function collectColumns(rows) {
-  const cols = [
-    { key: 'name', label: 'имя', cls: 'col-name' },
-    { key: 'id', label: 'id', cls: 'col-id' },
-    { key: 'storyName', label: 'story', cls: 'col-story' }
-  ];
+// Фиксированный набор колонок — без переменных шаблона.
+const COLUMNS = [
+  { key: 'name', label: 'название', cls: 'col-name' },
+  { key: 'templateName', label: 'темплейт', cls: 'col-template' },
+  { key: 'changed', label: 'изменено', cls: 'col-changed' },
+  { key: 'container', label: 'контейнер', cls: 'col-container' },
+  { key: 'id', label: 'id', cls: 'col-id' },
+  { key: 'externalId', label: 'external id', cls: 'col-ext' },
+  { key: 'comment', label: 'комментарий', cls: 'col-comment' },
+  { key: 'status', label: 'статус', cls: 'col-status' }
+];
 
-  if (rows.some(function (r) {
-    return r.allowRuntimeChange !== '' && r.allowRuntimeChange != null;
-  })) {
-    cols.push({ key: 'allowRuntimeChange', label: 'runtime', cls: 'col-runtime' });
-  }
-
-  const varNames = Object.create(null);
-  rows.forEach(function (r) {
-    Object.keys(r).forEach(function (k) {
-      if (k.indexOf('var:') === 0) varNames[k.slice(4)] = true;
-    });
-  });
-
-  Object.keys(varNames).sort(function (a, b) {
-    return a.localeCompare(b, 'ru');
-  }).forEach(function (name) {
-    // Не показываем пустые колонки переменных.
-    const key = 'var:' + name;
-    const hasValue = rows.some(function (r) {
-      return r[key] !== '' && r[key] != null;
-    });
-    if (hasValue) cols.push({ key: key, label: name, cls: 'col-var' });
-  });
-
-  return cols;
+function collectColumns() {
+  return COLUMNS.slice();
 }
 
 function compareValues(a, b) {
@@ -180,7 +202,8 @@ function sortedFilteredRows() {
       });
     });
   }
-  const key = state.sortKey;
+  // Для даты сортируем по сырому значению, а не по отформатированной строке.
+  const key = state.sortKey === 'changed' ? 'changedRaw' : state.sortKey;
   const dir = state.sortDir;
   list.sort(function (a, b) {
     const cmp = compareValues(a[key], b[key]);
@@ -309,16 +332,8 @@ function renderDetail(row) {
     el.detailList.appendChild(dd);
   }
 
-  add('имя', row.name);
-  add('id', row.id);
-  if (row.storyName) add('story', row.storyName);
-  if (row.allowRuntimeChange !== '' && row.allowRuntimeChange != null) {
-    add('runtime', row.allowRuntimeChange);
-  }
-
-  const vars = (row._event && row._event.variables) || [];
-  vars.forEach(function (v) {
-    add(v.name || '?', v.value);
+  COLUMNS.forEach(function (c) {
+    add(c.label, row[c.key]);
   });
   if (row._fetchError) add('ошибка', row._fetchError);
 }
@@ -340,7 +355,7 @@ async function selectPlaylist(pl) {
     const data = await api('GET', '/api/playlists/' + encodeURIComponent(pl.id) + '/events');
     const flat = (data.events || []).map(flattenRow);
     state.rows = flat;
-    state.columns = collectColumns(flat);
+    state.columns = collectColumns();
     if (!state.columns.some(function (c) { return c.key === state.sortKey; })) {
       state.sortKey = 'name';
       state.sortDir = 1;

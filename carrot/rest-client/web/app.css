@@ -274,13 +274,29 @@ input:focus, .filter:focus {
 .events-table th .sort-ind { margin-left: 0.2rem; color: var(--accent); }
 
 .events-table th.col-name,
-.events-table td.cell-name { max-width: 14rem; width: 14rem; }
+.events-table td.cell-name,
+.events-table td.col-name { max-width: 14rem; width: 14rem; }
+
+.events-table th.col-template,
+.events-table td.col-template { max-width: 12rem; width: 12rem; }
+
+.events-table th.col-changed,
+.events-table td.col-changed { max-width: 9rem; width: 9rem; }
+
+.events-table th.col-container,
+.events-table td.col-container { max-width: 10rem; width: 10rem; }
 
 .events-table th.col-id,
-.events-table td.col-id { max-width: 18rem; width: 18rem; }
+.events-table td.col-id { max-width: 16rem; width: 16rem; }
 
-.events-table th.col-var,
-.events-table td.col-var { max-width: 22rem; width: 18rem; }
+.events-table th.col-ext,
+.events-table td.col-ext { max-width: 10rem; width: 10rem; }
+
+.events-table th.col-comment,
+.events-table td.col-comment { max-width: 14rem; width: 14rem; }
+
+.events-table th.col-status,
+.events-table td.col-status { max-width: 7rem; width: 7rem; }
 
 .events-table tbody tr { cursor: pointer; }
 .events-table tbody tr:hover { background: var(--row-hover); }
@@ -330,9 +346,8 @@ input:focus, .filter:focus {
   margin: 0;
   font-family: var(--mono);
   font-size: 0.78rem;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .toast {
