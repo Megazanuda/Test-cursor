@@ -9,7 +9,8 @@
   },
   "scripts": {
     "start": "node cli.js",
-    "help": "node cli.js help"
+    "help": "node cli.js help",
+    "web": "node web-server.js"
   },
   "engines": {
     "node": ">=18"

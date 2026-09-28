@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Carrot — плейлисты и события</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Manrope:wght@500;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/app.css" />
+</head>
+<body>
+  <div class="bg-grid" aria-hidden="true"></div>
+  <div class="bg-glow" aria-hidden="true"></div>
+
+  <header class="top">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <div>
+        <p class="brand-name">Carrot Control</p>
+        <p class="brand-sub">плейлисты → события</p>
+      </div>
+    </div>
+    <div class="status-line" id="statusLine">не подключено</div>
+  </header>
+
+  <main class="shell">
+    <section class="connect" id="connectPanel">
+      <h1>Подключение</h1>
+      <p class="lede">Укажи REST Carrot или оставь значения из <code>.env</code>.</p>
+      <form id="connectForm" class="connect-form" autocomplete="off">
+        <label>
+          <span>Base URL</span>
+          <input id="baseUrl" name="baseUrl" type="url" placeholder="http://172.17.97.71:5001" />
+        </label>
+        <label>
+          <span>Login</span>
+          <input id="login" name="login" type="text" autocomplete="username" />
+        </label>
+        <label>
+          <span>Password</span>
+          <input id="password" name="password" type="password" autocomplete="current-password" />
+        </label>
+        <button type="submit" class="btn primary" id="connectBtn">Подключить</button>
+      </form>
+    </section>
+
+    <section class="workspace" id="workspace" hidden>
+      <aside class="playlists-pane">
+        <div class="pane-head">
+          <h2>Плейлисты</h2>
+          <button type="button" class="btn ghost" id="reloadPlaylists" title="Обновить">↻</button>
+        </div>
+        <ul class="playlist-list" id="playlistList"></ul>
+        <p class="empty" id="playlistEmpty" hidden>Плейлистов нет</p>
+      </aside>
+
+      <section class="events-pane">
+        <div class="pane-head">
+          <div>
+            <h2 id="eventsTitle">События</h2>
+            <p class="lede" id="eventsHint">Выбери плейлист слева</p>
+          </div>
+          <div class="pane-actions">
+            <input type="search" id="filterInput" class="filter" placeholder="Фильтр…" disabled />
+            <button type="button" class="btn danger" id="deleteBtn" disabled>Удалить</button>
+          </div>
+        </div>
+
+        <div class="table-wrap" id="tableWrap">
+          <table class="events-table" id="eventsTable" hidden>
+            <thead id="eventsHead"></thead>
+            <tbody id="eventsBody"></tbody>
+          </table>
+          <p class="empty" id="eventsEmpty">Сначала выбери плейлист</p>
+        </div>
+
+        <aside class="detail" id="detailPanel" hidden>
+          <h3 id="detailTitle">Событие</h3>
+          <dl id="detailList" class="detail-list"></dl>
+        </aside>
+      </section>
+    </section>
+  </main>
+
+  <div class="toast" id="toast" hidden role="status"></div>
+
+  <dialog id="confirmDialog">
+    <form method="dialog" class="confirm-box">
+      <h3>Удалить событие?</h3>
+      <p id="confirmText"></p>
+      <div class="confirm-actions">
+        <button value="cancel" class="btn ghost">Отмена</button>
+        <button value="ok" class="btn danger">Удалить</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="/app.js"></script>
+</body>
+</html>

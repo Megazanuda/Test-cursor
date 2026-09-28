@@ -323,6 +323,7 @@ var o = easeLerp(100, 0, t);        // opacity с Easy Ease
 ## REST-клиент бегущей строки (`rest-client/`)
 
 Каталог [`rest-client/`](./rest-client) — Node.js REST-клиент Carrot Broadcast
+и HTML-страница плейлистов/событий (`.\web.cmd` → http://127.0.0.1:3456).
 для управления бегущей строкой **с компьютера**, без открытия интерфейса Carrot.
 Это отдельная программа, не скрипт шаблона.
 

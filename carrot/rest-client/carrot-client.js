@@ -266,10 +266,55 @@ class CarrotClient {
             '/events/' + encodeURIComponent(eventId) + '/editVariables', vars);
     }
 
+    // Удалить событие. Если оно в эфире / занято — Carrot вернёт InUse (41).
+    deleteEvent(eventId) {
+        return this._request('DELETE', '/events/' + encodeURIComponent(eventId));
+    }
+
     async findEventIdByName(name) {
         const list = await this.listEvents();
         const hit = (list || []).find(function (h) { return h.name === name; });
         return hit ? hit.id : null;
+    }
+
+    // События, на которые ссылаются элементы сценария внутри плейлиста.
+    // Возвращает плоский список { event, item, story } (уникальность по event.id).
+    async listPlaylistEvents(playlistId) {
+        const pl = await this.getPlaylist(playlistId);
+        const stories = (pl && pl.stories) ? pl.stories : [];
+        const seen = Object.create(null);
+        const out = [];
+
+        for (let s = 0; s < stories.length; s++) {
+            const st = stories[s];
+            let items = st.items;
+            if (!items) {
+                const full = await this.getStory(st.id);
+                items = full ? full.items : [];
+            }
+            for (let i = 0; i < (items || []).length; i++) {
+                const item = items[i];
+                const eventId = item && item.eventId;
+                if (!eventId || seen[eventId]) continue;
+                seen[eventId] = true;
+                var event = null;
+                try {
+                    event = await this.getEvent(eventId);
+                } catch (err) {
+                    event = {
+                        id: eventId,
+                        name: item.eventName || eventId,
+                        _fetchError: err && err.message ? err.message : String(err)
+                    };
+                }
+                out.push({
+                    event: event,
+                    item: item,
+                    story: { id: st.id, name: st.name }
+                });
+            }
+        }
+        return out;
     }
 
     /* ---------------- Плейлисты / истории (для поиска элемента) ---------------- */
