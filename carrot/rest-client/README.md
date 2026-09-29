@@ -169,8 +169,8 @@ CARROT_PLAYLIST_ID=guid-плейлиста
 
 ## 2.5. Веб-страница: плейлисты и события
 
-HTML-интерфейс (не консоль): список плейлистов → события выбранного плейлиста
-(Event name, Template name, Last modified, Id, External id)
+HTML-интерфейс (не консоль): **Все события** (вся база) или события выбранного
+плейлиста (Event name, Template name, Last modified, Id, External id)
 → сортировка по столбцу → выбор и удаление события.
 
 Из папки `carrot\rest-client` (после заполненного `.env`):

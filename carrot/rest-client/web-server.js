@@ -185,6 +185,13 @@ async function handleApi(req, res, url) {
         return sendJson(res, 200, { ok: true, events: rows });
     }
 
+    // Все события (без плейлиста) — до /api/events/:id.
+    if (req.method === 'GET' && pathname === '/api/events') {
+        const c = ensureClient();
+        const rows = await c.listAllEvents();
+        return sendJson(res, 200, { ok: true, events: rows });
+    }
+
     const evMatch = pathname.match(/^\/api\/events\/([^/]+)$/);
     if (req.method === 'GET' && evMatch) {
         const c = ensureClient();

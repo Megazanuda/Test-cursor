@@ -5,6 +5,8 @@
 const state = {
   connected: false,
   playlists: [],
+  // 'all' — все события из БД; 'playlist' — события выбранного плейлиста
+  view: null,
   playlistId: null,
   playlistName: '',
   rows: [],          // flattened rows for table
@@ -185,6 +187,19 @@ function sortedFilteredRows() {
 
 function renderPlaylists() {
   el.playlistList.innerHTML = '';
+
+  // Пункт «Все события» — без привязки к плейлисту.
+  const allLi = document.createElement('li');
+  const allBtn = document.createElement('button');
+  allBtn.type = 'button';
+  if (state.view === 'all') allBtn.classList.add('active');
+  allBtn.innerHTML =
+    '<span class="pl-name">Все события</span>' +
+    '<span class="pl-id">вся база · GET /events</span>';
+  allBtn.addEventListener('click', function () { selectAllEvents(); });
+  allLi.appendChild(allBtn);
+  el.playlistList.appendChild(allLi);
+
   if (!state.playlists.length) {
     el.playlistEmpty.hidden = false;
     return;
@@ -194,7 +209,9 @@ function renderPlaylists() {
     const li = document.createElement('li');
     const btn = document.createElement('button');
     btn.type = 'button';
-    if (pl.id === state.playlistId) btn.classList.add('active');
+    if (state.view === 'playlist' && pl.id === state.playlistId) {
+      btn.classList.add('active');
+    }
     btn.innerHTML =
       '<span class="pl-name"></span><span class="pl-id"></span>';
     btn.querySelector('.pl-name').textContent = pl.name || '(без имени)';
@@ -205,13 +222,30 @@ function renderPlaylists() {
   });
 }
 
+function hasView() {
+  return state.view === 'all' || state.view === 'playlist';
+}
+
+function applyEventRows(flat, title, statusText) {
+  state.rows = flat;
+  state.columns = collectColumns();
+  if (!state.columns.some(function (c) { return c.key === state.sortKey; })) {
+    state.sortKey = 'name';
+    state.sortDir = 1;
+  }
+  el.eventsTitle.textContent = title;
+  el.eventsHint.textContent = flat.length + ' событ' + plural(flat.length);
+  setStatus(statusText, 'ok');
+  renderTable();
+}
+
 function renderTable() {
   const rows = sortedFilteredRows();
-  el.eventsTable.hidden = !(state.playlistId && state.rows.length);
+  el.eventsTable.hidden = !(hasView() && state.rows.length);
   el.eventsEmpty.hidden = !el.eventsTable.hidden;
 
-  if (!state.playlistId) {
-    el.eventsEmpty.textContent = 'Сначала выбери плейлист';
+  if (!hasView()) {
+    el.eventsEmpty.textContent = 'Выбери «Все события» или плейлист слева';
     el.detailPanel.hidden = true;
     el.deleteBtn.disabled = true;
     el.filterInput.disabled = true;
@@ -221,7 +255,9 @@ function renderTable() {
   el.filterInput.disabled = false;
 
   if (!state.rows.length) {
-    el.eventsEmpty.textContent = 'В этом плейлисте нет событий';
+    el.eventsEmpty.textContent = state.view === 'all'
+      ? 'Событий в базе нет'
+      : 'В этом плейлисте нет событий';
     el.detailPanel.hidden = true;
     el.deleteBtn.disabled = true;
     return;
@@ -308,7 +344,37 @@ function renderDetail(row) {
   if (row._fetchError) add('ошибка', row._fetchError);
 }
 
+async function selectAllEvents() {
+  state.view = 'all';
+  state.playlistId = null;
+  state.playlistName = '';
+  state.selectedEventId = null;
+  state.rows = [];
+  state.columns = [];
+  renderPlaylists();
+  el.eventsTitle.textContent = 'Все события';
+  el.eventsHint.textContent = 'Загрузка…';
+  el.deleteBtn.disabled = true;
+  el.detailPanel.hidden = true;
+  renderTable();
+
+  try {
+    const data = await api('GET', '/api/events');
+    const flat = (data.events || []).map(flattenRow);
+    applyEventRows(
+      flat,
+      'Все события',
+      'все события · ' + flat.length
+    );
+  } catch (err) {
+    el.eventsHint.textContent = 'Ошибка загрузки';
+    toast(err.message, 'err');
+    setStatus(err.message, 'err');
+  }
+}
+
 async function selectPlaylist(pl) {
+  state.view = 'playlist';
   state.playlistId = pl.id;
   state.playlistName = pl.name || pl.id;
   state.selectedEventId = null;
@@ -324,20 +390,30 @@ async function selectPlaylist(pl) {
   try {
     const data = await api('GET', '/api/playlists/' + encodeURIComponent(pl.id) + '/events');
     const flat = (data.events || []).map(flattenRow);
-    state.rows = flat;
-    state.columns = collectColumns();
-    if (!state.columns.some(function (c) { return c.key === state.sortKey; })) {
-      state.sortKey = 'name';
-      state.sortDir = 1;
-    }
-    el.eventsHint.textContent = flat.length + ' событ' + plural(flat.length);
-    setStatus('плейлист: ' + state.playlistName + ' · ' + flat.length + ' событий', 'ok');
-    renderTable();
+    applyEventRows(
+      flat,
+      state.playlistName,
+      'плейлист: ' + state.playlistName + ' · ' + flat.length + ' событий'
+    );
   } catch (err) {
     el.eventsHint.textContent = 'Ошибка загрузки';
     toast(err.message, 'err');
     setStatus(err.message, 'err');
   }
+}
+
+async function reloadCurrentView() {
+  if (state.view === 'all') {
+    await selectAllEvents();
+    return;
+  }
+  if (state.view === 'playlist' && state.playlistId) {
+    const pl = state.playlists.find(function (p) { return p.id === state.playlistId; }) ||
+      { id: state.playlistId, name: state.playlistName };
+    await selectPlaylist(pl);
+    return;
+  }
+  await loadPlaylists();
 }
 
 function plural(n) {
@@ -371,6 +447,8 @@ async function connect(creds) {
     setStatus('онлайн · ' + data.baseUrl, 'ok');
     toast('Подключено к ' + data.baseUrl, 'ok');
     await loadPlaylists();
+    // Сразу показываем общий список — без выбора плейлиста.
+    await selectAllEvents();
   } catch (err) {
     setStatus(err.message, 'err');
     toast(err.message, 'err');
@@ -399,11 +477,7 @@ async function deleteSelected() {
     await api('DELETE', '/api/events/' + encodeURIComponent(id));
     toast('Удалено: ' + label, 'ok');
     state.selectedEventId = null;
-    if (state.playlistId) {
-      const pl = state.playlists.find(function (p) { return p.id === state.playlistId; });
-      if (pl) await selectPlaylist(pl);
-      else await loadPlaylists();
-    }
+    await reloadCurrentView();
   } catch (err) {
     toast(err.message, 'err');
     setStatus(err.message, 'err');
@@ -421,7 +495,9 @@ el.connectForm.addEventListener('submit', function (e) {
 });
 
 el.reloadPlaylists.addEventListener('click', function () {
-  loadPlaylists().catch(function (err) { toast(err.message, 'err'); });
+  loadPlaylists()
+    .then(function () { return reloadCurrentView(); })
+    .catch(function (err) { toast(err.message, 'err'); });
 });
 
 el.filterInput.addEventListener('input', function () {

@@ -213,6 +213,12 @@ input:focus, .filter:focus {
   box-shadow: inset 3px 0 0 var(--accent);
 }
 
+.playlist-list li:first-child {
+  margin-bottom: 0.25rem;
+  padding-bottom: 0.25rem;
+  border-bottom: 1px solid var(--line);
+}
+
 .playlist-list .pl-name {
   display: block;
   font-weight: 650;

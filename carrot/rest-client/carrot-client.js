@@ -498,6 +498,22 @@ class CarrotClient {
         return this._request('GET', '/templates/' + encodeURIComponent(templateId));
     }
 
+    // Разобрать ответ GET /events/{id}: иногда { event, template }, иногда плоский Event.
+    _unwrapEvent(raw) {
+        if (!raw) return raw;
+        if (raw.event && !raw.id) {
+            const event = Object.assign({}, raw.event);
+            const tpl = raw.template;
+            if (tpl && tpl.name && !event.templateName) event.templateName = tpl.name;
+            if (tpl && tpl.id && !event.templateId) event.templateId = tpl.id;
+            return event;
+        }
+        if (raw.template && raw.template.name && !raw.templateName) {
+            raw.templateName = raw.template.name;
+        }
+        return raw;
+    }
+
     // Собрать map templateId -> name из массива templates и/или отдельных GET.
     async _resolveTemplateNames(templateIds, seedTemplates) {
         const map = Object.create(null);
@@ -547,21 +563,7 @@ class CarrotClient {
                 seen[eventId] = true;
                 var event = null;
                 try {
-                    event = await this.getEvent(eventId);
-                    // Некоторые ответы обёрнуты: { event, template }.
-                    if (event && event.event && !event.id) {
-                        const tpl = event.template;
-                        event = event.event;
-                        if (tpl && tpl.name && !event.templateName) {
-                            event.templateName = tpl.name;
-                        }
-                        if (tpl && tpl.id && !event.templateId) {
-                            event.templateId = tpl.id;
-                        }
-                    } else if (event && event.template && event.template.name &&
-                        !event.templateName) {
-                        event.templateName = event.template.name;
-                    }
+                    event = this._unwrapEvent(await this.getEvent(eventId));
                 } catch (err) {
                     event = {
                         id: eventId,
@@ -593,6 +595,59 @@ class CarrotClient {
         }
 
         const nameById = await this._resolveTemplateNames(templateIds, seedTemplates);
+        out.forEach(function (row) {
+            const ev = row.event;
+            if (!ev) return;
+            if (!ev.templateName && ev.templateId && nameById[ev.templateId]) {
+                ev.templateName = nameById[ev.templateId];
+            }
+        });
+        return out;
+    }
+
+    // Все события из БД (GET /events), без привязки к плейлисту.
+    // Формат строк тот же, что у listPlaylistEvents: { event, item, story }.
+    async listAllEvents() {
+        const headers = await this.listEvents() || [];
+        const out = [];
+        const templateIds = [];
+        const concurrency = 8;
+
+        async function fetchOne(self, h) {
+            var event = null;
+            try {
+                event = self._unwrapEvent(await self.getEvent(h.id));
+            } catch (err) {
+                event = {
+                    id: h.id,
+                    name: h.name || h.id,
+                    changed: h.changed,
+                    externalId: h.externalId,
+                    _fetchError: err && err.message ? err.message : String(err)
+                };
+            }
+            // Заголовки списка иногда содержат поля, которых нет в полном ответе.
+            if (event) {
+                if (!event.name && h.name) event.name = h.name;
+                if (event.changed == null && h.changed != null) event.changed = h.changed;
+                if (!event.externalId && h.externalId) event.externalId = h.externalId;
+                if (!event.templateName && h.templateName) event.templateName = h.templateName;
+                if (!event.templateId && h.templateId) event.templateId = h.templateId;
+            }
+            return event;
+        }
+
+        for (let i = 0; i < headers.length; i += concurrency) {
+            const chunk = headers.slice(i, i + concurrency);
+            const events = await Promise.all(chunk.map((h) => fetchOne(this, h)));
+            for (let j = 0; j < events.length; j++) {
+                const event = events[j];
+                if (event && event.templateId) templateIds.push(event.templateId);
+                out.push({ event: event, item: {}, story: { id: '', name: '' } });
+            }
+        }
+
+        const nameById = await this._resolveTemplateNames(templateIds, []);
         out.forEach(function (row) {
             const ev = row.event;
             if (!ev) return;
