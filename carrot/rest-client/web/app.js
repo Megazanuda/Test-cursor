@@ -14,7 +14,9 @@ const state = {
   sortKey: 'name',
   sortDir: 1,
   filter: '',
-  selectedEventId: null
+  // Мультивыбор: набор id + якорь для Shift-диапазона
+  selectedIds: [],
+  anchorId: null
 };
 
 const el = {
@@ -226,9 +228,64 @@ function hasView() {
   return state.view === 'all' || state.view === 'playlist';
 }
 
+function clearSelection() {
+  state.selectedIds = [];
+  state.anchorId = null;
+}
+
+function selectedCount() {
+  return state.selectedIds.length;
+}
+
+function isSelected(id) {
+  return state.selectedIds.indexOf(id) !== -1;
+}
+
+function setSelection(ids, anchorId) {
+  const uniq = [];
+  const seen = Object.create(null);
+  (ids || []).forEach(function (id) {
+    if (!id || seen[id]) return;
+    seen[id] = true;
+    uniq.push(id);
+  });
+  state.selectedIds = uniq;
+  state.anchorId = anchorId != null ? anchorId : (uniq.length ? uniq[uniq.length - 1] : null);
+}
+
+function updateSelectionUi() {
+  const n = selectedCount();
+  el.deleteBtn.disabled = n === 0;
+  el.deleteBtn.textContent = n > 1 ? ('Удалить (' + n + ')') : 'Удалить';
+
+  if (n === 0) {
+    el.detailPanel.hidden = true;
+    return;
+  }
+  if (n === 1) {
+    const sel = state.rows.find(function (r) { return r.id === state.selectedIds[0]; });
+    if (sel) renderDetail(sel);
+    else el.detailPanel.hidden = true;
+    return;
+  }
+  el.detailPanel.hidden = false;
+  el.detailTitle.textContent = 'Выбрано: ' + n;
+  el.detailList.innerHTML = '';
+  const dt = document.createElement('dt');
+  dt.textContent = 'события';
+  const dd = document.createElement('dd');
+  dd.textContent = state.selectedIds.map(function (id) {
+    const row = state.rows.find(function (r) { return r.id === id; });
+    return (row && row.name) ? row.name : id;
+  }).join(', ');
+  el.detailList.appendChild(dt);
+  el.detailList.appendChild(dd);
+}
+
 function applyEventRows(flat, title, statusText) {
   state.rows = flat;
   state.columns = collectColumns();
+  clearSelection();
   if (!state.columns.some(function (c) { return c.key === state.sortKey; })) {
     state.sortKey = 'name';
     state.sortDir = 1;
@@ -248,11 +305,18 @@ function renderTable() {
     el.eventsEmpty.textContent = 'Выбери «Все события» или плейлист слева';
     el.detailPanel.hidden = true;
     el.deleteBtn.disabled = true;
+    el.deleteBtn.textContent = 'Удалить';
     el.filterInput.disabled = true;
     return;
   }
 
   el.filterInput.disabled = false;
+
+  // Убрать из выбора id, которых больше нет в текущих данных.
+  const existing = Object.create(null);
+  state.rows.forEach(function (r) { if (r.id) existing[r.id] = true; });
+  state.selectedIds = state.selectedIds.filter(function (id) { return existing[id]; });
+  if (state.anchorId && !existing[state.anchorId]) state.anchorId = null;
 
   if (!state.rows.length) {
     el.eventsEmpty.textContent = state.view === 'all'
@@ -260,6 +324,7 @@ function renderTable() {
       : 'В этом плейлисте нет событий';
     el.detailPanel.hidden = true;
     el.deleteBtn.disabled = true;
+    el.deleteBtn.textContent = 'Удалить';
     return;
   }
 
@@ -267,7 +332,7 @@ function renderTable() {
     el.eventsTable.hidden = true;
     el.eventsEmpty.hidden = false;
     el.eventsEmpty.textContent = 'Ничего не найдено по фильтру';
-    el.deleteBtn.disabled = !state.selectedEventId;
+    updateSelectionUi();
     return;
   }
 
@@ -296,7 +361,7 @@ function renderTable() {
   el.eventsBody.innerHTML = '';
   rows.forEach(function (r) {
     const tr = document.createElement('tr');
-    if (r.id === state.selectedEventId) tr.classList.add('selected');
+    if (isSelected(r.id)) tr.classList.add('selected');
     state.columns.forEach(function (c) {
       const td = document.createElement('td');
       const classes = [];
@@ -308,20 +373,11 @@ function renderTable() {
       td.title = text;
       tr.appendChild(td);
     });
-    tr.addEventListener('click', function () { selectEvent(r.id); });
+    tr.addEventListener('click', function (ev) { selectEvent(r.id, ev); });
     el.eventsBody.appendChild(tr);
   });
 
-  el.deleteBtn.disabled = !state.selectedEventId;
-  if (state.selectedEventId) {
-    const sel = state.rows.find(function (r) { return r.id === state.selectedEventId; });
-    if (sel) renderDetail(sel);
-    else {
-      el.detailPanel.hidden = true;
-      state.selectedEventId = null;
-      el.deleteBtn.disabled = true;
-    }
-  }
+  updateSelectionUi();
 }
 
 function renderDetail(row) {
@@ -348,13 +404,14 @@ async function selectAllEvents() {
   state.view = 'all';
   state.playlistId = null;
   state.playlistName = '';
-  state.selectedEventId = null;
+  clearSelection();
   state.rows = [];
   state.columns = [];
   renderPlaylists();
   el.eventsTitle.textContent = 'Все события';
   el.eventsHint.textContent = 'Загрузка…';
   el.deleteBtn.disabled = true;
+  el.deleteBtn.textContent = 'Удалить';
   el.detailPanel.hidden = true;
   renderTable();
 
@@ -377,13 +434,14 @@ async function selectPlaylist(pl) {
   state.view = 'playlist';
   state.playlistId = pl.id;
   state.playlistName = pl.name || pl.id;
-  state.selectedEventId = null;
+  clearSelection();
   state.rows = [];
   state.columns = [];
   renderPlaylists();
   el.eventsTitle.textContent = state.playlistName;
   el.eventsHint.textContent = 'Загрузка событий…';
   el.deleteBtn.disabled = true;
+  el.deleteBtn.textContent = 'Удалить';
   el.detailPanel.hidden = true;
   renderTable();
 
@@ -424,8 +482,44 @@ function plural(n) {
   return 'ий';
 }
 
-function selectEvent(eventId) {
-  state.selectedEventId = eventId;
+// Выбор строки:
+//   клик            — один элемент
+//   Shift+клик      — диапазон от якоря до строки (по текущей сортировке/фильтру)
+//   Ctrl/Cmd+клик   — добавить/убрать одну строку (для несмежного выбора)
+function selectEvent(eventId, ev) {
+  ev = ev || {};
+  const rows = sortedFilteredRows();
+  const ids = rows.map(function (r) { return r.id; });
+  const shift = !!ev.shiftKey;
+  const toggle = !!(ev.ctrlKey || ev.metaKey);
+
+  if (shift && state.anchorId && ids.indexOf(state.anchorId) !== -1 &&
+      ids.indexOf(eventId) !== -1) {
+    const a = ids.indexOf(state.anchorId);
+    const b = ids.indexOf(eventId);
+    const from = Math.min(a, b);
+    const to = Math.max(a, b);
+    const range = ids.slice(from, to + 1);
+    if (toggle) {
+      // Shift+Ctrl: добавить диапазон к текущему выбору
+      const merged = state.selectedIds.slice();
+      range.forEach(function (id) {
+        if (merged.indexOf(id) === -1) merged.push(id);
+      });
+      setSelection(merged, state.anchorId);
+    } else {
+      setSelection(range, state.anchorId);
+    }
+  } else if (toggle) {
+    const next = state.selectedIds.slice();
+    const idx = next.indexOf(eventId);
+    if (idx === -1) next.push(eventId);
+    else next.splice(idx, 1);
+    setSelection(next, eventId);
+  } else {
+    setSelection([eventId], eventId);
+  }
+
   renderTable();
 }
 
@@ -459,11 +553,19 @@ async function connect(creds) {
 }
 
 async function deleteSelected() {
-  const id = state.selectedEventId;
-  if (!id) return;
-  const row = state.rows.find(function (r) { return r.id === id; });
-  const label = (row && row.name) ? row.name : id;
-  el.confirmText.textContent = '«' + label + '» (' + id + ') будет удалено на сервере Carrot. Это необратимо.';
+  const ids = state.selectedIds.slice();
+  if (!ids.length) return;
+
+  if (ids.length === 1) {
+    const row = state.rows.find(function (r) { return r.id === ids[0]; });
+    const label = (row && row.name) ? row.name : ids[0];
+    el.confirmText.textContent =
+      '«' + label + '» (' + ids[0] + ') будет удалено на сервере Carrot. Это необратимо.';
+  } else {
+    el.confirmText.textContent =
+      'Будет удалено событий: ' + ids.length + '. Это необратимо.';
+  }
+
   el.confirmDialog.showModal();
   const result = await new Promise(function (resolve) {
     el.confirmDialog.addEventListener('close', function onClose() {
@@ -473,14 +575,25 @@ async function deleteSelected() {
   });
   if (result !== 'ok') return;
 
+  el.deleteBtn.disabled = true;
   try {
-    await api('DELETE', '/api/events/' + encodeURIComponent(id));
-    toast('Удалено: ' + label, 'ok');
-    state.selectedEventId = null;
+    const data = await api('POST', '/api/events/delete', { ids: ids });
+    const deleted = (data && data.deleted) ? data.deleted : [];
+    const failed = (data && data.failed) ? data.failed : [];
+    if (failed.length && deleted.length) {
+      toast('Удалено: ' + deleted.length + ', ошибок: ' + failed.length, 'err');
+    } else if (failed.length) {
+      const first = failed[0];
+      toast('Не удалено: ' + (first.error || failed.length + ' ошибок'), 'err');
+    } else {
+      toast('Удалено: ' + deleted.length, 'ok');
+    }
+    clearSelection();
     await reloadCurrentView();
   } catch (err) {
     toast(err.message, 'err');
     setStatus(err.message, 'err');
+    updateSelectionUi();
   }
 }
 
@@ -510,9 +623,13 @@ el.deleteBtn.addEventListener('click', function () {
 });
 
 document.addEventListener('keydown', function (e) {
-  if (e.key === 'Delete' && state.selectedEventId && !el.confirmDialog.open) {
+  if (e.key === 'Delete' && selectedCount() && !el.confirmDialog.open) {
     e.preventDefault();
     deleteSelected();
+  }
+  if (e.key === 'Escape' && selectedCount() && !el.confirmDialog.open) {
+    clearSelection();
+    renderTable();
   }
 });
 

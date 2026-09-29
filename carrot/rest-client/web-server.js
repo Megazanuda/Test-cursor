@@ -192,6 +192,31 @@ async function handleApi(req, res, url) {
         return sendJson(res, 200, { ok: true, events: rows });
     }
 
+    // Пакетное удаление: { ids: [guid, ...] }
+    if (req.method === 'POST' && pathname === '/api/events/delete') {
+        const body = await readBody(req);
+        const ids = (body && Array.isArray(body.ids)) ? body.ids : [];
+        if (!ids.length) {
+            return sendJson(res, 400, { ok: false, error: 'Нужен массив ids' });
+        }
+        const c = ensureClient();
+        const deleted = [];
+        const failed = [];
+        for (let i = 0; i < ids.length; i++) {
+            const eventId = ids[i];
+            try {
+                await c.deleteEvent(eventId);
+                deleted.push(eventId);
+            } catch (err) {
+                failed.push({
+                    id: eventId,
+                    error: err && err.message ? err.message : String(err)
+                });
+            }
+        }
+        return sendJson(res, 200, { ok: true, deleted: deleted, failed: failed });
+    }
+
     const evMatch = pathname.match(/^\/api\/events\/([^/]+)$/);
     if (req.method === 'GET' && evMatch) {
         const c = ensureClient();

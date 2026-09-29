@@ -300,7 +300,10 @@ input:focus, .filter:focus {
 .events-table th.col-ext,
 .events-table td.col-ext { max-width: 14rem; width: 14rem; }
 
-.events-table tbody tr { cursor: pointer; }
+.events-table tbody tr {
+  cursor: pointer;
+  user-select: none;
+}
 .events-table tbody tr:hover { background: var(--row-hover); }
 .events-table tbody tr.selected { background: var(--row-sel); }
 
