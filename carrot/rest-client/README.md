@@ -190,8 +190,12 @@ login / password в форме. Порт можно сменить: `CARROT_WEB_
 
 Как устроено: браузер ходит только на локальный `web-server.js`, а тот
 проксирует Carrot REST через `CarrotClient` (JWT, конверт MessageId/…).
-Удаление: `DELETE /events/{id}`. Если событие занято эфиром — Carrot вернёт
-`InUse`.
+Удаление события: REST `DELETE /events/{id}` на Carrot даёт **HTTP 405**.
+Клиент сначала пробует несколько REST-путей, затем удаляет через WebSocket
+команду `RemoveEventFromDB` (`ws://хост:24710`, см. `CARROT_WS_URL`).
+Порт **24710** должен быть доступен с машины, где запущен `web.cmd`.
+Имя шаблона берётся по `templateId` (`GET /templates/{id}` или из `templates`
+плейлиста).
 
 ---
 

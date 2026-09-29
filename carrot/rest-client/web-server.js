@@ -61,12 +61,14 @@ function ensureClient(creds) {
     if (!baseUrl) throw new Error('Нужен CARROT_BASE_URL или baseUrl в форме');
     if (!login || !password) throw new Error('Нужны login/password (из .env или формы)');
 
-    const key = baseUrl + '\0' + login + '\0' + password;
+    const wsUrl = creds.wsUrl || env('CARROT_WS_URL') || undefined;
+    const key = baseUrl + '\0' + login + '\0' + password + '\0' + (wsUrl || '');
     if (!client || clientKey !== key) {
         client = new CarrotClient({
             baseUrl: baseUrl,
             login: login,
             password: password,
+            wsUrl: wsUrl,
             senderId: env('CARROT_SENDER_ID', 'ticker-web'),
             receiverId: env('CARROT_RECEIVER_ID', 'carrot-server')
         });
@@ -237,4 +239,12 @@ server.listen(PORT, HOST, function () {
     console.log('Carrot playlist browser: http://' + HOST + ':' + PORT);
     console.log('Конфиг: CARROT_BASE_URL=' + (env('CARROT_BASE_URL') || '(не задан)') +
         ', login=' + (env('CARROT_LOGIN') || '(не задан)'));
+    const wsHint = env('CARROT_WS_URL') ||
+        (env('CARROT_BASE_URL')
+            ? '(по умолчанию ws://' + (() => {
+                try { return new URL(env('CARROT_BASE_URL')).hostname + ':24710'; }
+                catch (e) { return 'хост:24710'; }
+            })() + ')'
+            : '(не задан)');
+    console.log('Удаление событий: REST + WebSocket ' + wsHint);
 });

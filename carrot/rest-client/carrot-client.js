@@ -4,6 +4,8 @@
    CarrotClient — минимальный REST-клиент Carrot Broadcast
    ---------------------------------------------------------------------
    Без внешних зависимостей. Требует Node.js >= 18 (глобальный fetch).
+   Удаление событий: REST часто не отдаёт DELETE (HTTP 405) — тогда
+   используется WebSocket RemoveEventFromDB (порт 24710).
 
    Берёт на себя:
      - авторизацию (POST /auth/generate) и автообновление токена;
@@ -12,6 +14,8 @@
      - ретраи на сетевых сбоях с экспоненциальной задержкой;
      - повтор запроса один раз при 401 (протух токен).
    ===================================================================== */
+
+const crypto = require('crypto');
 
 const ERROR_NAMES = {
     0: 'Success',
@@ -79,6 +83,25 @@ function wrapNetError(err, url) {
     );
 }
 
+function xmlEscape(s) {
+    return String(s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&apos;');
+}
+
+function defaultWsUrlFromBase(baseUrl) {
+    try {
+        const u = new URL(baseUrl);
+        const proto = u.protocol === 'https:' ? 'wss:' : 'ws:';
+        return proto + '//' + u.hostname + ':24710';
+    } catch (e) {
+        return null;
+    }
+}
+
 class CarrotClient {
     constructor(opts) {
         opts = opts || {};
@@ -91,6 +114,7 @@ class CarrotClient {
         this.notificationsEnabled = !!opts.notificationsEnabled;
         this.senderId = opts.senderId || 'ticker-client';
         this.receiverId = opts.receiverId || 'carrot-server';
+        this.wsUrl = opts.wsUrl || defaultWsUrlFromBase(this.baseUrl);
 
         this.token = null;
         this.tokenAcquiredAt = 0;
@@ -266,30 +290,202 @@ class CarrotClient {
             '/events/' + encodeURIComponent(eventId) + '/editVariables', vars);
     }
 
-    // Удалить событие (XML CmdName=RemoveEventFromDB).
-    // На REST это POST /events/{id}/removeFromDB — обычный DELETE /events/{id}
-    // даёт HTTP 405. Если событие занято — Carrot вернёт InUse (41).
+    // Одноразовый REST-запрос без ретраев — для перебора путей удаления.
+    async _tryOnce(method, path, body) {
+        const prev = this.maxRetries;
+        this.maxRetries = 0;
+        try {
+            return { ok: true, data: await this._request(method, path, body) };
+        } catch (err) {
+            return {
+                ok: false,
+                error: err,
+                httpStatus: err instanceof CarrotError ? err.httpStatus : undefined,
+                message: err && err.message ? err.message : String(err)
+            };
+        } finally {
+            this.maxRetries = prev;
+        }
+    }
+
+    // Удалить событие.
+    // REST DELETE /events/{id} на Carrot даёт 405 — пробуем несколько REST-путей,
+    // затем WebSocket-команду RemoveEventFromDB (документированный способ).
     async deleteEvent(eventId) {
-        const id = encodeURIComponent(eventId);
-        const paths = [
-            { method: 'POST', path: '/events/' + id + '/removeFromDB' },
-            { method: 'POST', path: '/events/' + id + '/remove' },
-            { method: 'DELETE', path: '/events/' + id }
+        const enc = encodeURIComponent(eventId);
+        const restAttempts = [
+            { method: 'POST', path: '/events/' + enc + '/removeFromDB', body: {} },
+            { method: 'POST', path: '/events/' + enc + '/RemoveFromDB', body: {} },
+            { method: 'POST', path: '/events/removeFromDB', body: { eventId: eventId } },
+            { method: 'POST', path: '/events/removeFromDB', body: { id: eventId } },
+            { method: 'POST', path: '/events/RemoveEventFromDB', body: { eventId: eventId } },
+            { method: 'POST', path: '/events/RemoveEventFromDB', body: { EventId: eventId } },
+            { method: 'POST', path: '/events/' + enc + '/delete', body: {} },
+            { method: 'DELETE', path: '/events/' + enc + '/fromDB', body: undefined },
+            { method: 'DELETE', path: '/events/' + enc, body: undefined }
         ];
-        let lastErr = null;
-        for (let i = 0; i < paths.length; i++) {
-            try {
-                return await this._request(paths[i].method, paths[i].path, {});
-            } catch (err) {
-                lastErr = err;
-                // Пробуем следующий вариант только на 404/405.
-                if (!(err instanceof CarrotError) ||
-                    (err.httpStatus !== 404 && err.httpStatus !== 405)) {
-                    throw err;
-                }
+
+        const tried = [];
+        for (let i = 0; i < restAttempts.length; i++) {
+            const a = restAttempts[i];
+            const r = await this._tryOnce(a.method, a.path, a.body);
+            tried.push(a.method + ' ' + a.path + ' → ' +
+                (r.ok ? 'OK' : ('HTTP ' + (r.httpStatus || '?'))));
+            if (r.ok) return r.data;
+            // Доменные ошибки (InUse и т.п.) — не маскируем перебором.
+            if (r.error instanceof CarrotError && r.error.errorCode) throw r.error;
+            if (r.httpStatus && r.httpStatus !== 404 && r.httpStatus !== 405) {
+                throw r.error;
             }
         }
-        throw lastErr;
+
+        try {
+            const wsResult = await this.deleteEventViaWebSocket(eventId);
+            return wsResult;
+        } catch (wsErr) {
+            throw new CarrotError(
+                'Не удалось удалить событие через REST и WebSocket. ' +
+                'REST: ' + tried.join('; ') + '. ' +
+                'WebSocket (' + (this.wsUrl || 'нет URL') + '): ' +
+                (wsErr && wsErr.message ? wsErr.message : wsErr) +
+                '. Проверь, что порт 24710 доступен с этой машины (CARROT_WS_URL).',
+                { httpStatus: 405 }
+            );
+        }
+    }
+
+    // Удаление через WS API: Playlists / RemoveEventFromDB (см. carrotsoftware/api).
+    deleteEventViaWebSocket(eventId) {
+        const self = this;
+        const wsUrl = this.wsUrl;
+        if (!wsUrl) {
+            return Promise.reject(new CarrotError(
+                'Не задан WebSocket URL (CARROT_WS_URL или хост из CARROT_BASE_URL)'
+            ));
+        }
+        if (typeof WebSocket === 'undefined') {
+            return Promise.reject(new CarrotError(
+                'WebSocket недоступен в этой версии Node.js (нужен Node >= 21/22)'
+            ));
+        }
+        if (!this.login || !this.password) {
+            return Promise.reject(new Error('login/password обязательны для WS-удаления'));
+        }
+
+        const sessionId = crypto.randomUUID();
+        const timeoutMs = Math.max(this.timeoutMs, 15000);
+
+        return new Promise(function (resolve, reject) {
+            var ws;
+            var msgId = 1;
+            var stage = 'wait-client-id';
+            var settled = false;
+
+            function done(err, value) {
+                if (settled) return;
+                settled = true;
+                clearTimeout(timer);
+                try { ws.close(); } catch (e) { /* ignore */ }
+                if (err) reject(err);
+                else resolve(value);
+            }
+
+            function send(xml) {
+                ws.send(xml);
+            }
+
+            const timer = setTimeout(function () {
+                done(new CarrotError(
+                    'Таймаут WebSocket при удалении события (stage=' + stage + ', url=' + wsUrl + ')'
+                ));
+            }, timeoutMs);
+
+            try {
+                ws = new WebSocket(wsUrl);
+            } catch (err) {
+                done(new CarrotError('Не удалось открыть WebSocket: ' + err.message, { url: wsUrl }));
+                return;
+            }
+
+            ws.addEventListener('error', function () {
+                done(new CarrotError(
+                    'Ошибка WebSocket-соединения [' + wsUrl + ']. ' +
+                    'Порт 24710 должен быть доступен с этой машины.',
+                    { url: wsUrl }
+                ));
+            });
+
+            ws.addEventListener('close', function () {
+                if (!settled) {
+                    done(new CarrotError(
+                        'WebSocket закрыт до завершения удаления (stage=' + stage + ')'
+                    ));
+                }
+            });
+
+            ws.addEventListener('message', function (ev) {
+                const text = String(ev.data || '');
+
+                // Keepalive
+                if (/CmdGroup="HeartBeat"/.test(text) && !/MessageId=/.test(text)) {
+                    send(
+                        '<Command CmdGroup="HeartBeat" MessageId="-1">' +
+                        '<SessionId>' + sessionId + '</SessionId></Command>'
+                    );
+                    return;
+                }
+
+                if (stage === 'wait-client-id' && /CmdGroup="ClientID"/.test(text)) {
+                    stage = 'login';
+                    send(
+                        '<Command CmdGroup="HandShake" MessageId="' + (msgId++) + '">' +
+                        '<AppName>ticker-web</AppName>' +
+                        '<SessionID>' + sessionId + '</SessionID></Command>'
+                    );
+                    send(
+                        '<Command CmdGroup="Users" CmdName="LoginUnsecure" MessageId="' +
+                        (msgId++) + '">' +
+                        '<UserName>' + xmlEscape(self.login) + '</UserName>' +
+                        '<PassWord>' + xmlEscape(self.password) + '</PassWord></Command>'
+                    );
+                    return;
+                }
+
+                if (stage === 'login') {
+                    if (/CmdName="LoginError"/.test(text)) {
+                        const m = text.match(/<Message>([\s\S]*?)<\/Message>/);
+                        done(new CarrotError(
+                            'WS LoginError: ' + (m ? m[1] : 'неверный логин/пароль')
+                        ));
+                        return;
+                    }
+                    if (/CmdName="LoginOk"/.test(text)) {
+                        stage = 'remove';
+                        send(
+                            '<Command CmdGroup="Playlists" CmdName="RemoveEventFromDB" MessageId="' +
+                            (msgId++) + '">' +
+                            '<EventId>' + xmlEscape(eventId) + '</EventId></Command>'
+                        );
+                        return;
+                    }
+                }
+
+                if (stage === 'remove') {
+                    if (/CmdName="EventRemovedFromDB"/.test(text)) {
+                        done(null, { deleted: eventId, via: 'websocket' });
+                        return;
+                    }
+                    if (/CmdName="[^"]*Error[^"]*"/.test(text) ||
+                        /CmdGroup="Error"/.test(text)) {
+                        const m = text.match(/<Message>([\s\S]*?)<\/Message>/) ||
+                            text.match(/<Description>([\s\S]*?)<\/Description>/);
+                        done(new CarrotError(
+                            'WS ошибка удаления: ' + (m ? m[1] : text.slice(0, 220))
+                        ));
+                    }
+                }
+            });
+        });
     }
 
     async findEventIdByName(name) {
