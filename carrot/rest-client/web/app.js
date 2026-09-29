@@ -90,13 +90,6 @@ function preview(value) {
   return String(value);
 }
 
-const ITEM_STATUS = {
-  0: 'Unloaded',
-  1: 'Loading',
-  2: 'Ready',
-  3: 'Active'
-};
-
 function pick(obj, keys) {
   if (!obj) return '';
   for (let i = 0; i < keys.length; i++) {
@@ -110,26 +103,14 @@ function formatChanged(value) {
   if (value == null || value === '') return '';
   const d = new Date(value);
   if (Number.isNaN(d.getTime())) return String(value);
-  // Локальная дата/время без секунд.
   const pad = function (n) { return String(n).padStart(2, '0'); };
   return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) +
     ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
 }
 
-function formatStatus(event, item) {
-  const raw = pick(event, ['status', 'state']) || pick(item, ['status', 'state']);
-  if (raw === '') return '';
-  if (typeof raw === 'number' || /^\d+$/.test(String(raw))) {
-    const n = Number(raw);
-    return ITEM_STATUS[n] != null ? ITEM_STATUS[n] : String(raw);
-  }
-  return String(raw);
-}
-
 function flattenRow(entry) {
   const event = entry.event || {};
   const item = entry.item || {};
-  const story = entry.story || {};
   const template = event.template || item.template || {};
 
   return {
@@ -139,31 +120,20 @@ function flattenRow(entry) {
       pick(item, ['templateName']),
     changed: formatChanged(pick(event, ['changed', 'modified', 'updated', 'changeDate'])),
     changedRaw: pick(event, ['changed', 'modified', 'updated', 'changeDate']),
-    container: pick(event, ['container', 'containerName']) ||
-      pick(item, ['container', 'containerName']) ||
-      pick(story, ['name']),
     id: pick(event, ['id']) || pick(item, ['eventId']),
-    externalId: pick(event, ['externalId']) || pick(item, ['externalId']),
-    comment: pick(event, ['comment', 'description', 'note']) ||
-      pick(item, ['comment', 'description', 'note']),
-    status: formatStatus(event, item),
+    externalId: pick(event, ['externalId']) || pick(item, ['externalId', 'eventExternalId']),
     _event: event,
     _item: item,
-    _story: story,
     _fetchError: event._fetchError || ''
   };
 }
 
-// Фиксированный набор колонок — без переменных шаблона.
 const COLUMNS = [
-  { key: 'name', label: 'название', cls: 'col-name' },
-  { key: 'templateName', label: 'темплейт', cls: 'col-template' },
-  { key: 'changed', label: 'изменено', cls: 'col-changed' },
-  { key: 'container', label: 'контейнер', cls: 'col-container' },
-  { key: 'id', label: 'id', cls: 'col-id' },
-  { key: 'externalId', label: 'external id', cls: 'col-ext' },
-  { key: 'comment', label: 'комментарий', cls: 'col-comment' },
-  { key: 'status', label: 'статус', cls: 'col-status' }
+  { key: 'name', label: 'Event name', cls: 'col-name' },
+  { key: 'templateName', label: 'Template name', cls: 'col-template' },
+  { key: 'changed', label: 'Last modified', cls: 'col-changed' },
+  { key: 'id', label: 'Id', cls: 'col-id' },
+  { key: 'externalId', label: 'External id', cls: 'col-ext' }
 ];
 
 function collectColumns() {

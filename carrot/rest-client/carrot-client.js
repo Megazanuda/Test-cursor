@@ -266,9 +266,30 @@ class CarrotClient {
             '/events/' + encodeURIComponent(eventId) + '/editVariables', vars);
     }
 
-    // Удалить событие. Если оно в эфире / занято — Carrot вернёт InUse (41).
-    deleteEvent(eventId) {
-        return this._request('DELETE', '/events/' + encodeURIComponent(eventId));
+    // Удалить событие (XML CmdName=RemoveEventFromDB).
+    // На REST это POST /events/{id}/removeFromDB — обычный DELETE /events/{id}
+    // даёт HTTP 405. Если событие занято — Carrot вернёт InUse (41).
+    async deleteEvent(eventId) {
+        const id = encodeURIComponent(eventId);
+        const paths = [
+            { method: 'POST', path: '/events/' + id + '/removeFromDB' },
+            { method: 'POST', path: '/events/' + id + '/remove' },
+            { method: 'DELETE', path: '/events/' + id }
+        ];
+        let lastErr = null;
+        for (let i = 0; i < paths.length; i++) {
+            try {
+                return await this._request(paths[i].method, paths[i].path, {});
+            } catch (err) {
+                lastErr = err;
+                // Пробуем следующий вариант только на 404/405.
+                if (!(err instanceof CarrotError) ||
+                    (err.httpStatus !== 404 && err.httpStatus !== 405)) {
+                    throw err;
+                }
+            }
+        }
+        throw lastErr;
     }
 
     async findEventIdByName(name) {
@@ -277,13 +298,44 @@ class CarrotClient {
         return hit ? hit.id : null;
     }
 
+    getTemplate(templateId) {
+        return this._request('GET', '/templates/' + encodeURIComponent(templateId));
+    }
+
+    // Собрать map templateId -> name из массива templates и/или отдельных GET.
+    async _resolveTemplateNames(templateIds, seedTemplates) {
+        const map = Object.create(null);
+        (seedTemplates || []).forEach(function (t) {
+            if (t && t.id) map[t.id] = t.name || '';
+        });
+        const missing = [];
+        for (let i = 0; i < templateIds.length; i++) {
+            const tid = templateIds[i];
+            if (!tid || map[tid] !== undefined) continue;
+            missing.push(tid);
+        }
+        for (let i = 0; i < missing.length; i++) {
+            const tid = missing[i];
+            try {
+                const t = await this.getTemplate(tid);
+                map[tid] = (t && t.name) ? t.name : '';
+            } catch (err) {
+                map[tid] = '';
+            }
+        }
+        return map;
+    }
+
     // События, на которые ссылаются элементы сценария внутри плейлиста.
     // Возвращает плоский список { event, item, story } (уникальность по event.id).
+    // У события в API обычно только templateId — имя шаблона дописываем сюда.
     async listPlaylistEvents(playlistId) {
         const pl = await this.getPlaylist(playlistId);
-        const stories = (pl && pl.stories) ? pl.stories : [];
+        const stories = (pl && (pl.stories || pl.scenarios)) ? (pl.stories || pl.scenarios) : [];
+        const seedTemplates = (pl && pl.templates) ? pl.templates : [];
         const seen = Object.create(null);
         const out = [];
+        const templateIds = [];
 
         for (let s = 0; s < stories.length; s++) {
             const st = stories[s];
@@ -300,6 +352,20 @@ class CarrotClient {
                 var event = null;
                 try {
                     event = await this.getEvent(eventId);
+                    // Некоторые ответы обёрнуты: { event, template }.
+                    if (event && event.event && !event.id) {
+                        const tpl = event.template;
+                        event = event.event;
+                        if (tpl && tpl.name && !event.templateName) {
+                            event.templateName = tpl.name;
+                        }
+                        if (tpl && tpl.id && !event.templateId) {
+                            event.templateId = tpl.id;
+                        }
+                    } else if (event && event.template && event.template.name &&
+                        !event.templateName) {
+                        event.templateName = event.template.name;
+                    }
                 } catch (err) {
                     event = {
                         id: eventId,
@@ -307,6 +373,7 @@ class CarrotClient {
                         _fetchError: err && err.message ? err.message : String(err)
                     };
                 }
+                if (event && event.templateId) templateIds.push(event.templateId);
                 out.push({
                     event: event,
                     item: item,
@@ -314,6 +381,29 @@ class CarrotClient {
                 });
             }
         }
+
+        // Если плейлист уже отдал events на верхнем уровне — добавим те, кого нет в items.
+        const topEvents = (pl && pl.events) ? pl.events : [];
+        for (let i = 0; i < topEvents.length; i++) {
+            const ev = topEvents[i];
+            if (!ev || !ev.id || seen[ev.id]) continue;
+            seen[ev.id] = true;
+            if (ev.templateId) templateIds.push(ev.templateId);
+            out.push({
+                event: ev,
+                item: {},
+                story: { id: '', name: '' }
+            });
+        }
+
+        const nameById = await this._resolveTemplateNames(templateIds, seedTemplates);
+        out.forEach(function (row) {
+            const ev = row.event;
+            if (!ev) return;
+            if (!ev.templateName && ev.templateId && nameById[ev.templateId]) {
+                ev.templateName = nameById[ev.templateId];
+            }
+        });
         return out;
     }
 
