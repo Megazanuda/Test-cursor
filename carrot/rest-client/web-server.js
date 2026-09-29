@@ -186,10 +186,17 @@ async function handleApi(req, res, url) {
     }
 
     // Все события (без плейлиста) — до /api/events/:id.
+    // ?force=1 — обойти серверный кэш (кнопка ↻).
     if (req.method === 'GET' && pathname === '/api/events') {
         const c = ensureClient();
-        const rows = await c.listAllEvents();
-        return sendJson(res, 200, { ok: true, events: rows });
+        const force = url.searchParams.get('force') === '1';
+        const rows = await c.listAllEvents({ force: force });
+        return sendJson(res, 200, {
+            ok: true,
+            events: rows,
+            cached: !force && !!c._allEventsCacheAt &&
+                (Date.now() - c._allEventsCacheAt) < c._allEventsCacheTtlMs
+        });
     }
 
     // Пакетное удаление: { ids: [guid, ...] }

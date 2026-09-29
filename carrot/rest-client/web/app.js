@@ -16,7 +16,10 @@ const state = {
   filter: '',
   // Мультивыбор: набор id + якорь для Shift-диапазона
   selectedIds: [],
-  anchorId: null
+  anchorId: null,
+  // Клиентский кэш вкладки «Все события» — мгновенное переключение
+  allEventsCache: null,
+  allEventsLoading: false
 };
 
 const el = {
@@ -282,10 +285,11 @@ function updateSelectionUi() {
   el.detailList.appendChild(dd);
 }
 
-function applyEventRows(flat, title, statusText) {
+function applyEventRows(flat, title, statusText, opts) {
+  opts = opts || {};
   state.rows = flat;
   state.columns = collectColumns();
-  clearSelection();
+  if (!opts.keepSelection) clearSelection();
   if (!state.columns.some(function (c) { return c.key === state.sortKey; })) {
     state.sortKey = 'name';
     state.sortDir = 1;
@@ -400,33 +404,63 @@ function renderDetail(row) {
   if (row._fetchError) add('ошибка', row._fetchError);
 }
 
-async function selectAllEvents() {
+async function fetchAllEvents(force) {
+  const q = force ? '?force=1' : '';
+  const data = await api('GET', '/api/events' + q);
+  const flat = (data.events || []).map(flattenRow);
+  state.allEventsCache = flat;
+  return flat;
+}
+
+async function selectAllEvents(opts) {
+  opts = opts || {};
+  const force = !!opts.force;
   state.view = 'all';
   state.playlistId = null;
   state.playlistName = '';
   clearSelection();
-  state.rows = [];
-  state.columns = [];
   renderPlaylists();
   el.eventsTitle.textContent = 'Все события';
-  el.eventsHint.textContent = 'Загрузка…';
   el.deleteBtn.disabled = true;
   el.deleteBtn.textContent = 'Удалить';
   el.detailPanel.hidden = true;
+
+  // Мгновенно показываем кэш, если есть — без пустого «Загрузка…».
+  if (!force && state.allEventsCache) {
+    applyEventRows(
+      state.allEventsCache,
+      'Все события',
+      'все события · ' + state.allEventsCache.length + ' (кэш)'
+    );
+    // Фоново обновим, если кэш мог устареть.
+    if (!state.allEventsLoading) {
+      state.allEventsLoading = true;
+      fetchAllEvents(false)
+        .then(function (flat) {
+          if (state.view !== 'all') return;
+          applyEventRows(flat, 'Все события', 'все события · ' + flat.length);
+        })
+        .catch(function () { /* оставляем кэш */ })
+        .finally(function () { state.allEventsLoading = false; });
+    }
+    return;
+  }
+
+  state.rows = [];
+  state.columns = [];
+  el.eventsHint.textContent = 'Загрузка…';
   renderTable();
 
   try {
-    const data = await api('GET', '/api/events');
-    const flat = (data.events || []).map(flattenRow);
-    applyEventRows(
-      flat,
-      'Все события',
-      'все события · ' + flat.length
-    );
+    state.allEventsLoading = true;
+    const flat = await fetchAllEvents(force);
+    applyEventRows(flat, 'Все события', 'все события · ' + flat.length);
   } catch (err) {
     el.eventsHint.textContent = 'Ошибка загрузки';
     toast(err.message, 'err');
     setStatus(err.message, 'err');
+  } finally {
+    state.allEventsLoading = false;
   }
 }
 
@@ -460,9 +494,10 @@ async function selectPlaylist(pl) {
   }
 }
 
-async function reloadCurrentView() {
+async function reloadCurrentView(opts) {
+  opts = opts || {};
   if (state.view === 'all') {
-    await selectAllEvents();
+    await selectAllEvents({ force: !!opts.force });
     return;
   }
   if (state.view === 'playlist' && state.playlistId) {
@@ -472,6 +507,17 @@ async function reloadCurrentView() {
     return;
   }
   await loadPlaylists();
+}
+
+function removeRowsByIds(ids) {
+  const drop = Object.create(null);
+  (ids || []).forEach(function (id) { drop[id] = true; });
+  state.rows = state.rows.filter(function (r) { return !drop[r.id]; });
+  if (state.allEventsCache) {
+    state.allEventsCache = state.allEventsCache.filter(function (r) {
+      return !drop[r.id];
+    });
+  }
 }
 
 function plural(n) {
@@ -588,8 +634,24 @@ async function deleteSelected() {
     } else {
       toast('Удалено: ' + deleted.length, 'ok');
     }
+    // Без полной перезагрузки списка — убираем строки локально.
+    if (deleted.length) removeRowsByIds(deleted);
     clearSelection();
-    await reloadCurrentView();
+    if (state.view === 'all') {
+      applyEventRows(
+        state.rows,
+        'Все события',
+        'все события · ' + state.rows.length
+      );
+    } else if (state.view === 'playlist') {
+      applyEventRows(
+        state.rows,
+        state.playlistName,
+        'плейлист: ' + state.playlistName + ' · ' + state.rows.length + ' событий'
+      );
+    } else {
+      renderTable();
+    }
   } catch (err) {
     toast(err.message, 'err');
     setStatus(err.message, 'err');
@@ -609,7 +671,7 @@ el.connectForm.addEventListener('submit', function (e) {
 
 el.reloadPlaylists.addEventListener('click', function () {
   loadPlaylists()
-    .then(function () { return reloadCurrentView(); })
+    .then(function () { return reloadCurrentView({ force: true }); })
     .catch(function (err) { toast(err.message, 'err'); });
 });
 

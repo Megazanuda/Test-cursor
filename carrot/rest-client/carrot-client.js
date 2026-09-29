@@ -122,6 +122,17 @@ class CarrotClient {
         this.maxRetries = (opts.maxRetries != null) ? opts.maxRetries : 3;
 
         this._messageId = 0;
+        // Кэш списка всех событий и имён шаблонов — иначе «Все события» делает N×GET.
+        this._allEventsCache = null;
+        this._allEventsCacheAt = 0;
+        this._allEventsCacheTtlMs = (opts.allEventsCacheTtlMs != null)
+            ? opts.allEventsCacheTtlMs : 120000;
+        this._templateNameCache = Object.create(null);
+    }
+
+    invalidateEventsCache() {
+        this._allEventsCache = null;
+        this._allEventsCacheAt = 0;
     }
 
     _nextMessageId() { return ++this._messageId; }
@@ -331,7 +342,10 @@ class CarrotClient {
             const r = await this._tryOnce(a.method, a.path, a.body);
             tried.push(a.method + ' ' + a.path + ' → ' +
                 (r.ok ? 'OK' : ('HTTP ' + (r.httpStatus || '?'))));
-            if (r.ok) return r.data;
+            if (r.ok) {
+                this.invalidateEventsCache();
+                return r.data;
+            }
             // Доменные ошибки (InUse и т.п.) — не маскируем перебором.
             if (r.error instanceof CarrotError && r.error.errorCode) throw r.error;
             if (r.httpStatus && r.httpStatus !== 404 && r.httpStatus !== 405) {
@@ -341,6 +355,7 @@ class CarrotClient {
 
         try {
             const wsResult = await this.deleteEventViaWebSocket(eventId);
+            this.invalidateEventsCache();
             return wsResult;
         } catch (wsErr) {
             throw new CarrotError(
@@ -498,6 +513,39 @@ class CarrotClient {
         return this._request('GET', '/templates/' + encodeURIComponent(templateId));
     }
 
+    // Список шаблонов (если REST отдаёт). Нужен, чтобы не ходить GET /events/{id} на каждый ивент.
+    listTemplates() {
+        return this._request('GET', '/templates');
+    }
+
+    _flattenTemplates(raw) {
+        if (!raw) return [];
+        if (Array.isArray(raw)) {
+            const out = [];
+            for (let i = 0; i < raw.length; i++) {
+                const t = raw[i];
+                if (!t) continue;
+                if (t.id && (t.name != null || t.templateTypeInt != null)) {
+                    out.push(t);
+                    continue;
+                }
+                // Иногда приходит дерево групп.
+                if (Array.isArray(t.templates)) {
+                    out.push.apply(out, this._flattenTemplates(t.templates));
+                }
+                if (Array.isArray(t.templateGroups) || Array.isArray(t.groups)) {
+                    out.push.apply(out,
+                        this._flattenTemplates(t.templateGroups || t.groups));
+                }
+            }
+            return out;
+        }
+        if (Array.isArray(raw.templates) || Array.isArray(raw.items)) {
+            return this._flattenTemplates(raw.templates || raw.items);
+        }
+        return [];
+    }
+
     // Разобрать ответ GET /events/{id}: иногда { event, template }, иногда плоский Event.
     _unwrapEvent(raw) {
         if (!raw) return raw;
@@ -516,25 +564,33 @@ class CarrotClient {
 
     // Собрать map templateId -> name из массива templates и/или отдельных GET.
     async _resolveTemplateNames(templateIds, seedTemplates) {
-        const map = Object.create(null);
+        const map = Object.assign(Object.create(null), this._templateNameCache);
         (seedTemplates || []).forEach(function (t) {
             if (t && t.id) map[t.id] = t.name || '';
         });
         const missing = [];
+        const seen = Object.create(null);
         for (let i = 0; i < templateIds.length; i++) {
             const tid = templateIds[i];
-            if (!tid || map[tid] !== undefined) continue;
+            if (!tid || seen[tid]) continue;
+            seen[tid] = true;
+            if (map[tid] !== undefined) continue;
             missing.push(tid);
         }
-        for (let i = 0; i < missing.length; i++) {
-            const tid = missing[i];
-            try {
-                const t = await this.getTemplate(tid);
-                map[tid] = (t && t.name) ? t.name : '';
-            } catch (err) {
-                map[tid] = '';
-            }
+        const concurrency = 12;
+        for (let i = 0; i < missing.length; i += concurrency) {
+            const chunk = missing.slice(i, i + concurrency);
+            const self = this;
+            await Promise.all(chunk.map(async function (tid) {
+                try {
+                    const t = await self.getTemplate(tid);
+                    map[tid] = (t && t.name) ? t.name : '';
+                } catch (err) {
+                    map[tid] = '';
+                }
+            }));
         }
+        Object.keys(map).forEach((k) => { this._templateNameCache[k] = map[k]; });
         return map;
     }
 
@@ -606,48 +662,72 @@ class CarrotClient {
     }
 
     // Все события из БД (GET /events), без привязки к плейлисту.
+    // Быстрый путь: берём заголовки списка + имена шаблонов (без N×GET /events/{id}).
     // Формат строк тот же, что у listPlaylistEvents: { event, item, story }.
-    async listAllEvents() {
+    async listAllEvents(opts) {
+        opts = opts || {};
+        const force = !!opts.force;
+        const now = Date.now();
+        if (!force && this._allEventsCache &&
+            (now - this._allEventsCacheAt) < this._allEventsCacheTtlMs) {
+            return this._allEventsCache;
+        }
+
         const headers = await this.listEvents() || [];
+
+        var seedTemplates = [];
+        try {
+            seedTemplates = this._flattenTemplates(await this.listTemplates());
+        } catch (err) {
+            seedTemplates = [];
+        }
+
         const out = [];
         const templateIds = [];
-        const concurrency = 8;
+        const needDetail = [];
 
-        async function fetchOne(self, h) {
-            var event = null;
-            try {
-                event = self._unwrapEvent(await self.getEvent(h.id));
-            } catch (err) {
-                event = {
-                    id: h.id,
-                    name: h.name || h.id,
-                    changed: h.changed,
-                    externalId: h.externalId,
-                    _fetchError: err && err.message ? err.message : String(err)
-                };
-            }
-            // Заголовки списка иногда содержат поля, которых нет в полном ответе.
-            if (event) {
-                if (!event.name && h.name) event.name = h.name;
-                if (event.changed == null && h.changed != null) event.changed = h.changed;
-                if (!event.externalId && h.externalId) event.externalId = h.externalId;
-                if (!event.templateName && h.templateName) event.templateName = h.templateName;
-                if (!event.templateId && h.templateId) event.templateId = h.templateId;
-            }
-            return event;
+        for (let i = 0; i < headers.length; i++) {
+            const h = headers[i] || {};
+            const event = {
+                id: h.id,
+                name: h.name || h.id,
+                changed: h.changed,
+                externalId: h.externalId,
+                templateId: h.templateId ||
+                    (h.template && h.template.id) || '',
+                templateName: h.templateName ||
+                    (h.template && h.template.name) || ''
+            };
+            if (event.templateId) templateIds.push(event.templateId);
+            else if (!event.templateName) needDetail.push(event);
+            out.push({ event: event, item: {}, story: { id: '', name: '' } });
         }
 
-        for (let i = 0; i < headers.length; i += concurrency) {
-            const chunk = headers.slice(i, i + concurrency);
-            const events = await Promise.all(chunk.map((h) => fetchOne(this, h)));
-            for (let j = 0; j < events.length; j++) {
-                const event = events[j];
-                if (event && event.templateId) templateIds.push(event.templateId);
-                out.push({ event: event, item: {}, story: { id: '', name: '' } });
+        // Догружаем детали ТОЛЬКО если в заголовке нет templateId/templateName.
+        // Раньше это делалось для всех событий — отсюда минуты ожидания.
+        if (needDetail.length) {
+            const concurrency = 16;
+            for (let i = 0; i < needDetail.length; i += concurrency) {
+                const chunk = needDetail.slice(i, i + concurrency);
+                const self = this;
+                await Promise.all(chunk.map(async function (event) {
+                    try {
+                        const full = self._unwrapEvent(await self.getEvent(event.id));
+                        if (!full) return;
+                        if (full.name) event.name = full.name;
+                        if (full.changed != null) event.changed = full.changed;
+                        if (full.externalId) event.externalId = full.externalId;
+                        if (full.templateId) event.templateId = full.templateId;
+                        if (full.templateName) event.templateName = full.templateName;
+                        if (event.templateId) templateIds.push(event.templateId);
+                    } catch (err) {
+                        event._fetchError = err && err.message ? err.message : String(err);
+                    }
+                }));
             }
         }
 
-        const nameById = await this._resolveTemplateNames(templateIds, []);
+        const nameById = await this._resolveTemplateNames(templateIds, seedTemplates);
         out.forEach(function (row) {
             const ev = row.event;
             if (!ev) return;
@@ -655,6 +735,9 @@ class CarrotClient {
                 ev.templateName = nameById[ev.templateId];
             }
         });
+
+        this._allEventsCache = out;
+        this._allEventsCacheAt = Date.now();
         return out;
     }
 
