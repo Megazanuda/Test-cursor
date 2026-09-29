@@ -148,6 +148,7 @@ function usage() {
         '',
         'Конфиг (env или .env; событие/элемент можно задать флагами):',
         '  CARROT_BASE_URL, CARROT_LOGIN, CARROT_PASSWORD',
+        '  CARROT_WS_URL               WebSocket для удаления событий (по умолч. ws://хост:24710)',
         '  CARROT_EVENT_ID | CARROT_EVENT_NAME, CARROT_TICKER_VAR (по умолч. inputext)',
         '  CARROT_ITEM_ID (--item)     id элемента сценария для эфира, ИЛИ',
         '  CARROT_PLAYLIST_ID (--playlist)  плейлист для поиска элемента по событию'
@@ -171,6 +172,7 @@ async function main() {
         baseUrl: env('CARROT_BASE_URL'),
         login: env('CARROT_LOGIN'),
         password: env('CARROT_PASSWORD'),
+        wsUrl: env('CARROT_WS_URL') || undefined,
         senderId: env('CARROT_SENDER_ID', 'ticker-client'),
         receiverId: env('CARROT_RECEIVER_ID', 'carrot-server'),
         notificationsEnabled: false
@@ -293,6 +295,16 @@ async function main() {
             const list = await client.listPlaylists();
             if (!list || !list.length) { console.log('(плейлистов нет)'); break; }
             list.forEach(function (h) { console.log(h.id + '  ' + h.name); });
+            break;
+        }
+
+        case 'delete-event': {
+            const id = args._[1] || args.flags.event || env('CARROT_EVENT_ID');
+            if (!id) throw new Error('usage: delete-event <event-id>');
+            console.log('WS: ' + (client.wsUrl || '(нет)'));
+            const result = await client.deleteEvent(id);
+            console.log('OK, удалено: ' + id +
+                (result && result.via ? ' (via ' + result.via + ')' : ''));
             break;
         }
 
