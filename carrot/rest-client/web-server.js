@@ -224,6 +224,23 @@ async function handleApi(req, res, url) {
         return sendJson(res, 200, { ok: true, deleted: deleted, failed: failed });
     }
 
+    const varsMatch = pathname.match(/^\/api\/events\/([^/]+)\/variables$/);
+    if (req.method === 'PATCH' && varsMatch) {
+        const c = ensureClient();
+        const eventId = decodeURIComponent(varsMatch[1]);
+        const body = await readBody(req);
+        const vars = Array.isArray(body) ? body
+            : (body && Array.isArray(body.variables) ? body.variables : null);
+        if (!vars) {
+            return sendJson(res, 400, {
+                ok: false,
+                error: 'Нужен массив [{name, value}, ...] или { variables: [...] }'
+            });
+        }
+        await c.editVariables(eventId, vars);
+        return sendJson(res, 200, { ok: true, eventId: eventId });
+    }
+
     const evMatch = pathname.match(/^\/api\/events\/([^/]+)$/);
     if (req.method === 'GET' && evMatch) {
         const c = ensureClient();

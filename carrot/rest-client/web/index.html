@@ -3,12 +3,11 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Carrot — плейлисты и события</title>
+  <title>Плейлисты и события</title>
   <link rel="stylesheet" href="/app.css" />
 </head>
 <body>
   <header class="top">
-    <strong class="brand">Carrot</strong>
     <span class="status-line" id="statusLine">не подключено</span>
   </header>
 
@@ -35,9 +34,11 @@
 
     <section class="workspace" id="workspace" hidden>
       <aside class="playlists-pane">
-        <div class="pane-head">
-          <h2>Источник</h2>
-          <button type="button" class="btn ghost" id="reloadPlaylists" title="Обновить">↻</button>
+        <div class="pane-head pane-head-compact">
+          <button type="button" class="btn ghost" id="reloadPlaylists"
+            title="Заново загрузить плейлисты и текущий список событий с сервера">
+            Обновить с сервера
+          </button>
         </div>
         <ul class="playlist-list" id="playlistList"></ul>
         <p class="empty" id="playlistEmpty" hidden>Плейлистов нет</p>
@@ -50,6 +51,10 @@
             <p class="lede" id="eventsHint">Выбери «Все события» или плейлист слева</p>
           </div>
           <div class="pane-actions">
+            <details class="cols-menu" id="colsMenu">
+              <summary class="btn ghost">Колонки</summary>
+              <div class="cols-menu-body" id="colsMenuBody"></div>
+            </details>
             <input type="search" id="filterInput" class="filter" placeholder="Фильтр…" disabled />
             <button type="button" class="btn danger" id="deleteBtn" disabled>Удалить</button>
           </div>
@@ -60,12 +65,22 @@
             <thead id="eventsHead"></thead>
             <tbody id="eventsBody"></tbody>
           </table>
-          <p class="empty" id="eventsEmpty">Выбери источник слева</p>
+          <p class="empty" id="eventsEmpty">Выбери «Все события» или плейлист слева</p>
         </div>
 
-        <aside class="detail" id="detailPanel" hidden>
-          <h3 id="detailTitle">Событие</h3>
-          <dl id="detailList" class="detail-list"></dl>
+        <aside class="editor" id="editorPanel" hidden>
+          <div class="editor-head">
+            <div class="editor-head-text">
+              <h3 id="editorTitle">Переменные</h3>
+              <p class="editor-sub" id="editorSub" hidden></p>
+            </div>
+            <div class="editor-head-actions">
+              <input type="search" id="varFilter" class="filter filter-sm" placeholder="Фильтр переменных…" hidden />
+              <button type="button" class="btn ghost sm" id="editorCollapseAll" hidden>Свернуть все</button>
+            </div>
+          </div>
+          <div class="editor-tabs" id="editorTabs" hidden></div>
+          <div class="editor-body" id="editorBody"></div>
         </aside>
       </section>
     </section>

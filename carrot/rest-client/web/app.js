@@ -2,24 +2,45 @@
 
 /* Carrot playlist / event browser (front-end) */
 
+const COLUMNS = [
+  { key: 'name', label: 'Event name', cls: 'col-name' },
+  { key: 'templateName', label: 'Template name', cls: 'col-template' },
+  { key: 'changed', label: 'Last modified', cls: 'col-changed' },
+  { key: 'id', label: 'Id', cls: 'col-id' },
+  { key: 'externalId', label: 'External id', cls: 'col-ext' }
+];
+
+const HIDDEN_COLS_KEY = 'carrot-web-hidden-columns';
+
+function loadHiddenColumns() {
+  try {
+    const raw = localStorage.getItem(HIDDEN_COLS_KEY);
+    const obj = raw ? JSON.parse(raw) : {};
+    return obj && typeof obj === 'object' ? obj : {};
+  } catch (e) {
+    return {};
+  }
+}
+
 const state = {
   connected: false,
   playlists: [],
-  // 'all' — все события из БД; 'playlist' — события выбранного плейлиста
   view: null,
   playlistId: null,
   playlistName: '',
-  rows: [],          // flattened rows for table
-  columns: [],       // [{key, label}]
+  rows: [],
   sortKey: 'name',
   sortDir: 1,
   filter: '',
-  // Мультивыбор: набор id + якорь для Shift-диапазона
   selectedIds: [],
   anchorId: null,
-  // Клиентский кэш вкладки «Все события» — мгновенное переключение
   allEventsCache: null,
-  allEventsLoading: false
+  allEventsLoading: false,
+  hiddenColumns: loadHiddenColumns(),
+  // Кэш полных событий (с variables) для редактора
+  eventDetails: Object.create(null),
+  editorLoadToken: 0,
+  varFilter: ''
 };
 
 const el = {
@@ -42,9 +63,14 @@ const el = {
   eventsHead: document.getElementById('eventsHead'),
   eventsBody: document.getElementById('eventsBody'),
   eventsEmpty: document.getElementById('eventsEmpty'),
-  detailPanel: document.getElementById('detailPanel'),
-  detailTitle: document.getElementById('detailTitle'),
-  detailList: document.getElementById('detailList'),
+  colsMenuBody: document.getElementById('colsMenuBody'),
+  editorPanel: document.getElementById('editorPanel'),
+  editorTitle: document.getElementById('editorTitle'),
+  editorSub: document.getElementById('editorSub'),
+  editorTabs: document.getElementById('editorTabs'),
+  editorBody: document.getElementById('editorBody'),
+  editorCollapseAll: document.getElementById('editorCollapseAll'),
+  varFilter: document.getElementById('varFilter'),
   toast: document.getElementById('toast'),
   confirmDialog: document.getElementById('confirmDialog'),
   confirmText: document.getElementById('confirmText')
@@ -135,16 +161,45 @@ function flattenRow(entry) {
   };
 }
 
-const COLUMNS = [
-  { key: 'name', label: 'Event name', cls: 'col-name' },
-  { key: 'templateName', label: 'Template name', cls: 'col-template' },
-  { key: 'changed', label: 'Last modified', cls: 'col-changed' },
-  { key: 'id', label: 'Id', cls: 'col-id' },
-  { key: 'externalId', label: 'External id', cls: 'col-ext' }
-];
+function visibleColumns() {
+  const vis = COLUMNS.filter(function (c) { return !state.hiddenColumns[c.key]; });
+  return vis.length ? vis : COLUMNS.slice(0, 1);
+}
 
-function collectColumns() {
-  return COLUMNS.slice();
+function saveHiddenColumns() {
+  try {
+    localStorage.setItem(HIDDEN_COLS_KEY, JSON.stringify(state.hiddenColumns));
+  } catch (e) { /* ignore */ }
+}
+
+function renderColsMenu() {
+  el.colsMenuBody.innerHTML = '';
+  COLUMNS.forEach(function (c) {
+    const label = document.createElement('label');
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = !state.hiddenColumns[c.key];
+    cb.addEventListener('change', function () {
+      if (cb.checked) delete state.hiddenColumns[c.key];
+      else {
+        // Нельзя спрятать все колонки.
+        const left = COLUMNS.filter(function (x) {
+          return x.key !== c.key && !state.hiddenColumns[x.key];
+        });
+        if (!left.length) {
+          cb.checked = true;
+          toast('Нужна хотя бы одна колонка', 'err');
+          return;
+        }
+        state.hiddenColumns[c.key] = true;
+      }
+      saveHiddenColumns();
+      renderTable();
+    });
+    label.appendChild(cb);
+    label.appendChild(document.createTextNode(' ' + c.label));
+    el.colsMenuBody.appendChild(label);
+  });
 }
 
 function compareValues(a, b) {
@@ -174,12 +229,11 @@ function sortedFilteredRows() {
   const q = state.filter.trim().toLowerCase();
   if (q) {
     list = list.filter(function (r) {
-      return state.columns.some(function (c) {
+      return COLUMNS.some(function (c) {
         return preview(r[c.key]).toLowerCase().indexOf(q) !== -1;
       });
     });
   }
-  // Для даты сортируем по сырому значению, а не по отформатированной строке.
   const key = state.sortKey === 'changed' ? 'changedRaw' : state.sortKey;
   const dir = state.sortDir;
   list.sort(function (a, b) {
@@ -193,14 +247,13 @@ function sortedFilteredRows() {
 function renderPlaylists() {
   el.playlistList.innerHTML = '';
 
-  // Пункт «Все события» — без привязки к плейлисту.
   const allLi = document.createElement('li');
   const allBtn = document.createElement('button');
   allBtn.type = 'button';
   if (state.view === 'all') allBtn.classList.add('active');
   allBtn.innerHTML =
     '<span class="pl-name">Все события</span>' +
-    '<span class="pl-id">вся база · GET /events</span>';
+    '<span class="pl-id">вся база</span>';
   allBtn.addEventListener('click', function () { selectAllEvents(); });
   allLi.appendChild(allBtn);
   el.playlistList.appendChild(allLi);
@@ -256,41 +309,321 @@ function setSelection(ids, anchorId) {
   state.anchorId = anchorId != null ? anchorId : (uniq.length ? uniq[uniq.length - 1] : null);
 }
 
-function updateSelectionUi() {
-  const n = selectedCount();
+function unwrapEvent(raw) {
+  if (!raw) return raw;
+  if (raw.event && !raw.id) {
+    const event = Object.assign({}, raw.event);
+    if (raw.template && raw.template.name && !event.templateName) {
+      event.templateName = raw.template.name;
+    }
+    return event;
+  }
+  return raw;
+}
+
+async function loadEventDetail(eventId) {
+  if (state.eventDetails[eventId] && state.eventDetails[eventId].variables) {
+    return state.eventDetails[eventId];
+  }
+  const data = await api('GET', '/api/events/' + encodeURIComponent(eventId));
+  const event = unwrapEvent(data.event);
+  state.eventDetails[eventId] = event;
+  return event;
+}
+
+function matchesVarFilter(v) {
+  const q = state.varFilter.trim().toLowerCase();
+  if (!q) return true;
+  return String(v.name || '').toLowerCase().indexOf(q) !== -1 ||
+    String(v.value == null ? '' : v.value).toLowerCase().indexOf(q) !== -1 ||
+    String(v.type || '').toLowerCase().indexOf(q) !== -1;
+}
+
+function buildVarEditor(eventId, variables, opts) {
+  opts = opts || {};
+  const wrap = document.createElement('div');
+  wrap.className = opts.bare ? 'var-editor' : 'event-card-body var-editor';
+
+  const all = variables || [];
+  const filtered = all.filter(matchesVarFilter);
+  if (!all.length) {
+    const p = document.createElement('p');
+    p.className = 'editor-empty';
+    p.textContent = 'У события нет переменных';
+    wrap.appendChild(p);
+    return wrap;
+  }
+
+  if (state.varFilter && !filtered.length) {
+    const p = document.createElement('p');
+    p.className = 'editor-empty';
+    p.textContent = 'Нет переменных по фильтру';
+    wrap.appendChild(p);
+    return wrap;
+  }
+
+  const many = all.length > 10;
+  if (many || state.varFilter) {
+    const hint = document.createElement('p');
+    hint.className = 'var-count-hint';
+    hint.textContent = 'Показано ' + filtered.length + ' из ' + all.length +
+      (state.varFilter ? '' : ' — сузь список фильтром сверху');
+    wrap.appendChild(hint);
+  }
+
+  const grid = document.createElement('div');
+  grid.className = 'var-grid' + (many ? ' var-grid-compact' : '');
+  const inputs = [];
+
+  filtered.forEach(function (v) {
+    const row = document.createElement('div');
+    row.className = 'var-row';
+
+    const lab = document.createElement('label');
+    const nameSpan = document.createElement('span');
+    nameSpan.className = 'var-name';
+    nameSpan.textContent = v.name || '(без имени)';
+    lab.appendChild(nameSpan);
+    if (v.type && v.type !== 'Text') {
+      const type = document.createElement('span');
+      type.className = 'var-type';
+      type.textContent = v.type;
+      lab.appendChild(type);
+    }
+
+    const val = v.value == null ? '' : String(v.value);
+    const useArea = val.indexOf('\n') !== -1 || val.length > 80;
+    const input = useArea
+      ? document.createElement('textarea')
+      : document.createElement('input');
+    if (!useArea) input.type = 'text';
+    if (useArea) input.rows = Math.min(6, Math.max(2, val.split('\n').length));
+    input.value = val;
+    input.dataset.varName = v.name || '';
+    input.setAttribute('aria-label', v.name || 'variable');
+    inputs.push(input);
+
+    row.appendChild(lab);
+    row.appendChild(input);
+    grid.appendChild(row);
+  });
+
+  wrap.appendChild(grid);
+
+  const actions = document.createElement('div');
+  actions.className = 'var-actions';
+  const saveBtn = document.createElement('button');
+  saveBtn.type = 'button';
+  saveBtn.className = 'btn primary sm';
+  saveBtn.textContent = 'Сохранить переменные';
+  saveBtn.addEventListener('click', async function () {
+    const byName = Object.create(null);
+    all.forEach(function (v) {
+      byName[v.name] = v.value == null ? '' : String(v.value);
+    });
+    inputs.forEach(function (inp) {
+      byName[inp.dataset.varName] = inp.value;
+    });
+    const full = Object.keys(byName).map(function (name) {
+      return { name: name, value: byName[name] };
+    });
+
+    saveBtn.disabled = true;
+    try {
+      await api('PATCH', '/api/events/' + encodeURIComponent(eventId) + '/variables', full);
+      if (state.eventDetails[eventId]) {
+        state.eventDetails[eventId].variables = full.map(function (p) {
+          const prev = all.find(function (v) { return v.name === p.name; });
+          return {
+            name: p.name,
+            value: p.value,
+            type: prev ? prev.type : undefined,
+            lengthLimit: prev ? prev.lengthLimit : undefined
+          };
+        });
+      }
+      toast('Переменные сохранены', 'ok');
+    } catch (err) {
+      toast(err.message, 'err');
+    } finally {
+      saveBtn.disabled = false;
+    }
+  });
+  actions.appendChild(saveBtn);
+  wrap.appendChild(actions);
+  return wrap;
+}
+
+function setEditorChrome(n, loading) {
   el.deleteBtn.disabled = n === 0;
   el.deleteBtn.textContent = n > 1 ? ('Удалить (' + n + ')') : 'Удалить';
 
   if (n === 0) {
-    el.detailPanel.hidden = true;
-    return;
+    el.editorPanel.hidden = true;
+    el.varFilter.hidden = true;
+    el.editorCollapseAll.hidden = true;
+    el.editorTabs.hidden = true;
+    el.editorTabs.innerHTML = '';
+    el.editorSub.hidden = true;
+    el.editorSub.textContent = '';
+    el.editorBody.innerHTML = '';
+    return false;
   }
+
+  el.editorPanel.hidden = false;
+  el.varFilter.hidden = false;
+  el.editorTitle.textContent = 'Переменные';
   if (n === 1) {
-    const sel = state.rows.find(function (r) { return r.id === state.selectedIds[0]; });
-    if (sel) renderDetail(sel);
-    else el.detailPanel.hidden = true;
+    el.editorSub.hidden = true;
+    el.editorSub.textContent = '';
+    el.editorCollapseAll.hidden = true;
+    el.editorTabs.hidden = true;
+    el.editorTabs.innerHTML = '';
+  } else {
+    el.editorSub.hidden = false;
+    el.editorSub.textContent = loading
+      ? ('Загрузка · выбрано ' + n)
+      : ('Выбрано событий: ' + n + ' — переключайся вкладками или раскрой нужные');
+    el.editorCollapseAll.hidden = false;
+  }
+  return true;
+}
+
+function paintEditorItems(loaded) {
+  el.editorBody.innerHTML = '';
+  el.editorTabs.innerHTML = '';
+
+  if (loaded.length === 1) {
+    const item = loaded[0];
+    el.editorTabs.hidden = true;
+    if (item.error) {
+      el.editorBody.innerHTML = '<p class="editor-empty">' + escapeHtml(item.error) + '</p>';
+      return;
+    }
+    const vars = (item.event && item.event.variables) || [];
+    el.editorBody.appendChild(buildVarEditor(item.id, vars, { bare: true }));
     return;
   }
-  el.detailPanel.hidden = false;
-  el.detailTitle.textContent = 'Выбрано: ' + n;
-  el.detailList.innerHTML = '';
-  const dt = document.createElement('dt');
-  dt.textContent = 'события';
-  const dd = document.createElement('dd');
-  dd.textContent = state.selectedIds.map(function (id) {
+
+  // Несколько событий: вкладки + аккордеон (без id/template — они уже в таблице).
+  el.editorTabs.hidden = false;
+  const collapseByDefault = true;
+
+  loaded.forEach(function (item, idx) {
+    const tab = document.createElement('button');
+    tab.type = 'button';
+    tab.className = 'editor-tab' + (idx === 0 ? ' active' : '');
+    tab.textContent = item.name || ('Событие ' + (idx + 1));
+    tab.title = item.name || '';
+    tab.addEventListener('click', function () {
+      let card = null;
+      el.editorBody.querySelectorAll('details.event-card').forEach(function (d) {
+        if (d.dataset.eventId === item.id) card = d;
+        d.open = d.dataset.eventId === item.id;
+      });
+      el.editorTabs.querySelectorAll('.editor-tab').forEach(function (t) {
+        t.classList.toggle('active', t === tab);
+      });
+      if (card) card.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    });
+    el.editorTabs.appendChild(tab);
+
+    const card = document.createElement('details');
+    card.className = 'event-card';
+    card.dataset.eventId = item.id;
+    card.open = !collapseByDefault || idx === 0;
+
+    const summary = document.createElement('summary');
+    const title = document.createElement('span');
+    title.className = 'ev-title';
+    title.textContent = item.name || item.id;
+    const meta = document.createElement('span');
+    meta.className = 'ev-meta';
+    meta.textContent = (item.event && item.event.variables)
+      ? (item.event.variables.length + ' пер.')
+      : (item.error ? 'ошибка' : '…');
+    summary.appendChild(title);
+    summary.appendChild(meta);
+    card.appendChild(summary);
+
+    if (item.error) {
+      const body = document.createElement('div');
+      body.className = 'event-card-body';
+      const p = document.createElement('p');
+      p.className = 'editor-empty';
+      p.textContent = item.error;
+      body.appendChild(p);
+      card.appendChild(body);
+    } else {
+      const vars = (item.event && item.event.variables) || [];
+      card.appendChild(buildVarEditor(item.id, vars));
+    }
+
+    if (loaded.length > 3) {
+      card.addEventListener('toggle', function () {
+        if (!card.open) return;
+        el.editorBody.querySelectorAll('details.event-card').forEach(function (d) {
+          if (d !== card) d.open = false;
+        });
+        el.editorTabs.querySelectorAll('.editor-tab').forEach(function (t, i) {
+          t.classList.toggle('active', loaded[i] && loaded[i].id === item.id);
+        });
+      });
+    }
+
+    el.editorBody.appendChild(card);
+  });
+}
+
+function escapeHtml(s) {
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+async function renderEditor() {
+  const n = selectedCount();
+  if (!setEditorChrome(n, true)) return;
+
+  const token = ++state.editorLoadToken;
+  el.editorBody.innerHTML = '<p class="editor-loading">Загрузка переменных…</p>';
+  el.editorTabs.hidden = true;
+  el.editorTabs.innerHTML = '';
+
+  const ids = state.selectedIds.slice();
+  const loaded = [];
+  for (let i = 0; i < ids.length; i++) {
+    const id = ids[i];
     const row = state.rows.find(function (r) { return r.id === id; });
-    return (row && row.name) ? row.name : id;
-  }).join(', ');
-  el.detailList.appendChild(dt);
-  el.detailList.appendChild(dd);
+    try {
+      const ev = await loadEventDetail(id);
+      loaded.push({ id: id, name: (ev && ev.name) || (row && row.name) || id, event: ev });
+    } catch (err) {
+      loaded.push({
+        id: id,
+        name: (row && row.name) || id,
+        error: err.message
+      });
+    }
+    if (token !== state.editorLoadToken) return;
+  }
+
+  if (token !== state.editorLoadToken) return;
+  setEditorChrome(n, false);
+  paintEditorItems(loaded);
+}
+
+function updateSelectionUi() {
+  renderEditor();
 }
 
 function applyEventRows(flat, title, statusText, opts) {
   opts = opts || {};
   state.rows = flat;
-  state.columns = collectColumns();
   if (!opts.keepSelection) clearSelection();
-  if (!state.columns.some(function (c) { return c.key === state.sortKey; })) {
+  if (!COLUMNS.some(function (c) { return c.key === state.sortKey; })) {
     state.sortKey = 'name';
     state.sortDir = 1;
   }
@@ -301,22 +634,20 @@ function applyEventRows(flat, title, statusText, opts) {
 }
 
 function renderTable() {
+  const cols = visibleColumns();
   const rows = sortedFilteredRows();
   el.eventsTable.hidden = !(hasView() && state.rows.length);
   el.eventsEmpty.hidden = !el.eventsTable.hidden;
 
   if (!hasView()) {
     el.eventsEmpty.textContent = 'Выбери «Все события» или плейлист слева';
-    el.detailPanel.hidden = true;
-    el.deleteBtn.disabled = true;
-    el.deleteBtn.textContent = 'Удалить';
+    setEditorChrome(0);
     el.filterInput.disabled = true;
     return;
   }
 
   el.filterInput.disabled = false;
 
-  // Убрать из выбора id, которых больше нет в текущих данных.
   const existing = Object.create(null);
   state.rows.forEach(function (r) { if (r.id) existing[r.id] = true; });
   state.selectedIds = state.selectedIds.filter(function (id) { return existing[id]; });
@@ -326,7 +657,7 @@ function renderTable() {
     el.eventsEmpty.textContent = state.view === 'all'
       ? 'Событий в базе нет'
       : 'В этом плейлисте нет событий';
-    el.detailPanel.hidden = true;
+    el.editorPanel.hidden = true;
     el.deleteBtn.disabled = true;
     el.deleteBtn.textContent = 'Удалить';
     return;
@@ -341,7 +672,7 @@ function renderTable() {
   }
 
   const head = document.createElement('tr');
-  state.columns.forEach(function (c) {
+  cols.forEach(function (c) {
     const th = document.createElement('th');
     th.dataset.key = c.key;
     if (c.cls) th.className = c.cls;
@@ -366,7 +697,7 @@ function renderTable() {
   rows.forEach(function (r) {
     const tr = document.createElement('tr');
     if (isSelected(r.id)) tr.classList.add('selected');
-    state.columns.forEach(function (c) {
+    cols.forEach(function (c) {
       const td = document.createElement('td');
       const classes = [];
       if (c.key === 'name') classes.push('cell-name');
@@ -382,26 +713,6 @@ function renderTable() {
   });
 
   updateSelectionUi();
-}
-
-function renderDetail(row) {
-  el.detailPanel.hidden = false;
-  el.detailTitle.textContent = row.name || row.id || 'Событие';
-  el.detailList.innerHTML = '';
-
-  function add(term, value) {
-    const dt = document.createElement('dt');
-    dt.textContent = term;
-    const dd = document.createElement('dd');
-    dd.textContent = preview(value);
-    el.detailList.appendChild(dt);
-    el.detailList.appendChild(dd);
-  }
-
-  COLUMNS.forEach(function (c) {
-    add(c.label, row[c.key]);
-  });
-  if (row._fetchError) add('ошибка', row._fetchError);
 }
 
 async function fetchAllEvents(force) {
@@ -423,16 +734,14 @@ async function selectAllEvents(opts) {
   el.eventsTitle.textContent = 'Все события';
   el.deleteBtn.disabled = true;
   el.deleteBtn.textContent = 'Удалить';
-  el.detailPanel.hidden = true;
+  el.editorPanel.hidden = true;
 
-  // Мгновенно показываем кэш, если есть — без пустого «Загрузка…».
   if (!force && state.allEventsCache) {
     applyEventRows(
       state.allEventsCache,
       'Все события',
       'все события · ' + state.allEventsCache.length + ' (кэш)'
     );
-    // Фоново обновим, если кэш мог устареть.
     if (!state.allEventsLoading) {
       state.allEventsLoading = true;
       fetchAllEvents(false)
@@ -447,7 +756,6 @@ async function selectAllEvents(opts) {
   }
 
   state.rows = [];
-  state.columns = [];
   el.eventsHint.textContent = 'Загрузка…';
   renderTable();
 
@@ -470,13 +778,12 @@ async function selectPlaylist(pl) {
   state.playlistName = pl.name || pl.id;
   clearSelection();
   state.rows = [];
-  state.columns = [];
   renderPlaylists();
   el.eventsTitle.textContent = state.playlistName;
   el.eventsHint.textContent = 'Загрузка событий…';
   el.deleteBtn.disabled = true;
   el.deleteBtn.textContent = 'Удалить';
-  el.detailPanel.hidden = true;
+  el.editorPanel.hidden = true;
   renderTable();
 
   try {
@@ -511,7 +818,10 @@ async function reloadCurrentView(opts) {
 
 function removeRowsByIds(ids) {
   const drop = Object.create(null);
-  (ids || []).forEach(function (id) { drop[id] = true; });
+  (ids || []).forEach(function (id) {
+    drop[id] = true;
+    delete state.eventDetails[id];
+  });
   state.rows = state.rows.filter(function (r) { return !drop[r.id]; });
   if (state.allEventsCache) {
     state.allEventsCache = state.allEventsCache.filter(function (r) {
@@ -528,10 +838,6 @@ function plural(n) {
   return 'ий';
 }
 
-// Выбор строки:
-//   клик            — один элемент
-//   Shift+клик      — диапазон от якоря до строки (по текущей сортировке/фильтру)
-//   Ctrl/Cmd+клик   — добавить/убрать одну строку (для несмежного выбора)
 function selectEvent(eventId, ev) {
   ev = ev || {};
   const rows = sortedFilteredRows();
@@ -547,7 +853,6 @@ function selectEvent(eventId, ev) {
     const to = Math.max(a, b);
     const range = ids.slice(from, to + 1);
     if (toggle) {
-      // Shift+Ctrl: добавить диапазон к текущему выбору
       const merged = state.selectedIds.slice();
       range.forEach(function (id) {
         if (merged.indexOf(id) === -1) merged.push(id);
@@ -587,7 +892,6 @@ async function connect(creds) {
     setStatus('онлайн · ' + data.baseUrl, 'ok');
     toast('Подключено к ' + data.baseUrl, 'ok');
     await loadPlaylists();
-    // Сразу показываем общий список — без выбора плейлиста.
     await selectAllEvents();
   } catch (err) {
     setStatus(err.message, 'err');
@@ -634,15 +938,10 @@ async function deleteSelected() {
     } else {
       toast('Удалено: ' + deleted.length, 'ok');
     }
-    // Без полной перезагрузки списка — убираем строки локально.
     if (deleted.length) removeRowsByIds(deleted);
     clearSelection();
     if (state.view === 'all') {
-      applyEventRows(
-        state.rows,
-        'Все события',
-        'все события · ' + state.rows.length
-      );
+      applyEventRows(state.rows, 'Все события', 'все события · ' + state.rows.length);
     } else if (state.view === 'playlist') {
       applyEventRows(
         state.rows,
@@ -680,12 +979,48 @@ el.filterInput.addEventListener('input', function () {
   renderTable();
 });
 
+el.varFilter.addEventListener('input', function () {
+  state.varFilter = el.varFilter.value;
+  // Перерисовать редактор без повторной загрузки с сервера.
+  if (selectedCount()) {
+    state.editorLoadToken++;
+    renderEditorFromCache();
+  }
+});
+
+function renderEditorFromCache() {
+  const n = selectedCount();
+  if (!setEditorChrome(n, false)) return;
+  const ids = state.selectedIds.slice();
+  const loaded = ids.map(function (id) {
+    const row = state.rows.find(function (r) { return r.id === id; });
+    const ev = state.eventDetails[id];
+    if (!ev) {
+      return { id: id, name: (row && row.name) || id, error: 'Нет данных — выбери строку снова' };
+    }
+    return { id: id, name: ev.name || (row && row.name) || id, event: ev };
+  });
+  paintEditorItems(loaded);
+}
+
+el.editorCollapseAll.addEventListener('click', function () {
+  el.editorBody.querySelectorAll('details.event-card').forEach(function (d) {
+    d.open = false;
+  });
+  el.editorTabs.querySelectorAll('.editor-tab').forEach(function (t) {
+    t.classList.remove('active');
+  });
+});
+
 el.deleteBtn.addEventListener('click', function () {
   deleteSelected();
 });
 
 document.addEventListener('keydown', function (e) {
-  if (e.key === 'Delete' && selectedCount() && !el.confirmDialog.open) {
+  if (e.key === 'Delete' && selectedCount() && !el.confirmDialog.open &&
+      document.activeElement &&
+      document.activeElement.tagName !== 'INPUT' &&
+      document.activeElement.tagName !== 'TEXTAREA') {
     e.preventDefault();
     deleteSelected();
   }
@@ -695,6 +1030,8 @@ document.addEventListener('keydown', function (e) {
   }
 });
 
+renderColsMenu();
+
 (async function boot() {
   try {
     const health = await api('GET', '/api/health');
@@ -703,7 +1040,6 @@ document.addEventListener('keydown', function (e) {
       if (health.defaults.login) el.login.value = health.defaults.login;
     }
     if (health.hasEnv) {
-      // Автоподключение из .env — форма остаётся на случай смены сервера.
       await connect({});
     } else {
       setStatus('заполни .env или форму подключения');
