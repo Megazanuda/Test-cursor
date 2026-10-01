@@ -73,7 +73,8 @@ const state = {
   editorLoadToken: 0,
   varFilter: '',
   editorFolded: loadEditorFolded(),
-  // Создание событий
+  // Создание событий (оверлей поверх таблицы)
+  createOpen: false,
   templates: [],
   templatesLoaded: false,
   templateDetails: Object.create(null),
@@ -107,6 +108,8 @@ const el = {
   colsMenuBody: document.getElementById('colsMenuBody'),
   eventsPane: document.querySelector('.events-pane'),
   createPane: document.getElementById('createPane'),
+  createOpenBtn: document.getElementById('createOpenBtn'),
+  createCloseBtn: document.getElementById('createCloseBtn'),
   createHint: document.getElementById('createHint'),
   createList: document.getElementById('createList'),
   createAddBtn: document.getElementById('createAddBtn'),
@@ -323,10 +326,12 @@ function updateScopeButtons() {
   el.loadRecentBtn.hidden = !(onAll && state.allEventsScope === 'all');
 }
 
-function setMainViewMode(mode) {
-  const isCreate = mode === 'create';
-  if (el.eventsPane) el.eventsPane.hidden = isCreate;
-  if (el.createPane) el.createPane.hidden = !isCreate;
+function setCreateOverlayOpen(open) {
+  state.createOpen = !!open;
+  if (el.createPane) el.createPane.hidden = !state.createOpen;
+  if (el.createOpenBtn) {
+    el.createOpenBtn.hidden = state.createOpen;
+  }
 }
 
 function renderPlaylists() {
@@ -342,22 +347,6 @@ function renderPlaylists() {
   allBtn.addEventListener('click', function () { selectAllEvents(); });
   allLi.appendChild(allBtn);
   el.playlistList.appendChild(allLi);
-
-  const createLi = document.createElement('li');
-  const createBtn = document.createElement('button');
-  createBtn.type = 'button';
-  if (state.view === 'create') createBtn.classList.add('active');
-  createBtn.innerHTML =
-    '<span class="pl-name">Создать события</span>' +
-    '<span class="pl-id">новые из шаблона</span>';
-  createBtn.addEventListener('click', function () { selectCreateView(); });
-  createLi.appendChild(createBtn);
-  el.playlistList.appendChild(createLi);
-
-  const sep = document.createElement('li');
-  sep.className = 'nav-sep';
-  sep.setAttribute('aria-hidden', 'true');
-  el.playlistList.appendChild(sep);
 
   if (!state.playlists.length) {
     el.playlistEmpty.hidden = false;
@@ -875,7 +864,7 @@ async function selectAllEvents(opts) {
   state.playlistId = null;
   state.playlistName = '';
   clearSelection();
-  setMainViewMode('events');
+  setCreateOverlayOpen(false);
   renderPlaylists();
   el.eventsTitle.textContent = 'Все события';
   el.deleteBtn.disabled = true;
@@ -921,7 +910,7 @@ async function selectPlaylist(pl) {
   state.playlistName = pl.name || pl.id;
   clearSelection();
   state.rows = [];
-  setMainViewMode('events');
+  setCreateOverlayOpen(false);
   renderPlaylists();
   el.eventsTitle.textContent = state.playlistName;
   el.eventsHint.textContent = 'Загрузка событий…';
@@ -948,7 +937,7 @@ async function selectPlaylist(pl) {
 
 async function reloadCurrentView(opts) {
   opts = opts || {};
-  if (state.view === 'create') {
+  if (state.createOpen) {
     state.templatesLoaded = false;
     await ensureTemplatesLoaded(true);
     renderCreateForms();
@@ -1066,13 +1055,8 @@ function applyTemplateToForm(form, tpl) {
   form.loadingTemplate = false;
 }
 
-async function selectCreateView() {
-  state.view = 'create';
-  state.playlistId = null;
-  state.playlistName = '';
-  clearSelection();
-  setMainViewMode('create');
-  renderPlaylists();
+async function openCreateOverlay() {
+  setCreateOverlayOpen(true);
   setStatus('создание событий', 'ok');
   renderCreateForms();
   try {
@@ -1081,6 +1065,18 @@ async function selectCreateView() {
   } catch (err) {
     toast(err.message, 'err');
     setStatus(err.message, 'err');
+  }
+}
+
+function closeCreateOverlay() {
+  setCreateOverlayOpen(false);
+  if (state.view === 'all') {
+    setStatus(allEventsStatus(state.rows), 'ok');
+  } else if (state.view === 'playlist') {
+    setStatus(
+      'плейлист: ' + state.playlistName + ' · ' + state.rows.length + ' событий',
+      'ok'
+    );
   }
 }
 
@@ -1201,7 +1197,8 @@ function cssAttrEscape(s) {
 }
 
 function renderCreateForms() {
-  if (state.view !== 'create') return;
+  if (!state.createOpen) return;
+  if (!el.createList) return;
   const existing = Object.create(null);
   state.createForms.forEach(function (f) { existing[f.localId] = true; });
   state.createSelectedIds = state.createSelectedIds.filter(function (id) {
@@ -1380,10 +1377,23 @@ function renderCreateForms() {
 }
 
 function addCreateForm() {
+  if (!state.createOpen) {
+    openCreateOverlay();
+  }
   const form = blankCreateForm();
   state.createForms.push(form);
   setCreateSelection([form.localId], form.localId);
+  // Гарантируем отрисовку даже если оверлей только что открыли.
+  state.createOpen = true;
+  if (el.createPane) el.createPane.hidden = false;
   renderCreateForms();
+  // Прокрутить к новому полю.
+  requestAnimationFrame(function () {
+    const cards = el.createList && el.createList.querySelectorAll('.create-card');
+    if (cards && cards.length) {
+      cards[cards.length - 1].scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    }
+  });
 }
 
 function removeSelectedCreateForms() {
@@ -1670,20 +1680,46 @@ el.deleteBtn.addEventListener('click', function () {
   deleteSelected();
 });
 
-el.createAddBtn.addEventListener('click', function () {
-  addCreateForm();
-});
+if (el.createOpenBtn) {
+  el.createOpenBtn.addEventListener('click', function () {
+    openCreateOverlay();
+  });
+}
 
-el.createRemoveBtn.addEventListener('click', function () {
-  removeSelectedCreateForms();
-});
+if (el.createCloseBtn) {
+  el.createCloseBtn.addEventListener('click', function () {
+    closeCreateOverlay();
+  });
+}
 
-el.createSubmitBtn.addEventListener('click', function () {
-  submitCreateForms();
-});
+if (el.createAddBtn) {
+  el.createAddBtn.addEventListener('click', function (ev) {
+    ev.preventDefault();
+    ev.stopPropagation();
+    addCreateForm();
+  });
+}
+
+if (el.createRemoveBtn) {
+  el.createRemoveBtn.addEventListener('click', function () {
+    removeSelectedCreateForms();
+  });
+}
+
+if (el.createSubmitBtn) {
+  el.createSubmitBtn.addEventListener('click', function () {
+    submitCreateForms();
+  });
+}
 
 document.addEventListener('keydown', function (e) {
+  if (e.key === 'Escape' && state.createOpen && !el.confirmDialog.open) {
+    e.preventDefault();
+    closeCreateOverlay();
+    return;
+  }
   if (e.key === 'Delete' && selectedCount() && !el.confirmDialog.open &&
+      !state.createOpen &&
       document.activeElement &&
       document.activeElement.tagName !== 'INPUT' &&
       document.activeElement.tagName !== 'TEXTAREA') {

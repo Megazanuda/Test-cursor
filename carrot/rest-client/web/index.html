@@ -51,6 +51,10 @@
             <p class="lede" id="eventsHint">Выбери «Все события» или плейлист слева</p>
           </div>
           <div class="pane-actions">
+            <button type="button" class="btn primary" id="createOpenBtn"
+              title="Открыть форму создания событий поверх таблицы">
+              Создать события
+            </button>
             <button type="button" class="btn ghost" id="loadAllBtn" hidden
               title="Показать все события без ограничения по дате">
               Подгрузить все
@@ -68,46 +72,49 @@
           </div>
         </div>
 
-        <div class="table-wrap" id="tableWrap">
-          <table class="events-table" id="eventsTable" hidden>
-            <thead id="eventsHead"></thead>
-            <tbody id="eventsBody"></tbody>
-          </table>
-          <p class="empty" id="eventsEmpty">Выбери «Все события» или плейлист слева</p>
-        </div>
+        <div class="events-body" id="eventsBodyWrap">
+          <div class="table-wrap" id="tableWrap">
+            <table class="events-table" id="eventsTable" hidden>
+              <thead id="eventsHead"></thead>
+              <tbody id="eventsBody"></tbody>
+            </table>
+            <p class="empty" id="eventsEmpty">Выбери «Все события» или плейлист слева</p>
+          </div>
 
-        <aside class="editor" id="editorPanel" hidden>
-          <div class="editor-head">
-            <button type="button" class="fold-btn" id="editorFoldBtn" title="Свернуть панель" aria-label="Свернуть панель">−</button>
-            <div class="editor-head-text">
-              <h3 id="editorTitle">Переменные</h3>
-              <p class="lede" id="editorSub" hidden></p>
+          <aside class="editor" id="editorPanel" hidden>
+            <div class="editor-head">
+              <button type="button" class="fold-btn" id="editorFoldBtn" title="Свернуть панель" aria-label="Свернуть панель">−</button>
+              <div class="editor-head-text">
+                <h3 id="editorTitle">Переменные</h3>
+                <p class="lede" id="editorSub" hidden></p>
+              </div>
+              <div class="editor-head-actions">
+                <input type="search" id="varFilter" class="filter filter-sm" placeholder="Фильтр переменных…" hidden />
+                <button type="button" class="btn ghost sm" id="editorCollapseAll" hidden>Свернуть все</button>
+              </div>
             </div>
-            <div class="editor-head-actions">
-              <input type="search" id="varFilter" class="filter filter-sm" placeholder="Фильтр переменных…" hidden />
-              <button type="button" class="btn ghost sm" id="editorCollapseAll" hidden>Свернуть все</button>
+            <div class="editor-content" id="editorContent">
+              <div class="editor-tabs" id="editorTabs" hidden></div>
+              <div class="editor-body" id="editorBody"></div>
             </div>
-          </div>
-          <div class="editor-content" id="editorContent">
-            <div class="editor-tabs" id="editorTabs" hidden></div>
-            <div class="editor-body" id="editorBody"></div>
-          </div>
-        </aside>
-      </section>
+          </aside>
 
-      <section class="create-pane" id="createPane" hidden>
-        <div class="pane-head">
-          <div class="pane-title">
-            <h2>Создание событий</h2>
-            <p class="lede" id="createHint">Добавь поля, выбери шаблон — переменные подгрузятся сами. Выдели несколько полей (Shift/Ctrl), чтобы править сразу все.</p>
-          </div>
-          <div class="pane-actions">
-            <button type="button" class="btn ghost" id="createAddBtn">Добавить поле</button>
-            <button type="button" class="btn ghost" id="createRemoveBtn" disabled>Удалить выбранные</button>
-            <button type="button" class="btn primary" id="createSubmitBtn" disabled>Создать</button>
-          </div>
+          <section class="create-overlay" id="createPane" hidden>
+            <div class="pane-head">
+              <div class="pane-title">
+                <h2>Создание событий</h2>
+                <p class="lede" id="createHint">Добавь поля, выбери шаблон — переменные подгрузятся сами. Выдели несколько полей (Shift/Ctrl), чтобы править сразу все.</p>
+              </div>
+              <div class="pane-actions">
+                <button type="button" class="btn ghost" id="createAddBtn">Добавить поле</button>
+                <button type="button" class="btn ghost" id="createRemoveBtn" disabled>Удалить выбранные</button>
+                <button type="button" class="btn primary" id="createSubmitBtn" disabled>Создать</button>
+                <button type="button" class="btn ghost" id="createCloseBtn">Закрыть</button>
+              </div>
+            </div>
+            <div class="create-list" id="createList"></div>
+          </section>
         </div>
-        <div class="create-list" id="createList"></div>
       </section>
     </section>
   </main>
