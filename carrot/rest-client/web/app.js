@@ -32,6 +32,26 @@ function loadEditorFolded() {
   }
 }
 
+function newCreateFormId() {
+  if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID();
+  return 'f-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
+}
+
+function blankCreateForm() {
+  return {
+    localId: newCreateFormId(),
+    name: '',
+    templateId: '',
+    contentId: '',
+    templateTypeInt: 1,
+    state: 'IN',
+    states: ['IN'],
+    comment: '',
+    variables: [],
+    loadingTemplate: false
+  };
+}
+
 const state = {
   connected: false,
   playlists: [],
@@ -52,7 +72,14 @@ const state = {
   eventDetails: Object.create(null),
   editorLoadToken: 0,
   varFilter: '',
-  editorFolded: loadEditorFolded()
+  editorFolded: loadEditorFolded(),
+  // Создание событий
+  templates: [],
+  templatesLoaded: false,
+  templateDetails: Object.create(null),
+  createForms: [blankCreateForm()],
+  createSelectedIds: [],
+  createAnchorId: null
 };
 
 const el = {
@@ -78,6 +105,13 @@ const el = {
   eventsBody: document.getElementById('eventsBody'),
   eventsEmpty: document.getElementById('eventsEmpty'),
   colsMenuBody: document.getElementById('colsMenuBody'),
+  eventsPane: document.querySelector('.events-pane'),
+  createPane: document.getElementById('createPane'),
+  createHint: document.getElementById('createHint'),
+  createList: document.getElementById('createList'),
+  createAddBtn: document.getElementById('createAddBtn'),
+  createRemoveBtn: document.getElementById('createRemoveBtn'),
+  createSubmitBtn: document.getElementById('createSubmitBtn'),
   editorPanel: document.getElementById('editorPanel'),
   editorTitle: document.getElementById('editorTitle'),
   editorSub: document.getElementById('editorSub'),
@@ -289,6 +323,12 @@ function updateScopeButtons() {
   el.loadRecentBtn.hidden = !(onAll && state.allEventsScope === 'all');
 }
 
+function setMainViewMode(mode) {
+  const isCreate = mode === 'create';
+  if (el.eventsPane) el.eventsPane.hidden = isCreate;
+  if (el.createPane) el.createPane.hidden = !isCreate;
+}
+
 function renderPlaylists() {
   el.playlistList.innerHTML = '';
 
@@ -302,6 +342,22 @@ function renderPlaylists() {
   allBtn.addEventListener('click', function () { selectAllEvents(); });
   allLi.appendChild(allBtn);
   el.playlistList.appendChild(allLi);
+
+  const createLi = document.createElement('li');
+  const createBtn = document.createElement('button');
+  createBtn.type = 'button';
+  if (state.view === 'create') createBtn.classList.add('active');
+  createBtn.innerHTML =
+    '<span class="pl-name">Создать события</span>' +
+    '<span class="pl-id">новые из шаблона</span>';
+  createBtn.addEventListener('click', function () { selectCreateView(); });
+  createLi.appendChild(createBtn);
+  el.playlistList.appendChild(createLi);
+
+  const sep = document.createElement('li');
+  sep.className = 'nav-sep';
+  sep.setAttribute('aria-hidden', 'true');
+  el.playlistList.appendChild(sep);
 
   if (!state.playlists.length) {
     el.playlistEmpty.hidden = false;
@@ -819,6 +875,7 @@ async function selectAllEvents(opts) {
   state.playlistId = null;
   state.playlistName = '';
   clearSelection();
+  setMainViewMode('events');
   renderPlaylists();
   el.eventsTitle.textContent = 'Все события';
   el.deleteBtn.disabled = true;
@@ -864,6 +921,7 @@ async function selectPlaylist(pl) {
   state.playlistName = pl.name || pl.id;
   clearSelection();
   state.rows = [];
+  setMainViewMode('events');
   renderPlaylists();
   el.eventsTitle.textContent = state.playlistName;
   el.eventsHint.textContent = 'Загрузка событий…';
@@ -890,6 +948,12 @@ async function selectPlaylist(pl) {
 
 async function reloadCurrentView(opts) {
   opts = opts || {};
+  if (state.view === 'create') {
+    state.templatesLoaded = false;
+    await ensureTemplatesLoaded(true);
+    renderCreateForms();
+    return;
+  }
   if (state.view === 'all') {
     await selectAllEvents({ force: !!opts.force });
     return;
@@ -901,6 +965,487 @@ async function reloadCurrentView(opts) {
     return;
   }
   await loadPlaylists();
+}
+
+/* ---------------- Создание событий ---------------- */
+
+function createSelectedCount() {
+  return state.createSelectedIds.length;
+}
+
+function isCreateSelected(id) {
+  return state.createSelectedIds.indexOf(id) !== -1;
+}
+
+function setCreateSelection(ids, anchorId) {
+  const uniq = [];
+  const seen = Object.create(null);
+  (ids || []).forEach(function (id) {
+    if (!id || seen[id]) return;
+    seen[id] = true;
+    uniq.push(id);
+  });
+  state.createSelectedIds = uniq;
+  state.createAnchorId = anchorId != null
+    ? anchorId
+    : (uniq.length ? uniq[uniq.length - 1] : null);
+}
+
+function targetCreateForms(localId) {
+  if (isCreateSelected(localId) && state.createSelectedIds.length > 1) {
+    return state.createForms.filter(function (f) {
+      return isCreateSelected(f.localId);
+    });
+  }
+  return state.createForms.filter(function (f) { return f.localId === localId; });
+}
+
+function updateCreateActions() {
+  const n = createSelectedCount();
+  const total = state.createForms.length;
+  el.createRemoveBtn.disabled = n === 0;
+  el.createRemoveBtn.textContent = n > 1 ? ('Удалить выбранные (' + n + ')') : 'Удалить выбранные';
+  const ready = state.createForms.filter(function (f) {
+    return f.templateId && String(f.name || '').trim();
+  }).length;
+  el.createSubmitBtn.disabled = ready === 0;
+  el.createSubmitBtn.textContent = ready > 1
+    ? ('Создать (' + ready + ')')
+    : 'Создать';
+  if (n > 1) {
+    el.createHint.textContent =
+      'Выбрано полей: ' + n + ' — изменения имени, шаблона и переменных применяются ко всем выбранным.';
+  } else {
+    el.createHint.textContent =
+      'Добавь поля, выбери шаблон — переменные подгрузятся сами. Выдели несколько полей (Shift/Ctrl), чтобы править сразу все.';
+  }
+  void total;
+}
+
+async function ensureTemplatesLoaded(force) {
+  if (state.templatesLoaded && !force) return state.templates;
+  const data = await api('GET', '/api/templates');
+  state.templates = data.templates || [];
+  state.templatesLoaded = true;
+  return state.templates;
+}
+
+async function loadTemplateDetail(templateId) {
+  if (state.templateDetails[templateId]) return state.templateDetails[templateId];
+  const data = await api('GET', '/api/templates/' + encodeURIComponent(templateId));
+  const tpl = data.template;
+  state.templateDetails[templateId] = tpl;
+  return tpl;
+}
+
+function applyTemplateToForm(form, tpl) {
+  form.templateId = tpl.id;
+  form.contentId = tpl.contentId || '';
+  form.templateTypeInt = (tpl.templateTypeInt != null) ? tpl.templateTypeInt : 1;
+  form.states = (tpl.states && tpl.states.length) ? tpl.states.slice() : ['IN'];
+  form.state = tpl.defaultInState || form.states[0] || 'IN';
+  form.variables = (tpl.variables || []).map(function (v) {
+    return {
+      id: v.id || '',
+      name: v.name || '',
+      type: v.type || 'Text',
+      value: (v.defaultValue != null && v.defaultValue !== '')
+        ? String(v.defaultValue)
+        : (v.value != null ? String(v.value) : ''),
+      fieldId: v.fieldId || '',
+      defaultValue: v.defaultValue != null ? v.defaultValue : '',
+      resetMedia: v.resetMedia,
+      useTimecode: v.useTimecode,
+      loop: v.loop,
+      locked: v.locked,
+      minValue: v.minValue,
+      maxValue: v.maxValue,
+      useDataVars: v.useDataVars
+    };
+  });
+  form.loadingTemplate = false;
+}
+
+async function selectCreateView() {
+  state.view = 'create';
+  state.playlistId = null;
+  state.playlistName = '';
+  clearSelection();
+  setMainViewMode('create');
+  renderPlaylists();
+  setStatus('создание событий', 'ok');
+  renderCreateForms();
+  try {
+    await ensureTemplatesLoaded(false);
+    renderCreateForms();
+  } catch (err) {
+    toast(err.message, 'err');
+    setStatus(err.message, 'err');
+  }
+}
+
+function selectCreateForm(localId, ev) {
+  ev = ev || {};
+  const ids = state.createForms.map(function (f) { return f.localId; });
+  const shift = !!ev.shiftKey;
+  const toggle = !!(ev.ctrlKey || ev.metaKey);
+
+  if (shift && state.createAnchorId && ids.indexOf(state.createAnchorId) !== -1 &&
+      ids.indexOf(localId) !== -1) {
+    const a = ids.indexOf(state.createAnchorId);
+    const b = ids.indexOf(localId);
+    const from = Math.min(a, b);
+    const to = Math.max(a, b);
+    const range = ids.slice(from, to + 1);
+    if (toggle) {
+      const merged = state.createSelectedIds.slice();
+      range.forEach(function (id) {
+        if (merged.indexOf(id) === -1) merged.push(id);
+      });
+      setCreateSelection(merged, state.createAnchorId);
+    } else {
+      setCreateSelection(range, state.createAnchorId);
+    }
+  } else if (toggle) {
+    const next = state.createSelectedIds.slice();
+    const idx = next.indexOf(localId);
+    if (idx === -1) next.push(localId);
+    else next.splice(idx, 1);
+    setCreateSelection(next, localId);
+  } else {
+    setCreateSelection([localId], localId);
+  }
+  renderCreateForms();
+}
+
+async function onCreateTemplateChange(localId, templateId) {
+  const targets = targetCreateForms(localId);
+  targets.forEach(function (f) {
+    f.loadingTemplate = true;
+    f.templateId = templateId || '';
+    if (!templateId) {
+      f.variables = [];
+      f.contentId = '';
+      f.states = ['IN'];
+      f.state = 'IN';
+      f.loadingTemplate = false;
+    }
+  });
+  renderCreateForms();
+  if (!templateId) return;
+
+  try {
+    const tpl = await loadTemplateDetail(templateId);
+    targets.forEach(function (f) { applyTemplateToForm(f, tpl); });
+    renderCreateForms();
+  } catch (err) {
+    targets.forEach(function (f) {
+      f.loadingTemplate = false;
+      f.variables = [];
+    });
+    renderCreateForms();
+    toast(err.message, 'err');
+  }
+}
+
+function onCreateNameChange(localId, name) {
+  targetCreateForms(localId).forEach(function (f) { f.name = name; });
+  updateCreateActions();
+  if (createSelectedCount() > 1) {
+    el.createList.querySelectorAll('.create-card').forEach(function (card) {
+      const id = card.dataset.localId;
+      if (!isCreateSelected(id) || id === localId) return;
+      const input = card.querySelector('.create-card-top input[type="text"]:not([readonly])');
+      if (input && input.value !== name) input.value = name;
+    });
+  }
+}
+
+function onCreateStateChange(localId, st) {
+  targetCreateForms(localId).forEach(function (f) {
+    f.state = st;
+    if (f.states.indexOf(st) === -1) f.states.push(st);
+  });
+  updateCreateActions();
+  if (createSelectedCount() > 1) {
+    el.createList.querySelectorAll('.create-card').forEach(function (card) {
+      const id = card.dataset.localId;
+      if (!isCreateSelected(id) || id === localId) return;
+      const selects = card.querySelectorAll('.create-card-top select');
+      const stateSelect = selects[1];
+      if (stateSelect && stateSelect.value !== st) stateSelect.value = st;
+    });
+  }
+}
+
+function onCreateVarChange(localId, varName, value) {
+  targetCreateForms(localId).forEach(function (f) {
+    const hit = f.variables.find(function (v) { return v.name === varName; });
+    if (hit) hit.value = value;
+  });
+  // Не перерисовываем всё на каждый символ — обновляем только actions.
+  updateCreateActions();
+  // Синхронизируем значения в DOM у других выбранных карточек.
+  if (createSelectedCount() > 1) {
+    el.createList.querySelectorAll('.create-card').forEach(function (card) {
+      const id = card.dataset.localId;
+      if (!isCreateSelected(id) || id === localId) return;
+      const input = card.querySelector('[data-var-name="' + cssAttrEscape(varName) + '"]');
+      if (input && input.value !== value) input.value = value;
+    });
+  }
+}
+
+function cssAttrEscape(s) {
+  return String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+}
+
+function renderCreateForms() {
+  if (state.view !== 'create') return;
+  const existing = Object.create(null);
+  state.createForms.forEach(function (f) { existing[f.localId] = true; });
+  state.createSelectedIds = state.createSelectedIds.filter(function (id) {
+    return existing[id];
+  });
+  if (state.createAnchorId && !existing[state.createAnchorId]) {
+    state.createAnchorId = null;
+  }
+
+  el.createList.innerHTML = '';
+  if (!state.createForms.length) {
+    const p = document.createElement('p');
+    p.className = 'empty';
+    p.textContent = 'Нет полей — нажми «Добавить поле»';
+    el.createList.appendChild(p);
+    updateCreateActions();
+    return;
+  }
+
+  state.createForms.forEach(function (form, idx) {
+    const card = document.createElement('article');
+    card.className = 'create-card' + (isCreateSelected(form.localId) ? ' selected' : '');
+    card.dataset.localId = form.localId;
+
+    const top = document.createElement('div');
+    top.className = 'create-card-top';
+
+    const checkWrap = document.createElement('div');
+    checkWrap.className = 'create-card-check';
+    const check = document.createElement('input');
+    check.type = 'checkbox';
+    check.checked = isCreateSelected(form.localId);
+    check.title = 'Выбрать поле';
+    check.addEventListener('click', function (ev) {
+      ev.stopPropagation();
+      selectCreateForm(form.localId, {
+        shiftKey: ev.shiftKey,
+        ctrlKey: true,
+        metaKey: ev.metaKey
+      });
+    });
+    checkWrap.appendChild(check);
+
+    const nameLab = document.createElement('label');
+    nameLab.innerHTML = '<span>Имя события</span>';
+    const nameInput = document.createElement('input');
+    nameInput.type = 'text';
+    nameInput.value = form.name || '';
+    nameInput.placeholder = 'Event ' + (idx + 1);
+    nameInput.addEventListener('click', function (ev) { ev.stopPropagation(); });
+    nameInput.addEventListener('input', function () {
+      onCreateNameChange(form.localId, nameInput.value);
+    });
+    nameLab.appendChild(nameInput);
+
+    const tplLab = document.createElement('label');
+    tplLab.innerHTML = '<span>Шаблон</span>';
+    const tplSelect = document.createElement('select');
+    const emptyOpt = document.createElement('option');
+    emptyOpt.value = '';
+    emptyOpt.textContent = state.templatesLoaded ? '— выбери шаблон —' : 'Загрузка шаблонов…';
+    tplSelect.appendChild(emptyOpt);
+    state.templates.forEach(function (t) {
+      const opt = document.createElement('option');
+      opt.value = t.id;
+      opt.textContent = t.name || t.id;
+      if (t.id === form.templateId) opt.selected = true;
+      tplSelect.appendChild(opt);
+    });
+    if (form.templateId && !state.templates.some(function (t) { return t.id === form.templateId; })) {
+      const opt = document.createElement('option');
+      opt.value = form.templateId;
+      opt.textContent = form.templateId;
+      opt.selected = true;
+      tplSelect.appendChild(opt);
+    }
+    tplSelect.addEventListener('click', function (ev) { ev.stopPropagation(); });
+    tplSelect.addEventListener('change', function () {
+      onCreateTemplateChange(form.localId, tplSelect.value);
+    });
+    tplLab.appendChild(tplSelect);
+
+    const stateLab = document.createElement('label');
+    stateLab.innerHTML = '<span>State</span>';
+    const stateSelect = document.createElement('select');
+    (form.states || ['IN']).forEach(function (st) {
+      const opt = document.createElement('option');
+      opt.value = st;
+      opt.textContent = st;
+      if (st === form.state) opt.selected = true;
+      stateSelect.appendChild(opt);
+    });
+    stateSelect.disabled = !form.templateId;
+    stateSelect.addEventListener('click', function (ev) { ev.stopPropagation(); });
+    stateSelect.addEventListener('change', function () {
+      onCreateStateChange(form.localId, stateSelect.value);
+    });
+    stateLab.appendChild(stateSelect);
+
+    const idxLab = document.createElement('label');
+    idxLab.innerHTML = '<span>№</span>';
+    const idxBox = document.createElement('input');
+    idxBox.type = 'text';
+    idxBox.value = String(idx + 1);
+    idxBox.readOnly = true;
+    idxBox.tabIndex = -1;
+    idxLab.appendChild(idxBox);
+
+    top.appendChild(checkWrap);
+    top.appendChild(nameLab);
+    top.appendChild(tplLab);
+    top.appendChild(stateLab);
+    top.appendChild(idxLab);
+    card.appendChild(top);
+
+    const varsWrap = document.createElement('div');
+    varsWrap.className = 'create-vars';
+    if (form.loadingTemplate) {
+      varsWrap.innerHTML = '<p class="create-vars-empty">Загрузка переменных шаблона…</p>';
+    } else if (!form.templateId) {
+      varsWrap.innerHTML = '<p class="create-vars-empty">Выбери шаблон, чтобы увидеть переменные</p>';
+    } else if (!form.variables.length) {
+      varsWrap.innerHTML = '<p class="create-vars-empty">У шаблона нет переменных</p>';
+    } else {
+      const meta = document.createElement('p');
+      meta.className = 'create-card-meta';
+      meta.textContent = 'Переменные шаблона: ' + form.variables.length;
+      varsWrap.appendChild(meta);
+
+      const grid = document.createElement('div');
+      grid.className = 'var-grid' + (form.variables.length > 10 ? ' var-grid-compact' : '');
+      form.variables.forEach(function (v) {
+        const row = document.createElement('div');
+        row.className = 'var-row';
+        const lab = document.createElement('label');
+        const nameSpan = document.createElement('span');
+        nameSpan.className = 'var-name';
+        nameSpan.textContent = v.name || '(без имени)';
+        lab.appendChild(nameSpan);
+        if (v.type && v.type !== 'Text') {
+          const type = document.createElement('span');
+          type.className = 'var-type';
+          type.textContent = v.type;
+          lab.appendChild(type);
+        }
+        const val = v.value == null ? '' : String(v.value);
+        const useArea = val.indexOf('\n') !== -1 || val.length > 80;
+        const input = useArea
+          ? document.createElement('textarea')
+          : document.createElement('input');
+        if (!useArea) input.type = 'text';
+        if (useArea) input.rows = Math.min(5, Math.max(2, val.split('\n').length));
+        input.value = val;
+        input.dataset.varName = v.name || '';
+        input.addEventListener('click', function (ev) { ev.stopPropagation(); });
+        input.addEventListener('input', function () {
+          onCreateVarChange(form.localId, v.name, input.value);
+        });
+        row.appendChild(lab);
+        row.appendChild(input);
+        grid.appendChild(row);
+      });
+      varsWrap.appendChild(grid);
+    }
+    card.appendChild(varsWrap);
+
+    card.addEventListener('click', function (ev) {
+      if (ev.target.closest('input, select, textarea, label, button')) return;
+      selectCreateForm(form.localId, ev);
+    });
+
+    el.createList.appendChild(card);
+  });
+
+  updateCreateActions();
+}
+
+function addCreateForm() {
+  const form = blankCreateForm();
+  state.createForms.push(form);
+  setCreateSelection([form.localId], form.localId);
+  renderCreateForms();
+}
+
+function removeSelectedCreateForms() {
+  const drop = Object.create(null);
+  state.createSelectedIds.forEach(function (id) { drop[id] = true; });
+  if (!Object.keys(drop).length) return;
+  state.createForms = state.createForms.filter(function (f) { return !drop[f.localId]; });
+  if (!state.createForms.length) state.createForms.push(blankCreateForm());
+  setCreateSelection([], null);
+  renderCreateForms();
+}
+
+async function submitCreateForms() {
+  const payload = state.createForms
+    .filter(function (f) { return f.templateId && String(f.name || '').trim(); })
+    .map(function (f) {
+      return {
+        name: String(f.name).trim(),
+        templateId: f.templateId,
+        contentId: f.contentId,
+        templateTypeInt: f.templateTypeInt,
+        state: f.state || 'IN',
+        comment: f.comment || '',
+        variables: (f.variables || []).map(function (v) {
+          return {
+            id: v.id,
+            name: v.name,
+            type: v.type,
+            value: v.value == null ? '' : String(v.value),
+            fieldId: v.fieldId,
+            defaultValue: v.defaultValue,
+            resetMedia: v.resetMedia,
+            useTimecode: v.useTimecode,
+            loop: v.loop,
+            locked: v.locked,
+            minValue: v.minValue,
+            maxValue: v.maxValue,
+            useDataVars: v.useDataVars
+          };
+        })
+      };
+    });
+
+  if (!payload.length) {
+    toast('Заполни имя и шаблон хотя бы у одного поля', 'err');
+    return;
+  }
+
+  el.createSubmitBtn.disabled = true;
+  try {
+    const data = await api('POST', '/api/events/create', { events: payload });
+    const created = (data && data.created) ? data.created : [];
+    toast('Создано событий: ' + created.length, 'ok');
+    state.allEventsCache = null;
+    state.createForms = [blankCreateForm()];
+    setCreateSelection([], null);
+    renderCreateForms();
+  } catch (err) {
+    toast(err.message, 'err');
+    setStatus(err.message, 'err');
+    updateCreateActions();
+  }
 }
 
 function removeRowsByIds(ids) {
@@ -1123,6 +1668,18 @@ el.editorCollapseAll.addEventListener('click', function () {
 
 el.deleteBtn.addEventListener('click', function () {
   deleteSelected();
+});
+
+el.createAddBtn.addEventListener('click', function () {
+  addCreateForm();
+});
+
+el.createRemoveBtn.addEventListener('click', function () {
+  removeSelectedCreateForms();
+});
+
+el.createSubmitBtn.addEventListener('click', function () {
+  submitCreateForms();
 });
 
 document.addEventListener('keydown', function (e) {

@@ -94,6 +94,21 @@
           </div>
         </aside>
       </section>
+
+      <section class="create-pane" id="createPane" hidden>
+        <div class="pane-head">
+          <div class="pane-title">
+            <h2>Создание событий</h2>
+            <p class="lede" id="createHint">Добавь поля, выбери шаблон — переменные подгрузятся сами. Выдели несколько полей (Shift/Ctrl), чтобы править сразу все.</p>
+          </div>
+          <div class="pane-actions">
+            <button type="button" class="btn ghost" id="createAddBtn">Добавить поле</button>
+            <button type="button" class="btn ghost" id="createRemoveBtn" disabled>Удалить выбранные</button>
+            <button type="button" class="btn primary" id="createSubmitBtn" disabled>Создать</button>
+          </div>
+        </div>
+        <div class="create-list" id="createList"></div>
+      </section>
     </section>
   </main>
 

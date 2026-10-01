@@ -518,6 +518,404 @@ class CarrotClient {
         return this._request('GET', '/templates');
     }
 
+    // Нормализовать шаблон из REST (camelCase / PascalCase / обёртки).
+    normalizeTemplate(raw) {
+        if (!raw) return null;
+        const t = (raw.template && !raw.id && !raw.Id) ? raw.template : raw;
+        const id = t.id || t.Id || '';
+        const name = t.name || t.Name || '';
+        const contentId = t.contentId || t.ContentId || '';
+        const templateTypeInt = (t.templateTypeInt != null) ? t.templateTypeInt
+            : ((t.TemplateTypeInt != null) ? t.TemplateTypeInt : 1);
+        const defaultInState = t.defaultInState || t.DefaultInState || '';
+        const closingState = t.closingState || t.ClosingState || '';
+        const stateInfos = t.stateInfos || t.StateInfos || [];
+        const states = [];
+        (Array.isArray(stateInfos) ? stateInfos : []).forEach(function (s) {
+            const st = (s && (s.state || s.State)) || '';
+            if (st && states.indexOf(st) === -1) states.push(st);
+        });
+        if (defaultInState && states.indexOf(defaultInState) === -1) {
+            states.unshift(defaultInState);
+        }
+        if (!states.length) states.push('IN');
+
+        const linkVars = t.linkVars || t.LinkVars || t.variables || t.Variables || [];
+        const variables = (Array.isArray(linkVars) ? linkVars : []).map(function (v) {
+            if (!v) return null;
+            return {
+                id: v.id || v.Id || '',
+                name: v.name || v.Name || '',
+                type: v.type || v.Type || 'Text',
+                value: (v.value != null) ? v.value
+                    : ((v.Value != null) ? v.Value
+                        : ((v.defaultValue != null) ? v.defaultValue
+                            : ((v.DefaultValue != null) ? v.DefaultValue : ''))),
+                fieldId: v.fieldId || v.FieldId || '',
+                defaultValue: (v.defaultValue != null) ? v.defaultValue
+                    : ((v.DefaultValue != null) ? v.DefaultValue : ''),
+                resetMedia: (v.resetMedia != null) ? v.resetMedia
+                    : ((v.ResetMedia != null) ? v.ResetMedia : true),
+                useTimecode: (v.useTimecode != null) ? v.useTimecode
+                    : ((v.UseTimecode != null) ? v.UseTimecode : false),
+                loop: (v.loop != null) ? v.loop : ((v.Loop != null) ? v.Loop : false),
+                locked: (v.locked != null) ? v.locked : ((v.Locked != null) ? v.Locked : false),
+                minValue: (v.minValue != null) ? v.minValue
+                    : ((v.MinValue != null) ? v.MinValue : ''),
+                maxValue: (v.maxValue != null) ? v.maxValue
+                    : ((v.MaxValue != null) ? v.MaxValue : ''),
+                useDataVars: (v.useDataVars != null) ? v.useDataVars
+                    : ((v.UseDataVars != null) ? v.UseDataVars : false)
+            };
+        }).filter(function (v) { return v && v.name; });
+
+        return {
+            id: id,
+            name: name,
+            contentId: contentId,
+            templateTypeInt: templateTypeInt,
+            defaultInState: defaultInState || states[0],
+            closingState: closingState,
+            states: states,
+            variables: variables,
+            raw: t
+        };
+    }
+
+    async getNormalizedTemplate(templateId) {
+        const raw = await this.getTemplate(templateId);
+        const tpl = this.normalizeTemplate(raw);
+        if (!tpl || !tpl.id) {
+            throw new CarrotError('Шаблон не найден или пустой ответ: ' + templateId);
+        }
+        if (tpl.name) this._templateNameCache[tpl.id] = tpl.name;
+        return tpl;
+    }
+
+    async listNormalizedTemplates() {
+        const raw = await this.listTemplates();
+        const flat = this._flattenTemplates(raw);
+        const self = this;
+        return flat.map(function (t) {
+            const n = self.normalizeTemplate(t);
+            if (n && n.id && n.name) self._templateNameCache[n.id] = n.name;
+            return n;
+        }).filter(function (t) { return t && t.id; })
+            .sort(function (a, b) {
+                return String(a.name || '').localeCompare(String(b.name || ''), 'ru');
+            });
+    }
+
+    _boolAttr(v) {
+        if (v === true || v === 'true' || v === 'True') return 'true';
+        if (v === false || v === 'false' || v === 'False') return 'false';
+        return v ? 'true' : 'false';
+    }
+
+    _variableToXml(v) {
+        return '<Variable' +
+            ' Id="' + xmlEscape(v.id || '') + '"' +
+            ' Name="' + xmlEscape(v.name || '') + '"' +
+            ' Type="' + xmlEscape(v.type || 'Text') + '"' +
+            ' Value="' + xmlEscape(v.value == null ? '' : v.value) + '"' +
+            ' FieldId="' + xmlEscape(v.fieldId || '') + '"' +
+            ' ResetMedia="' + this._boolAttr(v.resetMedia != null ? v.resetMedia : true) + '"' +
+            ' UseTimecode="' + this._boolAttr(v.useTimecode != null ? v.useTimecode : false) + '"' +
+            ' Loop="' + this._boolAttr(v.loop != null ? v.loop : false) + '"' +
+            ' Locked="' + this._boolAttr(v.locked != null ? v.locked : false) + '"' +
+            ' DefaultValue="' + xmlEscape(v.defaultValue == null ? '' : v.defaultValue) + '"' +
+            ' MinValue="' + xmlEscape(v.minValue == null ? '' : v.minValue) + '"' +
+            ' MaxValue="' + xmlEscape(v.maxValue == null ? '' : v.maxValue) + '"' +
+            ' UseDataVars="' + this._boolAttr(v.useDataVars != null ? v.useDataVars : false) + '"' +
+            ' />';
+    }
+
+    _eventCreateToXml(event, messageId) {
+        const vars = event.variables || [];
+        const self = this;
+        const varsXml = vars.map(function (v) { return self._variableToXml(v); }).join('');
+        return '<Command CmdGroup="Playlists" CmdName="CreateEventInDB" MessageId="' +
+            messageId + '">' +
+            '<Event>' +
+            '<Id>' + xmlEscape(event.id) + '</Id>' +
+            '<Name>' + xmlEscape(event.name || '') + '</Name>' +
+            '<Created>01.01.0001 0:00:00</Created>' +
+            '<Changed>01.01.0001 0:00:00</Changed>' +
+            '<TemplateId>' + xmlEscape(event.templateId) + '</TemplateId>' +
+            '<ContentId>' + xmlEscape(event.contentId || '') + '</ContentId>' +
+            '<TemplateTypeInt>' + xmlEscape(
+                event.templateTypeInt != null ? event.templateTypeInt : 1
+            ) + '</TemplateTypeInt>' +
+            '<State>' + xmlEscape(event.state || 'IN') + '</State>' +
+            '<Comment>' + xmlEscape(event.comment || '') + '</Comment>' +
+            '<Variables>' + varsXml + '</Variables>' +
+            '</Event></Command>';
+    }
+
+    // Создать одно или несколько событий (REST, затем WS CreateEventInDB).
+    // entries: [{ name, templateId, contentId?, templateTypeInt?, state?, comment?, variables? }]
+    async createEvents(entries) {
+        const list = Array.isArray(entries) ? entries : [];
+        if (!list.length) throw new Error('Нужен непустой массив событий');
+
+        const prepared = [];
+        for (let i = 0; i < list.length; i++) {
+            const e = list[i] || {};
+            if (!e.templateId) {
+                throw new Error('Событие #' + (i + 1) + ': нужен templateId');
+            }
+            if (!e.name || !String(e.name).trim()) {
+                throw new Error('Событие #' + (i + 1) + ': нужно имя');
+            }
+            let contentId = e.contentId || '';
+            let templateTypeInt = e.templateTypeInt;
+            let variables = Array.isArray(e.variables) ? e.variables : [];
+            let state = e.state || 'IN';
+
+            if (!contentId || templateTypeInt == null || !variables.length) {
+                const tpl = await this.getNormalizedTemplate(e.templateId);
+                if (!contentId) contentId = tpl.contentId;
+                if (templateTypeInt == null) templateTypeInt = tpl.templateTypeInt;
+                if (!e.state) state = tpl.defaultInState || state;
+                if (!variables.length) {
+                    variables = tpl.variables.map(function (v) {
+                        return Object.assign({}, v, {
+                            value: (v.value != null && v.value !== '')
+                                ? v.value
+                                : (v.defaultValue || '')
+                        });
+                    });
+                } else {
+                    // Подмешать метаданные LinkVar к значениям с UI.
+                    const byName = Object.create(null);
+                    tpl.variables.forEach(function (v) { byName[v.name] = v; });
+                    variables = variables.map(function (v) {
+                        const meta = byName[v.name] || {};
+                        return Object.assign({}, meta, v, {
+                            value: v.value == null ? (meta.defaultValue || '') : v.value
+                        });
+                    });
+                }
+            }
+
+            prepared.push({
+                id: e.id || crypto.randomUUID(),
+                name: String(e.name).trim(),
+                templateId: e.templateId,
+                contentId: contentId,
+                templateTypeInt: (templateTypeInt != null) ? templateTypeInt : 1,
+                state: state || 'IN',
+                comment: e.comment || '',
+                variables: variables
+            });
+        }
+
+        // REST: иногда есть POST /events.
+        const created = [];
+        const needWs = [];
+        for (let i = 0; i < prepared.length; i++) {
+            const ev = prepared[i];
+            const restBody = {
+                id: ev.id,
+                name: ev.name,
+                templateId: ev.templateId,
+                contentId: ev.contentId,
+                templateTypeInt: ev.templateTypeInt,
+                state: ev.state,
+                comment: ev.comment,
+                variables: ev.variables.map(function (v) {
+                    return {
+                        id: v.id,
+                        name: v.name,
+                        type: v.type,
+                        value: v.value == null ? '' : String(v.value),
+                        fieldId: v.fieldId,
+                        defaultValue: v.defaultValue,
+                        resetMedia: v.resetMedia,
+                        useTimecode: v.useTimecode,
+                        loop: v.loop,
+                        locked: v.locked,
+                        minValue: v.minValue,
+                        maxValue: v.maxValue,
+                        useDataVars: v.useDataVars
+                    };
+                })
+            };
+            const r = await this._tryOnce('POST', '/events', restBody);
+            if (r.ok) {
+                created.push({ id: ev.id, name: ev.name, via: 'rest' });
+                continue;
+            }
+            if (r.httpStatus && r.httpStatus !== 404 && r.httpStatus !== 405) {
+                // Доменные ошибки пробрасываем.
+                if (r.error instanceof CarrotError && r.error.errorCode) throw r.error;
+            }
+            needWs.push(ev);
+        }
+
+        if (needWs.length) {
+            const wsCreated = await this.createEventsViaWebSocket(needWs);
+            created.push.apply(created, wsCreated);
+        }
+
+        this.invalidateEventsCache();
+        return { created: created };
+    }
+
+    // Создание через WS API: Playlists / CreateEventInDB (см. carrotsoftware/api).
+    createEventsViaWebSocket(events) {
+        const self = this;
+        const list = Array.isArray(events) ? events.slice() : [];
+        const wsUrl = this.wsUrl;
+        if (!list.length) {
+            return Promise.resolve([]);
+        }
+        if (!wsUrl) {
+            return Promise.reject(new CarrotError(
+                'Не задан WebSocket URL (CARROT_WS_URL или хост из CARROT_BASE_URL)'
+            ));
+        }
+        if (typeof WebSocket === 'undefined') {
+            return Promise.reject(new CarrotError(
+                'WebSocket недоступен в этой версии Node.js (нужен Node >= 21/22)'
+            ));
+        }
+        if (!this.login || !this.password) {
+            return Promise.reject(new Error('login/password обязательны для WS-создания'));
+        }
+
+        const sessionId = crypto.randomUUID();
+        const timeoutMs = Math.max(this.timeoutMs * list.length, 20000);
+
+        return new Promise(function (resolve, reject) {
+            var ws;
+            var msgId = 1;
+            var stage = 'wait-client-id';
+            var settled = false;
+            var index = 0;
+            const created = [];
+
+            function done(err, value) {
+                if (settled) return;
+                settled = true;
+                clearTimeout(timer);
+                try { ws.close(); } catch (e) { /* ignore */ }
+                if (err) reject(err);
+                else resolve(value);
+            }
+
+            function send(xml) {
+                ws.send(xml);
+            }
+
+            function sendNext() {
+                if (index >= list.length) {
+                    done(null, created);
+                    return;
+                }
+                stage = 'create';
+                const ev = list[index];
+                send(self._eventCreateToXml(ev, msgId++));
+            }
+
+            const timer = setTimeout(function () {
+                done(new CarrotError(
+                    'Таймаут WebSocket при создании события (stage=' + stage +
+                    ', index=' + index + ', url=' + wsUrl + ')'
+                ));
+            }, timeoutMs);
+
+            try {
+                ws = new WebSocket(wsUrl);
+            } catch (err) {
+                done(new CarrotError('Не удалось открыть WebSocket: ' + err.message, { url: wsUrl }));
+                return;
+            }
+
+            ws.addEventListener('error', function () {
+                done(new CarrotError(
+                    'Ошибка WebSocket-соединения [' + wsUrl + ']. ' +
+                    'Порт 24710 должен быть доступен с этой машины.',
+                    { url: wsUrl }
+                ));
+            });
+
+            ws.addEventListener('close', function () {
+                if (!settled) {
+                    done(new CarrotError(
+                        'WebSocket закрыт до завершения создания (stage=' + stage + ')'
+                    ));
+                }
+            });
+
+            ws.addEventListener('message', function (ev) {
+                const text = String(ev.data || '');
+
+                if (/CmdGroup="HeartBeat"/.test(text) && !/MessageId=/.test(text)) {
+                    send(
+                        '<Command CmdGroup="HeartBeat" MessageId="-1">' +
+                        '<SessionId>' + sessionId + '</SessionId></Command>'
+                    );
+                    return;
+                }
+
+                if (stage === 'wait-client-id' && /CmdGroup="ClientID"/.test(text)) {
+                    stage = 'login';
+                    send(
+                        '<Command CmdGroup="HandShake" MessageId="' + (msgId++) + '">' +
+                        '<AppName>ticker-web</AppName>' +
+                        '<SessionID>' + sessionId + '</SessionID></Command>'
+                    );
+                    send(
+                        '<Command CmdGroup="Users" CmdName="LoginUnsecure" MessageId="' +
+                        (msgId++) + '">' +
+                        '<UserName>' + xmlEscape(self.login) + '</UserName>' +
+                        '<PassWord>' + xmlEscape(self.password) + '</PassWord></Command>'
+                    );
+                    return;
+                }
+
+                if (stage === 'login') {
+                    if (/CmdName="LoginError"/.test(text)) {
+                        const m = text.match(/<Message>([\s\S]*?)<\/Message>/);
+                        done(new CarrotError(
+                            'WS LoginError: ' + (m ? m[1] : 'неверный логин/пароль')
+                        ));
+                        return;
+                    }
+                    if (/CmdName="LoginOk"/.test(text)) {
+                        sendNext();
+                        return;
+                    }
+                }
+
+                if (stage === 'create') {
+                    if (/CmdName="EventAdded"/.test(text)) {
+                        const cur = list[index];
+                        created.push({
+                            id: cur.id,
+                            name: cur.name,
+                            via: 'websocket'
+                        });
+                        index++;
+                        sendNext();
+                        return;
+                    }
+                    if (/CmdName="[^"]*Error[^"]*"/.test(text) ||
+                        /CmdGroup="Error"/.test(text)) {
+                        const m = text.match(/<Message>([\s\S]*?)<\/Message>/) ||
+                            text.match(/<Description>([\s\S]*?)<\/Description>/);
+                        const cur = list[index] || {};
+                        done(new CarrotError(
+                            'WS ошибка создания «' + (cur.name || cur.id || '?') + '»: ' +
+                            (m ? m[1] : text.slice(0, 220))
+                        ));
+                    }
+                }
+            });
+        });
+    }
+
     _flattenTemplates(raw) {
         if (!raw) return [];
         if (Array.isArray(raw)) {

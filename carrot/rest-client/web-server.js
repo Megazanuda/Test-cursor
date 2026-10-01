@@ -199,6 +199,49 @@ async function handleApi(req, res, url) {
         });
     }
 
+    if (req.method === 'GET' && pathname === '/api/templates') {
+        const c = ensureClient();
+        const templates = await c.listNormalizedTemplates();
+        return sendJson(res, 200, {
+            ok: true,
+            templates: templates.map(function (t) {
+                return {
+                    id: t.id,
+                    name: t.name,
+                    contentId: t.contentId,
+                    templateTypeInt: t.templateTypeInt,
+                    defaultInState: t.defaultInState,
+                    states: t.states,
+                    variableCount: (t.variables || []).length
+                };
+            })
+        });
+    }
+
+    const tplMatch = pathname.match(/^\/api\/templates\/([^/]+)$/);
+    if (req.method === 'GET' && tplMatch) {
+        const c = ensureClient();
+        const templateId = decodeURIComponent(tplMatch[1]);
+        const template = await c.getNormalizedTemplate(templateId);
+        return sendJson(res, 200, { ok: true, template: template });
+    }
+
+    // Создание событий: { events: [{ name, templateId, state?, comment?, variables? }] }
+    if (req.method === 'POST' && pathname === '/api/events/create') {
+        const body = await readBody(req);
+        const events = (body && Array.isArray(body.events)) ? body.events
+            : (body && Array.isArray(body) ? body : null);
+        if (!events || !events.length) {
+            return sendJson(res, 400, {
+                ok: false,
+                error: 'Нужен массив events: [{ name, templateId, variables? }, ...]'
+            });
+        }
+        const c = ensureClient();
+        const result = await c.createEvents(events);
+        return sendJson(res, 200, { ok: true, created: result.created || [] });
+    }
+
     // Пакетное удаление: { ids: [guid, ...] }
     if (req.method === 'POST' && pathname === '/api/events/delete') {
         const body = await readBody(req);
@@ -302,5 +345,5 @@ server.listen(PORT, HOST, function () {
                 catch (e) { return 'хост:24710'; }
             })() + ')'
             : '(не задан)');
-    console.log('Удаление событий: REST + WebSocket ' + wsHint);
+    console.log('Удаление/создание событий: REST + WebSocket ' + wsHint);
 });
