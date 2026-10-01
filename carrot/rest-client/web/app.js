@@ -3,11 +3,11 @@
 /* Carrot playlist / event browser (front-end) */
 
 const COLUMNS = [
-  { key: 'name', label: 'Event name', short: 'N', cls: 'col-name' },
-  { key: 'templateName', label: 'Template name', short: 'T', cls: 'col-template' },
-  { key: 'changed', label: 'Last modified', short: 'D', cls: 'col-changed' },
-  { key: 'id', label: 'Id', short: 'I', cls: 'col-id' },
-  { key: 'externalId', label: 'External id', short: 'E', cls: 'col-ext' }
+  { key: 'name', label: 'Event name', cls: 'col-name' },
+  { key: 'templateName', label: 'Template name', cls: 'col-template' },
+  { key: 'changed', label: 'Last modified', cls: 'col-changed' },
+  { key: 'id', label: 'Id', cls: 'col-id' },
+  { key: 'externalId', label: 'External id', cls: 'col-ext' }
 ];
 
 const HIDDEN_COLS_KEY = 'carrot-web-hidden-columns';
@@ -77,6 +77,7 @@ const el = {
   eventsHead: document.getElementById('eventsHead'),
   eventsBody: document.getElementById('eventsBody'),
   eventsEmpty: document.getElementById('eventsEmpty'),
+  colsMenuBody: document.getElementById('colsMenuBody'),
   editorPanel: document.getElementById('editorPanel'),
   editorTitle: document.getElementById('editorTitle'),
   editorSub: document.getElementById('editorSub'),
@@ -183,34 +184,53 @@ function isRecentRow(row) {
   return (Date.now() - t) <= TWO_WEEKS_MS;
 }
 
+function visibleColumns() {
+  const vis = COLUMNS.filter(function (c) { return !state.hiddenColumns[c.key]; });
+  return vis.length ? vis : COLUMNS.slice(0, 1);
+}
+
 function saveHiddenColumns() {
   try {
     localStorage.setItem(HIDDEN_COLS_KEY, JSON.stringify(state.hiddenColumns));
   } catch (e) { /* ignore */ }
 }
 
-function isColumnHidden(key) {
-  return !!state.hiddenColumns[key];
-}
+function renderColsMenu() {
+  el.colsMenuBody.innerHTML = '';
+  COLUMNS.forEach(function (c) {
+    const row = document.createElement('label');
+    row.className = 'cols-row';
 
-function expandedColumnCount() {
-  return COLUMNS.filter(function (c) { return !isColumnHidden(c.key); }).length;
-}
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = !state.hiddenColumns[c.key];
 
-function collapseColumn(key) {
-  if (expandedColumnCount() <= 1 && !isColumnHidden(key)) {
-    toast('Нужна хотя бы одна колонка', 'err');
-    return;
-  }
-  state.hiddenColumns[key] = true;
-  saveHiddenColumns();
-  renderTable();
-}
+    const text = document.createElement('span');
+    text.className = 'cols-label';
+    text.textContent = c.label;
 
-function expandColumn(key) {
-  delete state.hiddenColumns[key];
-  saveHiddenColumns();
-  renderTable();
+    cb.addEventListener('change', function () {
+      if (cb.checked) {
+        delete state.hiddenColumns[c.key];
+      } else {
+        const left = COLUMNS.filter(function (x) {
+          return x.key !== c.key && !state.hiddenColumns[x.key];
+        });
+        if (!left.length) {
+          cb.checked = true;
+          toast('Нужна хотя бы одна колонка', 'err');
+          return;
+        }
+        state.hiddenColumns[c.key] = true;
+      }
+      saveHiddenColumns();
+      renderTable();
+    });
+
+    row.appendChild(cb);
+    row.appendChild(text);
+    el.colsMenuBody.appendChild(row);
+  });
 }
 
 function compareValues(a, b) {
@@ -738,60 +758,24 @@ function renderTable() {
     return;
   }
 
+  const cols = visibleColumns();
   const head = document.createElement('tr');
-  COLUMNS.forEach(function (c) {
-    const collapsed = isColumnHidden(c.key);
+  cols.forEach(function (c) {
     const th = document.createElement('th');
     th.dataset.key = c.key;
-    th.className = (c.cls || '') + (collapsed ? ' col-collapsed' : '');
-
-    const inner = document.createElement('div');
-    inner.className = 'th-inner';
-
-    if (collapsed) {
-      const expand = document.createElement('button');
-      expand.type = 'button';
-      expand.className = 'fold-btn';
-      expand.textContent = '+';
-      expand.title = 'Развернуть: ' + c.label;
-      expand.setAttribute('aria-label', expand.title);
-      expand.addEventListener('click', function (ev) {
-        ev.stopPropagation();
-        expandColumn(c.key);
-      });
-      inner.appendChild(expand);
-    } else {
-      const label = document.createElement('span');
-      label.className = 'th-label';
-      label.textContent = c.label;
-      if (c.key === state.sortKey) {
-        const ind = document.createElement('span');
-        ind.className = 'sort-ind';
-        ind.textContent = state.sortDir > 0 ? ' ▲' : ' ▼';
-        label.appendChild(ind);
-      }
-      label.addEventListener('click', function () {
-        if (state.sortKey === c.key) state.sortDir = -state.sortDir;
-        else { state.sortKey = c.key; state.sortDir = 1; }
-        renderTable();
-      });
-
-      const fold = document.createElement('button');
-      fold.type = 'button';
-      fold.className = 'fold-btn';
-      fold.textContent = '−';
-      fold.title = 'Свернуть колонку';
-      fold.setAttribute('aria-label', 'Свернуть колонку ' + c.label);
-      fold.addEventListener('click', function (ev) {
-        ev.stopPropagation();
-        collapseColumn(c.key);
-      });
-
-      inner.appendChild(label);
-      inner.appendChild(fold);
+    if (c.cls) th.className = c.cls;
+    th.textContent = c.label;
+    if (c.key === state.sortKey) {
+      const ind = document.createElement('span');
+      ind.className = 'sort-ind';
+      ind.textContent = state.sortDir > 0 ? '▲' : '▼';
+      th.appendChild(ind);
     }
-
-    th.appendChild(inner);
+    th.addEventListener('click', function () {
+      if (state.sortKey === c.key) state.sortDir = -state.sortDir;
+      else { state.sortKey = c.key; state.sortDir = 1; }
+      renderTable();
+    });
     head.appendChild(th);
   });
   el.eventsHead.innerHTML = '';
@@ -801,21 +785,15 @@ function renderTable() {
   rows.forEach(function (r) {
     const tr = document.createElement('tr');
     if (isSelected(r.id)) tr.classList.add('selected');
-    COLUMNS.forEach(function (c) {
+    cols.forEach(function (c) {
       const td = document.createElement('td');
-      const collapsed = isColumnHidden(c.key);
       const classes = [];
+      if (c.key === 'name') classes.push('cell-name');
       if (c.cls) classes.push(c.cls);
-      if (collapsed) classes.push('col-collapsed');
       if (classes.length) td.className = classes.join(' ');
-      if (collapsed) {
-        td.textContent = '';
-        td.title = c.label;
-      } else {
-        const text = preview(r[c.key]).replace(/\s+/g, ' ');
-        td.textContent = text;
-        td.title = text;
-      }
+      const text = preview(r[c.key]).replace(/\s+/g, ' ');
+      td.textContent = text;
+      td.title = text;
       tr.appendChild(td);
     });
     tr.addEventListener('click', function (ev) { selectEvent(r.id, ev); });
@@ -1161,6 +1139,7 @@ document.addEventListener('keydown', function (e) {
   }
 });
 
+renderColsMenu();
 applyEditorFoldClass();
 
 (async function boot() {
