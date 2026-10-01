@@ -14,7 +14,7 @@
   <main class="shell">
     <section class="connect" id="connectPanel">
       <h1>Подключение</h1>
-      <p class="lede">REST Carrot или значения из <code>.env</code>.</p>
+      <p class="lede">REST или значения из <code>.env</code>.</p>
       <form id="connectForm" class="connect-form" autocomplete="off">
         <label>
           <span>Base URL</span>
@@ -46,15 +46,19 @@
 
       <section class="events-pane">
         <div class="pane-head">
-          <div>
+          <div class="pane-title">
             <h2 id="eventsTitle">События</h2>
             <p class="lede" id="eventsHint">Выбери «Все события» или плейлист слева</p>
           </div>
           <div class="pane-actions">
-            <details class="cols-menu" id="colsMenu">
-              <summary class="btn ghost">Колонки</summary>
-              <div class="cols-menu-body" id="colsMenuBody"></div>
-            </details>
+            <button type="button" class="btn ghost" id="loadAllBtn" hidden
+              title="Показать все события без ограничения по дате">
+              Подгрузить все
+            </button>
+            <button type="button" class="btn ghost" id="loadRecentBtn" hidden
+              title="Показать только изменённые за последние 2 недели">
+              За 2 недели
+            </button>
             <input type="search" id="filterInput" class="filter" placeholder="Фильтр…" disabled />
             <button type="button" class="btn danger" id="deleteBtn" disabled>Удалить</button>
           </div>
@@ -70,17 +74,20 @@
 
         <aside class="editor" id="editorPanel" hidden>
           <div class="editor-head">
+            <button type="button" class="fold-btn" id="editorFoldBtn" title="Свернуть панель" aria-label="Свернуть панель">−</button>
             <div class="editor-head-text">
               <h3 id="editorTitle">Переменные</h3>
-              <p class="editor-sub" id="editorSub" hidden></p>
+              <p class="lede" id="editorSub" hidden></p>
             </div>
             <div class="editor-head-actions">
               <input type="search" id="varFilter" class="filter filter-sm" placeholder="Фильтр переменных…" hidden />
               <button type="button" class="btn ghost sm" id="editorCollapseAll" hidden>Свернуть все</button>
             </div>
           </div>
-          <div class="editor-tabs" id="editorTabs" hidden></div>
-          <div class="editor-body" id="editorBody"></div>
+          <div class="editor-content" id="editorContent">
+            <div class="editor-tabs" id="editorTabs" hidden></div>
+            <div class="editor-body" id="editorBody"></div>
+          </div>
         </aside>
       </section>
     </section>

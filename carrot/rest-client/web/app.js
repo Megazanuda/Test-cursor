@@ -3,14 +3,16 @@
 /* Carrot playlist / event browser (front-end) */
 
 const COLUMNS = [
-  { key: 'name', label: 'Event name', cls: 'col-name' },
-  { key: 'templateName', label: 'Template name', cls: 'col-template' },
-  { key: 'changed', label: 'Last modified', cls: 'col-changed' },
-  { key: 'id', label: 'Id', cls: 'col-id' },
-  { key: 'externalId', label: 'External id', cls: 'col-ext' }
+  { key: 'name', label: 'Event name', short: 'N', cls: 'col-name' },
+  { key: 'templateName', label: 'Template name', short: 'T', cls: 'col-template' },
+  { key: 'changed', label: 'Last modified', short: 'D', cls: 'col-changed' },
+  { key: 'id', label: 'Id', short: 'I', cls: 'col-id' },
+  { key: 'externalId', label: 'External id', short: 'E', cls: 'col-ext' }
 ];
 
 const HIDDEN_COLS_KEY = 'carrot-web-hidden-columns';
+const EDITOR_FOLD_KEY = 'carrot-web-editor-folded';
+const TWO_WEEKS_MS = 14 * 24 * 60 * 60 * 1000;
 
 function loadHiddenColumns() {
   try {
@@ -22,6 +24,14 @@ function loadHiddenColumns() {
   }
 }
 
+function loadEditorFolded() {
+  try {
+    return localStorage.getItem(EDITOR_FOLD_KEY) === '1';
+  } catch (e) {
+    return false;
+  }
+}
+
 const state = {
   connected: false,
   playlists: [],
@@ -29,18 +39,20 @@ const state = {
   playlistId: null,
   playlistName: '',
   rows: [],
-  sortKey: 'name',
-  sortDir: 1,
+  sortKey: 'changed',
+  sortDir: -1,
   filter: '',
   selectedIds: [],
   anchorId: null,
   allEventsCache: null,
   allEventsLoading: false,
+  // 'recent' = last 2 weeks; 'all' = no date filter
+  allEventsScope: 'recent',
   hiddenColumns: loadHiddenColumns(),
-  // Кэш полных событий (с variables) для редактора
   eventDetails: Object.create(null),
   editorLoadToken: 0,
-  varFilter: ''
+  varFilter: '',
+  editorFolded: loadEditorFolded()
 };
 
 const el = {
@@ -57,18 +69,21 @@ const el = {
   reloadPlaylists: document.getElementById('reloadPlaylists'),
   eventsTitle: document.getElementById('eventsTitle'),
   eventsHint: document.getElementById('eventsHint'),
+  loadAllBtn: document.getElementById('loadAllBtn'),
+  loadRecentBtn: document.getElementById('loadRecentBtn'),
   filterInput: document.getElementById('filterInput'),
   deleteBtn: document.getElementById('deleteBtn'),
   eventsTable: document.getElementById('eventsTable'),
   eventsHead: document.getElementById('eventsHead'),
   eventsBody: document.getElementById('eventsBody'),
   eventsEmpty: document.getElementById('eventsEmpty'),
-  colsMenuBody: document.getElementById('colsMenuBody'),
   editorPanel: document.getElementById('editorPanel'),
   editorTitle: document.getElementById('editorTitle'),
   editorSub: document.getElementById('editorSub'),
   editorTabs: document.getElementById('editorTabs'),
   editorBody: document.getElementById('editorBody'),
+  editorContent: document.getElementById('editorContent'),
+  editorFoldBtn: document.getElementById('editorFoldBtn'),
   editorCollapseAll: document.getElementById('editorCollapseAll'),
   varFilter: document.getElementById('varFilter'),
   toast: document.getElementById('toast'),
@@ -161,9 +176,11 @@ function flattenRow(entry) {
   };
 }
 
-function visibleColumns() {
-  const vis = COLUMNS.filter(function (c) { return !state.hiddenColumns[c.key]; });
-  return vis.length ? vis : COLUMNS.slice(0, 1);
+function isRecentRow(row) {
+  if (!row || row.changedRaw == null || row.changedRaw === '') return false;
+  const t = new Date(row.changedRaw).getTime();
+  if (Number.isNaN(t)) return false;
+  return (Date.now() - t) <= TWO_WEEKS_MS;
 }
 
 function saveHiddenColumns() {
@@ -172,34 +189,28 @@ function saveHiddenColumns() {
   } catch (e) { /* ignore */ }
 }
 
-function renderColsMenu() {
-  el.colsMenuBody.innerHTML = '';
-  COLUMNS.forEach(function (c) {
-    const label = document.createElement('label');
-    const cb = document.createElement('input');
-    cb.type = 'checkbox';
-    cb.checked = !state.hiddenColumns[c.key];
-    cb.addEventListener('change', function () {
-      if (cb.checked) delete state.hiddenColumns[c.key];
-      else {
-        // Нельзя спрятать все колонки.
-        const left = COLUMNS.filter(function (x) {
-          return x.key !== c.key && !state.hiddenColumns[x.key];
-        });
-        if (!left.length) {
-          cb.checked = true;
-          toast('Нужна хотя бы одна колонка', 'err');
-          return;
-        }
-        state.hiddenColumns[c.key] = true;
-      }
-      saveHiddenColumns();
-      renderTable();
-    });
-    label.appendChild(cb);
-    label.appendChild(document.createTextNode(' ' + c.label));
-    el.colsMenuBody.appendChild(label);
-  });
+function isColumnHidden(key) {
+  return !!state.hiddenColumns[key];
+}
+
+function expandedColumnCount() {
+  return COLUMNS.filter(function (c) { return !isColumnHidden(c.key); }).length;
+}
+
+function collapseColumn(key) {
+  if (expandedColumnCount() <= 1 && !isColumnHidden(key)) {
+    toast('Нужна хотя бы одна колонка', 'err');
+    return;
+  }
+  state.hiddenColumns[key] = true;
+  saveHiddenColumns();
+  renderTable();
+}
+
+function expandColumn(key) {
+  delete state.hiddenColumns[key];
+  saveHiddenColumns();
+  renderTable();
 }
 
 function compareValues(a, b) {
@@ -224,8 +235,16 @@ function compareValues(a, b) {
   return 0;
 }
 
-function sortedFilteredRows() {
+function scopedRows() {
   var list = state.rows.slice();
+  if (state.view === 'all' && state.allEventsScope === 'recent') {
+    list = list.filter(isRecentRow);
+  }
+  return list;
+}
+
+function sortedFilteredRows() {
+  var list = scopedRows();
   const q = state.filter.trim().toLowerCase();
   if (q) {
     list = list.filter(function (r) {
@@ -242,6 +261,12 @@ function sortedFilteredRows() {
     return compareValues(a.name, b.name) * dir;
   });
   return list;
+}
+
+function updateScopeButtons() {
+  const onAll = state.view === 'all';
+  el.loadAllBtn.hidden = !(onAll && state.allEventsScope === 'recent');
+  el.loadRecentBtn.hidden = !(onAll && state.allEventsScope === 'all');
 }
 
 function renderPlaylists() {
@@ -454,6 +479,21 @@ function buildVarEditor(eventId, variables, opts) {
   return wrap;
 }
 
+function applyEditorFoldClass() {
+  el.editorPanel.classList.toggle('folded', !!state.editorFolded);
+  el.editorFoldBtn.textContent = state.editorFolded ? '+' : '−';
+  el.editorFoldBtn.title = state.editorFolded ? 'Развернуть панель' : 'Свернуть панель';
+  el.editorFoldBtn.setAttribute('aria-label', el.editorFoldBtn.title);
+}
+
+function setEditorFolded(folded) {
+  state.editorFolded = !!folded;
+  try {
+    localStorage.setItem(EDITOR_FOLD_KEY, state.editorFolded ? '1' : '0');
+  } catch (e) { /* ignore */ }
+  applyEditorFoldClass();
+}
+
 function setEditorChrome(n, loading) {
   el.deleteBtn.disabled = n === 0;
   el.deleteBtn.textContent = n > 1 ? ('Удалить (' + n + ')') : 'Удалить';
@@ -471,6 +511,7 @@ function setEditorChrome(n, loading) {
   }
 
   el.editorPanel.hidden = false;
+  applyEditorFoldClass();
   el.varFilter.hidden = false;
   el.editorTitle.textContent = 'Переменные';
   if (n === 1) {
@@ -483,10 +524,18 @@ function setEditorChrome(n, loading) {
     el.editorSub.hidden = false;
     el.editorSub.textContent = loading
       ? ('Загрузка · выбрано ' + n)
-      : ('Выбрано событий: ' + n + ' — переключайся вкладками или раскрой нужные');
+      : ('Выбрано событий: ' + n);
     el.editorCollapseAll.hidden = false;
   }
   return true;
+}
+
+function escapeHtml(s) {
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
 }
 
 function paintEditorItems(loaded) {
@@ -505,7 +554,6 @@ function paintEditorItems(loaded) {
     return;
   }
 
-  // Несколько событий: вкладки + аккордеон (без id/template — они уже в таблице).
   el.editorTabs.hidden = false;
   const collapseByDefault = true;
 
@@ -575,14 +623,6 @@ function paintEditorItems(loaded) {
   });
 }
 
-function escapeHtml(s) {
-  return String(s)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
-}
-
 async function renderEditor() {
   const n = selectedCount();
   if (!setEditorChrome(n, true)) return;
@@ -619,25 +659,48 @@ function updateSelectionUi() {
   renderEditor();
 }
 
+function allEventsHint(flat) {
+  const total = flat.length;
+  if (state.allEventsScope === 'recent') {
+    const recent = flat.filter(isRecentRow).length;
+    return recent + ' событ' + plural(recent) + ' за 2 недели · всего в базе ' + total;
+  }
+  return total + ' событ' + plural(total) + ' · вся база';
+}
+
+function allEventsStatus(flat) {
+  if (state.allEventsScope === 'recent') {
+    return 'все события · за 2 недели · ' + flat.filter(isRecentRow).length + '/' + flat.length;
+  }
+  return 'все события · ' + flat.length;
+}
+
 function applyEventRows(flat, title, statusText, opts) {
   opts = opts || {};
   state.rows = flat;
   if (!opts.keepSelection) clearSelection();
   if (!COLUMNS.some(function (c) { return c.key === state.sortKey; })) {
-    state.sortKey = 'name';
-    state.sortDir = 1;
+    state.sortKey = 'changed';
+    state.sortDir = -1;
   }
   el.eventsTitle.textContent = title;
-  el.eventsHint.textContent = flat.length + ' событ' + plural(flat.length);
-  setStatus(statusText, 'ok');
+  if (state.view === 'all') {
+    el.eventsHint.textContent = allEventsHint(flat);
+    setStatus(allEventsStatus(flat), 'ok');
+  } else {
+    el.eventsHint.textContent = flat.length + ' событ' + plural(flat.length);
+    setStatus(statusText, 'ok');
+  }
+  updateScopeButtons();
   renderTable();
 }
 
 function renderTable() {
-  const cols = visibleColumns();
   const rows = sortedFilteredRows();
-  el.eventsTable.hidden = !(hasView() && state.rows.length);
+  const hasRowsSource = hasView() && state.rows.length;
+  el.eventsTable.hidden = !(hasRowsSource && rows.length);
   el.eventsEmpty.hidden = !el.eventsTable.hidden;
+  updateScopeButtons();
 
   if (!hasView()) {
     el.eventsEmpty.textContent = 'Выбери «Все события» или плейлист слева';
@@ -657,37 +720,78 @@ function renderTable() {
     el.eventsEmpty.textContent = state.view === 'all'
       ? 'Событий в базе нет'
       : 'В этом плейлисте нет событий';
-    el.editorPanel.hidden = true;
-    el.deleteBtn.disabled = true;
-    el.deleteBtn.textContent = 'Удалить';
+    setEditorChrome(0);
     return;
   }
 
   if (!rows.length) {
     el.eventsTable.hidden = true;
     el.eventsEmpty.hidden = false;
-    el.eventsEmpty.textContent = 'Ничего не найдено по фильтру';
+    if (state.view === 'all' && state.allEventsScope === 'recent') {
+      el.eventsEmpty.textContent = state.filter
+        ? 'Ничего не найдено по фильтру'
+        : 'За последние 2 недели изменений нет — нажми «Подгрузить все»';
+    } else {
+      el.eventsEmpty.textContent = 'Ничего не найдено по фильтру';
+    }
     updateSelectionUi();
     return;
   }
 
   const head = document.createElement('tr');
-  cols.forEach(function (c) {
+  COLUMNS.forEach(function (c) {
+    const collapsed = isColumnHidden(c.key);
     const th = document.createElement('th');
     th.dataset.key = c.key;
-    if (c.cls) th.className = c.cls;
-    th.textContent = c.label;
-    if (c.key === state.sortKey) {
-      const ind = document.createElement('span');
-      ind.className = 'sort-ind';
-      ind.textContent = state.sortDir > 0 ? '▲' : '▼';
-      th.appendChild(ind);
+    th.className = (c.cls || '') + (collapsed ? ' col-collapsed' : '');
+
+    const inner = document.createElement('div');
+    inner.className = 'th-inner';
+
+    if (collapsed) {
+      const expand = document.createElement('button');
+      expand.type = 'button';
+      expand.className = 'fold-btn';
+      expand.textContent = '+';
+      expand.title = 'Развернуть: ' + c.label;
+      expand.setAttribute('aria-label', expand.title);
+      expand.addEventListener('click', function (ev) {
+        ev.stopPropagation();
+        expandColumn(c.key);
+      });
+      inner.appendChild(expand);
+    } else {
+      const label = document.createElement('span');
+      label.className = 'th-label';
+      label.textContent = c.label;
+      if (c.key === state.sortKey) {
+        const ind = document.createElement('span');
+        ind.className = 'sort-ind';
+        ind.textContent = state.sortDir > 0 ? ' ▲' : ' ▼';
+        label.appendChild(ind);
+      }
+      label.addEventListener('click', function () {
+        if (state.sortKey === c.key) state.sortDir = -state.sortDir;
+        else { state.sortKey = c.key; state.sortDir = 1; }
+        renderTable();
+      });
+
+      const fold = document.createElement('button');
+      fold.type = 'button';
+      fold.className = 'fold-btn';
+      fold.textContent = '−';
+      fold.title = 'Свернуть колонку';
+      fold.setAttribute('aria-label', 'Свернуть колонку ' + c.label);
+      fold.addEventListener('click', function (ev) {
+        ev.stopPropagation();
+        collapseColumn(c.key);
+      });
+
+      inner.appendChild(label);
+      inner.appendChild(fold);
     }
-    th.addEventListener('click', function () {
-      if (state.sortKey === c.key) state.sortDir = -state.sortDir;
-      else { state.sortKey = c.key; state.sortDir = 1; }
-      renderTable();
-    });
+
+    th.appendChild(inner);
     head.appendChild(th);
   });
   el.eventsHead.innerHTML = '';
@@ -697,15 +801,21 @@ function renderTable() {
   rows.forEach(function (r) {
     const tr = document.createElement('tr');
     if (isSelected(r.id)) tr.classList.add('selected');
-    cols.forEach(function (c) {
+    COLUMNS.forEach(function (c) {
       const td = document.createElement('td');
+      const collapsed = isColumnHidden(c.key);
       const classes = [];
-      if (c.key === 'name') classes.push('cell-name');
       if (c.cls) classes.push(c.cls);
+      if (collapsed) classes.push('col-collapsed');
       if (classes.length) td.className = classes.join(' ');
-      const text = preview(r[c.key]).replace(/\s+/g, ' ');
-      td.textContent = text;
-      td.title = text;
+      if (collapsed) {
+        td.textContent = '';
+        td.title = c.label;
+      } else {
+        const text = preview(r[c.key]).replace(/\s+/g, ' ');
+        td.textContent = text;
+        td.title = text;
+      }
       tr.appendChild(td);
     });
     tr.addEventListener('click', function (ev) { selectEvent(r.id, ev); });
@@ -726,6 +836,7 @@ async function fetchAllEvents(force) {
 async function selectAllEvents(opts) {
   opts = opts || {};
   const force = !!opts.force;
+  if (opts.scope) state.allEventsScope = opts.scope;
   state.view = 'all';
   state.playlistId = null;
   state.playlistName = '';
@@ -735,19 +846,16 @@ async function selectAllEvents(opts) {
   el.deleteBtn.disabled = true;
   el.deleteBtn.textContent = 'Удалить';
   el.editorPanel.hidden = true;
+  updateScopeButtons();
 
   if (!force && state.allEventsCache) {
-    applyEventRows(
-      state.allEventsCache,
-      'Все события',
-      'все события · ' + state.allEventsCache.length + ' (кэш)'
-    );
+    applyEventRows(state.allEventsCache, 'Все события');
     if (!state.allEventsLoading) {
       state.allEventsLoading = true;
       fetchAllEvents(false)
         .then(function (flat) {
           if (state.view !== 'all') return;
-          applyEventRows(flat, 'Все события', 'все события · ' + flat.length);
+          applyEventRows(flat, 'Все события');
         })
         .catch(function () { /* оставляем кэш */ })
         .finally(function () { state.allEventsLoading = false; });
@@ -762,7 +870,7 @@ async function selectAllEvents(opts) {
   try {
     state.allEventsLoading = true;
     const flat = await fetchAllEvents(force);
-    applyEventRows(flat, 'Все события', 'все события · ' + flat.length);
+    applyEventRows(flat, 'Все события');
   } catch (err) {
     el.eventsHint.textContent = 'Ошибка загрузки';
     toast(err.message, 'err');
@@ -784,6 +892,7 @@ async function selectPlaylist(pl) {
   el.deleteBtn.disabled = true;
   el.deleteBtn.textContent = 'Удалить';
   el.editorPanel.hidden = true;
+  updateScopeButtons();
   renderTable();
 
   try {
@@ -892,6 +1001,7 @@ async function connect(creds) {
     setStatus('онлайн · ' + data.baseUrl, 'ok');
     toast('Подключено к ' + data.baseUrl, 'ok');
     await loadPlaylists();
+    state.allEventsScope = 'recent';
     await selectAllEvents();
   } catch (err) {
     setStatus(err.message, 'err');
@@ -910,7 +1020,7 @@ async function deleteSelected() {
     const row = state.rows.find(function (r) { return r.id === ids[0]; });
     const label = (row && row.name) ? row.name : ids[0];
     el.confirmText.textContent =
-      '«' + label + '» (' + ids[0] + ') будет удалено на сервере Carrot. Это необратимо.';
+      '«' + label + '» (' + ids[0] + ') будет удалено на сервере. Это необратимо.';
   } else {
     el.confirmText.textContent =
       'Будет удалено событий: ' + ids.length + '. Это необратимо.';
@@ -941,7 +1051,7 @@ async function deleteSelected() {
     if (deleted.length) removeRowsByIds(deleted);
     clearSelection();
     if (state.view === 'all') {
-      applyEventRows(state.rows, 'Все события', 'все события · ' + state.rows.length);
+      applyEventRows(state.rows, 'Все события');
     } else if (state.view === 'playlist') {
       applyEventRows(
         state.rows,
@@ -974,6 +1084,24 @@ el.reloadPlaylists.addEventListener('click', function () {
     .catch(function (err) { toast(err.message, 'err'); });
 });
 
+el.loadAllBtn.addEventListener('click', function () {
+  state.allEventsScope = 'all';
+  if (state.allEventsCache) {
+    applyEventRows(state.allEventsCache, 'Все события');
+  } else {
+    selectAllEvents({ force: true, scope: 'all' });
+  }
+});
+
+el.loadRecentBtn.addEventListener('click', function () {
+  state.allEventsScope = 'recent';
+  if (state.allEventsCache) {
+    applyEventRows(state.allEventsCache, 'Все события');
+  } else {
+    selectAllEvents({ force: true, scope: 'recent' });
+  }
+});
+
 el.filterInput.addEventListener('input', function () {
   state.filter = el.filterInput.value;
   renderTable();
@@ -981,7 +1109,6 @@ el.filterInput.addEventListener('input', function () {
 
 el.varFilter.addEventListener('input', function () {
   state.varFilter = el.varFilter.value;
-  // Перерисовать редактор без повторной загрузки с сервера.
   if (selectedCount()) {
     state.editorLoadToken++;
     renderEditorFromCache();
@@ -1002,6 +1129,10 @@ function renderEditorFromCache() {
   });
   paintEditorItems(loaded);
 }
+
+el.editorFoldBtn.addEventListener('click', function () {
+  setEditorFolded(!state.editorFolded);
+});
 
 el.editorCollapseAll.addEventListener('click', function () {
   el.editorBody.querySelectorAll('details.event-card').forEach(function (d) {
@@ -1030,7 +1161,7 @@ document.addEventListener('keydown', function (e) {
   }
 });
 
-renderColsMenu();
+applyEditorFoldClass();
 
 (async function boot() {
   try {
