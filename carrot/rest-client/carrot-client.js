@@ -698,6 +698,13 @@ class CarrotClient {
                 }
             }
 
+            if (!contentId) {
+                throw new Error(
+                    'Событие «' + String(e.name).trim() +
+                    '»: у шаблона нет ContentId — создание невозможно'
+                );
+            }
+
             prepared.push({
                 id: e.id || crypto.randomUUID(),
                 name: String(e.name).trim(),
