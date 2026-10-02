@@ -1418,6 +1418,7 @@ class CarrotClient {
                         const full = self._unwrapEvent(await self.getEvent(event.id));
                         if (!full) return;
                         if (full.name) event.name = full.name;
+                        if (full.created != null) event.created = full.created;
                         if (full.changed != null) event.changed = full.changed;
                         if (full.externalId) event.externalId = full.externalId;
                         if (full.templateId) event.templateId = full.templateId;
