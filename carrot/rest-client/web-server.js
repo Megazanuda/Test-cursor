@@ -358,5 +358,5 @@ server.listen(PORT, HOST, function () {
     const wsFileHint = env('CARROT_WS_FILE_URL') ||
         (env('CARROT_BASE_URL') ? '(по умолчанию ws://' + hostPort(24712) + ')' : '(не задан)');
     console.log('Удаление/создание событий: REST + WebSocket ' + wsHint);
-    console.log('Медиа (MediaAssetLibrary): WebSocket ' + wsFileHint);
+    console.log('Медиа: REST /assets/folder/{id}, fallback WS ' + wsFileHint);
 });
