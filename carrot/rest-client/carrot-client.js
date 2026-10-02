@@ -99,7 +99,18 @@ function decodeCarrotText(s) {
     });
 }
 
+// Корневая папка медиабиблиотеки Carrot (типичный GUID инсталляции).
 const MEDIA_ROOT_FOLDER_ID = '5535E4A7-94EE-45AD-A27B-9AFC737597B2';
+const MEDIA_EMPTY_FOLDER_ID = '00000000-0000-0000-0000-000000000000';
+const MEDIA_MAX_FOLDERS = 250;
+
+function xmlField(block, name) {
+    const tag = String(name).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const el = block.match(new RegExp('<' + tag + '[^>]*>([^<]*)</' + tag + '>', 'i'));
+    if (el) return el[1];
+    const attr = block.match(new RegExp('\\b' + tag + '\\s*=\\s*"([^"]*)"', 'i'));
+    return attr ? attr[1] : null;
+}
 
 function defaultWsUrlFromBase(baseUrl, port) {
     try {
@@ -1043,9 +1054,8 @@ class CarrotClient {
     }
 
     listMediaAssetsViaWebSocket(opts) {
-        const self = this;
         opts = opts || {};
-        const rootId = opts.folderId || MEDIA_ROOT_FOLDER_ID;
+        const preferredRoot = opts.folderId || MEDIA_ROOT_FOLDER_ID;
         const deep = opts.deep !== false;
         // Медиа ходит по WS обмена файлами (порт 24712), не 24710.
         const wsUrl = opts.wsUrl || this.wsFileUrl || this.wsUrl;
@@ -1064,7 +1074,11 @@ class CarrotClient {
         }
 
         const sessionId = crypto.randomUUID();
-        const timeoutMs = Math.max(this.timeoutMs, 25000);
+        const timeoutMs = Math.max(this.timeoutMs, 45000);
+        const seedRoots = [];
+        [preferredRoot, MEDIA_EMPTY_FOLDER_ID, MEDIA_ROOT_FOLDER_ID].forEach(function (id) {
+            if (id && seedRoots.indexOf(id) === -1) seedRoots.push(id);
+        });
 
         return new Promise(function (resolve, reject) {
             var ws;
@@ -1073,9 +1087,9 @@ class CarrotClient {
             var settled = false;
             const assets = [];
             const seen = Object.create(null);
-            const pendingFolders = [rootId];
+            const pendingFolders = seedRoots.slice();
             const fetchedFolders = Object.create(null);
-            var waitingFolder = null;
+            var foldersQueued = seedRoots.length;
 
             function done(err, value) {
                 if (settled) return;
@@ -1088,12 +1102,18 @@ class CarrotClient {
 
             function send(xml) { ws.send(xml); }
 
+            function finishOk() {
+                assets.sort(function (a, b) {
+                    return String(a.name || '').localeCompare(String(b.name || ''), 'ru');
+                });
+                done(null, assets);
+            }
+
             function requestNextFolder() {
                 while (pendingFolders.length) {
                     const fid = pendingFolders.shift();
                     if (!fid || fetchedFolders[fid]) continue;
                     fetchedFolders[fid] = true;
-                    waitingFolder = fid;
                     stage = 'media';
                     send(
                         '<Command CmdGroup="MediaAssetLibrary" CmdName="GetAssetFolder" MessageId="' +
@@ -1102,40 +1122,44 @@ class CarrotClient {
                     );
                     return;
                 }
-                assets.sort(function (a, b) {
-                    return String(a.name || '').localeCompare(String(b.name || ''), 'ru');
-                });
-                done(null, assets);
+                finishOk();
+            }
+
+            function queueFolder(id) {
+                if (!id || !deep || fetchedFolders[id] || pendingFolders.indexOf(id) !== -1) {
+                    return;
+                }
+                if (foldersQueued >= MEDIA_MAX_FOLDERS) return;
+                foldersQueued++;
+                pendingFolders.push(id);
             }
 
             function parseFolderXml(text) {
-                const folderRe = /<Folder>([\s\S]*?)<\/Folder>/g;
-                const assetRe = /<Asset>([\s\S]*?)<\/Asset>/g;
+                // <Folder>...</Folder> или <Folder ID="..." Name="..."/>
+                const folderRe = /<Folder(\s[^>]*)?\/>|<Folder(\s[^>]*)?>([\s\S]*?)<\/Folder>/gi;
+                const assetRe = /<Asset(\s[^>]*)?\/>|<Asset(\s[^>]*)?>([\s\S]*?)<\/Asset>/gi;
                 var m;
                 while ((m = folderRe.exec(text))) {
-                    const block = m[1];
-                    const idM = block.match(/<ID>([^<]+)<\/ID>/i);
-                    if (idM && deep && !fetchedFolders[idM[1]] &&
-                        pendingFolders.indexOf(idM[1]) === -1) {
-                        // Только один уровень вложенности от корня, чтобы не уходить в бесконечность.
-                        if (waitingFolder === rootId) pendingFolders.push(idM[1]);
-                    }
+                    const block = (m[1] || '') + (m[2] || '') + (m[3] || '');
+                    const id = xmlField(block, 'ID') || xmlField(block, 'FolderID') ||
+                        xmlField(block, 'FolderId');
+                    if (id) queueFolder(id);
                 }
                 while ((m = assetRe.exec(text))) {
-                    const block = m[1];
-                    const idM = block.match(/<ID>([^<]+)<\/ID>/i);
-                    const nameM = block.match(/<Name>([^<]*)<\/Name>/i);
-                    const typeM = block.match(/<AssetTypeInt>([^<]*)<\/AssetTypeInt>/i);
-                    const parentM = block.match(/<ParentID>([^<]*)<\/ParentID>/i);
-                    if (!idM || !nameM) continue;
-                    const id = idM[1];
-                    if (seen[id]) continue;
+                    const block = (m[1] || '') + (m[2] || '') + (m[3] || '');
+                    const id = xmlField(block, 'ID') || xmlField(block, 'AssetId') ||
+                        xmlField(block, 'AssetID');
+                    if (!id || seen[id]) continue;
+                    const name = xmlField(block, 'Name');
+                    const typeRaw = xmlField(block, 'AssetTypeInt');
+                    const parentId = xmlField(block, 'ParentID') || xmlField(block, 'ParentId') || '';
                     seen[id] = true;
                     assets.push({
                         id: id,
-                        name: decodeCarrotText(nameM[1]),
-                        assetTypeInt: typeM ? parseInt(typeM[1], 10) : undefined,
-                        parentId: parentM ? parentM[1] : ''
+                        name: decodeCarrotText(name != null && name !== '' ? name : id),
+                        assetTypeInt: typeRaw != null && typeRaw !== ''
+                            ? parseInt(typeRaw, 10) : undefined,
+                        parentId: parentId || ''
                     });
                 }
             }
@@ -1177,14 +1201,31 @@ class CarrotClient {
                     return;
                 }
                 if (stage === 'wait-client-id' && /CmdGroup="ClientID"/.test(text)) {
-                    // Файловый канал (24712): HandShake, затем сразу GetAssetFolder.
+                    // Файловый канал (24712): HandShake, ждём ответ, потом GetAssetFolder.
                     // Users/LoginUnsecure здесь даёт Unknown Command Group.
-                    stage = 'media';
+                    stage = 'handshake';
                     send(
                         '<Command CmdGroup="HandShake" MessageId="' + (msgId++) + '">' +
                         '<AppName>ticker-web</AppName>' +
                         '<SessionID>' + sessionId + '</SessionID></Command>'
                     );
+                    return;
+                }
+                if (stage === 'handshake') {
+                    // Любой ответ после HandShake (кроме heartbeat) — можно запрашивать папки.
+                    if (/Unknown Command Group/i.test(text)) {
+                        done(new CarrotError(
+                            'WS ошибка медиа: Unknown Command Group на ' + wsUrl +
+                            '. Нужен порт 24712 (CARROT_WS_FILE_URL), не 24710.'
+                        ));
+                        return;
+                    }
+                    stage = 'media';
+                    // Если HandShake-ответ уже содержит структуру — разберём.
+                    if (/CmdGroup="MediaAssetLibrary"/.test(text) ||
+                        /FolderStructure|<Asset[\s>]|<Folder[\s>]/i.test(text)) {
+                        parseFolderXml(text);
+                    }
                     requestNextFolder();
                     return;
                 }
@@ -1196,13 +1237,24 @@ class CarrotClient {
                         ));
                         return;
                     }
+                    // HandShake / служебные ответы — пропускаем.
+                    if (/CmdGroup="HandShake"/i.test(text) &&
+                        !/MediaAssetLibrary|FolderStructure|<Asset[\s>]/i.test(text)) {
+                        return;
+                    }
                     if (/CmdGroup="MediaAssetLibrary"/.test(text) ||
-                        /FolderStructure|<\/Asset>|<Asset>/.test(text)) {
+                        /FolderStructure|<Asset[\s>/]|<\/Asset>|<Folder[\s>/]/i.test(text)) {
                         parseFolderXml(text);
                         requestNextFolder();
                         return;
                     }
                     if (/CmdName="[^"]*Error[^"]*"/.test(text) || /CmdGroup="Error"/.test(text)) {
+                        // Несуществующий корень/папка — пробуем следующую, не валим весь список.
+                        const soft = /not\s*found|не\s*найд|invalid|неверн/i.test(text);
+                        if (soft) {
+                            requestNextFolder();
+                            return;
+                        }
                         const m = text.match(/<Message>([\s\S]*?)<\/Message>/) ||
                             text.match(/<Description>([\s\S]*?)<\/Description>/);
                         done(new CarrotError(

@@ -39,6 +39,9 @@
     <section class="workspace" id="workspace" hidden>
       <!-- ===== Раздел: события ===== -->
       <section class="section-events" id="sectionEvents">
+        <button type="button" class="side-rail" id="sideToggleBtn"
+          title="Показать источники" aria-label="Показать источники" aria-expanded="false">›</button>
+
         <aside class="side-pane" id="sidePane" hidden>
           <div class="side-block">
             <button type="button" class="side-all-btn" id="allEventsBtn">
@@ -65,28 +68,22 @@
               <p class="lede" id="eventsHint">Выбери «Все события» или плейлист</p>
             </div>
             <div class="pane-actions">
-              <button type="button" class="btn ghost" id="sideToggleBtn"
-                title="Показать или скрыть меню «Все события» и плейлисты">
-                Источники
-              </button>
-              <button type="button" class="btn ghost" id="reloadPlaylists"
-                title="Заново загрузить плейлисты и текущий список событий с сервера">
-                Обновить с сервера
-              </button>
-              <button type="button" class="btn ghost" id="loadAllBtn" hidden
+              <button type="button" class="btn ghost icon-btn" id="reloadPlaylists"
+                title="Обновить с сервера" aria-label="Обновить с сервера">↻</button>
+              <button type="button" class="btn ghost sm" id="loadAllBtn" hidden
                 title="Показать все события без ограничения по дате">
-                Подгрузить все
+                Все
               </button>
-              <button type="button" class="btn ghost" id="loadRecentBtn" hidden
+              <button type="button" class="btn ghost sm" id="loadRecentBtn" hidden
                 title="Показать только изменённые за последние 2 недели">
-                За 2 недели
+                2 нед.
               </button>
               <details class="cols-menu" id="colsMenu">
-                <summary class="btn ghost">Колонки</summary>
+                <summary class="btn ghost sm">Колонки</summary>
                 <div class="cols-menu-body" id="colsMenuBody"></div>
               </details>
               <input type="search" id="filterInput" class="filter" placeholder="Фильтр…" disabled />
-              <button type="button" class="btn danger" id="deleteBtn" disabled>Удалить</button>
+              <button type="button" class="btn danger sm" id="deleteBtn" disabled>Удалить</button>
             </div>
           </div>
 
@@ -128,10 +125,10 @@
             <p class="lede" id="createHint">Добавь поля, выбери шаблон — переменные подгрузятся сами. Клик по карточке выделяет её; Shift/Ctrl — несколько.</p>
           </div>
           <div class="pane-actions">
-            <button type="button" class="btn ghost" id="createAddBtn">Добавить поле</button>
-            <button type="button" class="btn ghost" id="createRemoveBtn" disabled>Удалить выбранные</button>
-            <button type="button" class="btn ghost" id="createClearBtn">Удалить все поля</button>
-            <button type="button" class="btn primary" id="createSubmitBtn" disabled>Создать</button>
+            <button type="button" class="btn ghost sm" id="createAddBtn">+ поле</button>
+            <button type="button" class="btn ghost sm" id="createRemoveBtn" disabled>Удалить</button>
+            <button type="button" class="btn ghost sm" id="createClearBtn">Очистить</button>
+            <button type="button" class="btn primary sm" id="createSubmitBtn" disabled>Создать</button>
           </div>
         </div>
         <div class="create-list" id="createList"></div>

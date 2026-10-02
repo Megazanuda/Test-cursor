@@ -234,12 +234,48 @@ input:focus, .filter:focus, textarea:focus {
 
 .section-events {
   display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: 0.7rem;
+  grid-template-columns: 1.1rem minmax(0, 1fr);
+  gap: 0.3rem;
+  align-items: stretch;
 }
 
 .section-events.with-side {
-  grid-template-columns: 220px minmax(0, 1fr);
+  grid-template-columns: 1.1rem 190px minmax(0, 1fr);
+}
+
+.side-rail {
+  width: 1.1rem;
+  min-width: 1.1rem;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--panel);
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.85rem;
+  line-height: 1;
+  cursor: pointer;
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0.75;
+}
+
+.side-rail:hover {
+  background: var(--row-hover);
+  color: var(--accent);
+  border-color: var(--accent);
+  opacity: 1;
+}
+
+.icon-btn {
+  width: 1.85rem;
+  min-width: 1.85rem;
+  padding-left: 0;
+  padding-right: 0;
+  font-size: 1rem;
+  font-weight: 400;
 }
 
 .section-create {
@@ -346,13 +382,13 @@ input:focus, .filter:focus, textarea:focus {
 
 .pane-actions {
   display: flex;
-  gap: 0.45rem;
+  gap: 0.35rem;
   align-items: center;
   flex-wrap: wrap;
   justify-content: flex-end;
 }
 
-.filter { width: 10.5rem; }
+.filter { width: 9rem; font-size: 0.88rem; padding: 0.35rem 0.55rem; }
 
 /* Columns menu — grid so checkbox and label stay aligned */
 .cols-menu {
@@ -914,11 +950,22 @@ dialog::backdrop { background: rgba(15, 23, 42, 0.35); }
 
 @media (max-width: 900px) {
   .connect-form { grid-template-columns: 1fr; }
-  .section-events,
+  .section-events {
+    grid-template-columns: 1.1rem minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
+  }
   .section-events.with-side {
-    grid-template-columns: 1fr;
+    grid-template-columns: 1.1rem minmax(0, 1fr);
     grid-template-rows: auto minmax(0, 1fr);
   }
+  .section-events.with-side .side-pane {
+    grid-column: 2;
+    max-height: 36vh;
+  }
+  .section-events.with-side .events-pane {
+    grid-column: 2;
+  }
+  .side-rail { grid-row: 1 / -1; }
   .var-row,
   .var-grid-compact .var-row { grid-template-columns: 1fr; }
   .var-row label,

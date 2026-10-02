@@ -364,7 +364,12 @@ function updateSidePaneUi() {
     el.sectionEvents.classList.toggle('with-side', !!state.sideOpen);
   }
   if (el.sideToggleBtn) {
-    el.sideToggleBtn.textContent = state.sideOpen ? 'Скрыть источники' : 'Источники';
+    el.sideToggleBtn.textContent = state.sideOpen ? '‹' : '›';
+    el.sideToggleBtn.title = state.sideOpen
+      ? 'Скрыть источники'
+      : 'Показать источники';
+    el.sideToggleBtn.setAttribute('aria-label', el.sideToggleBtn.title);
+    el.sideToggleBtn.setAttribute('aria-expanded', state.sideOpen ? 'true' : 'false');
   }
 }
 
@@ -490,7 +495,7 @@ function fillMediaSelect(select, currentValue) {
   const empty = document.createElement('option');
   empty.value = '';
   empty.textContent = state.mediaLoaded
-    ? (state.mediaAssets.length ? '— медиа —' : 'Медиа не найдены')
+    ? (state.mediaAssets.length ? '— медиа —' : 'Медиа не найдены (проверь WS 24712)')
     : 'Загрузка медиа…';
   select.appendChild(empty);
   state.mediaAssets.forEach(function (m) {

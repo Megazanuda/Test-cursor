@@ -205,7 +205,9 @@ async function handleApi(req, res, url) {
     if (req.method === 'GET' && pathname === '/api/media') {
         const c = ensureClient();
         const assets = await c.listMediaAssets({ deep: true });
-        return sendJson(res, 200, { ok: true, media: assets || [] });
+        const list = assets || [];
+        console.log('[media] загружено активов: ' + list.length);
+        return sendJson(res, 200, { ok: true, media: list });
     }
 
     if (req.method === 'GET' && pathname === '/api/templates') {
