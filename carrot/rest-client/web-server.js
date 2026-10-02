@@ -62,13 +62,16 @@ function ensureClient(creds) {
     if (!login || !password) throw new Error('Нужны login/password (из .env или формы)');
 
     const wsUrl = creds.wsUrl || env('CARROT_WS_URL') || undefined;
-    const key = baseUrl + '\0' + login + '\0' + password + '\0' + (wsUrl || '');
+    const wsFileUrl = creds.wsFileUrl || env('CARROT_WS_FILE_URL') || undefined;
+    const key = baseUrl + '\0' + login + '\0' + password + '\0' +
+        (wsUrl || '') + '\0' + (wsFileUrl || '');
     if (!client || clientKey !== key) {
         client = new CarrotClient({
             baseUrl: baseUrl,
             login: login,
             password: password,
             wsUrl: wsUrl,
+            wsFileUrl: wsFileUrl,
             senderId: env('CARROT_SENDER_ID', 'ticker-web'),
             receiverId: env('CARROT_RECEIVER_ID', 'carrot-server')
         });
@@ -344,12 +347,14 @@ server.listen(PORT, HOST, function () {
     console.log('Carrot playlist browser: http://' + HOST + ':' + PORT);
     console.log('Конфиг: CARROT_BASE_URL=' + (env('CARROT_BASE_URL') || '(не задан)') +
         ', login=' + (env('CARROT_LOGIN') || '(не задан)'));
+    function hostPort(port) {
+        try { return new URL(env('CARROT_BASE_URL')).hostname + ':' + port; }
+        catch (e) { return 'хост:' + port; }
+    }
     const wsHint = env('CARROT_WS_URL') ||
-        (env('CARROT_BASE_URL')
-            ? '(по умолчанию ws://' + (() => {
-                try { return new URL(env('CARROT_BASE_URL')).hostname + ':24710'; }
-                catch (e) { return 'хост:24710'; }
-            })() + ')'
-            : '(не задан)');
+        (env('CARROT_BASE_URL') ? '(по умолчанию ws://' + hostPort(24710) + ')' : '(не задан)');
+    const wsFileHint = env('CARROT_WS_FILE_URL') ||
+        (env('CARROT_BASE_URL') ? '(по умолчанию ws://' + hostPort(24712) + ')' : '(не задан)');
     console.log('Удаление/создание событий: REST + WebSocket ' + wsHint);
+    console.log('Медиа (MediaAssetLibrary): WebSocket ' + wsFileHint);
 });

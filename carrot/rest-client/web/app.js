@@ -13,7 +13,7 @@ const COLUMNS = [
 
 const HIDDEN_COLS_KEY = 'carrot-web-hidden-columns';
 const EDITOR_FOLD_KEY = 'carrot-web-editor-folded';
-const PLAYLISTS_OPEN_KEY = 'carrot-web-playlists-open';
+const SIDE_OPEN_KEY = 'carrot-web-side-open';
 const TWO_WEEKS_MS = 14 * 24 * 60 * 60 * 1000;
 
 function loadHiddenColumns() {
@@ -34,9 +34,9 @@ function loadEditorUserCollapsed() {
   }
 }
 
-function loadPlaylistsOpen() {
+function loadSideOpen() {
   try {
-    return localStorage.getItem(PLAYLISTS_OPEN_KEY) === '1';
+    return localStorage.getItem(SIDE_OPEN_KEY) === '1';
   } catch (e) {
     return false;
   }
@@ -66,7 +66,7 @@ const state = {
   connected: false,
   section: 'events', // events | create
   playlists: [],
-  playlistsOpen: loadPlaylistsOpen(),
+  sideOpen: loadSideOpen(), // боковое меню источников — по умолчанию скрыто
   view: null,
   playlistId: null,
   playlistName: '',
@@ -111,10 +111,9 @@ const el = {
   workspace: document.getElementById('workspace'),
   sectionEvents: document.getElementById('sectionEvents'),
   sectionCreate: document.getElementById('sectionCreate'),
+  sidePane: document.getElementById('sidePane'),
+  sideToggleBtn: document.getElementById('sideToggleBtn'),
   allEventsBtn: document.getElementById('allEventsBtn'),
-  playlistsToggle: document.getElementById('playlistsToggle'),
-  playlistsToggleInd: document.getElementById('playlistsToggleInd'),
-  playlistsBody: document.getElementById('playlistsBody'),
   playlistList: document.getElementById('playlistList'),
   playlistEmpty: document.getElementById('playlistEmpty'),
   reloadPlaylists: document.getElementById('reloadPlaylists'),
@@ -342,6 +341,7 @@ function sortedFilteredRows() {
 
 function setSection(section) {
   state.section = section === 'create' ? 'create' : 'events';
+  // Строго один раздел на экране.
   el.sectionEvents.hidden = state.section !== 'events';
   el.sectionCreate.hidden = state.section !== 'create';
   el.tabEvents.classList.toggle('active', state.section === 'events');
@@ -358,18 +358,22 @@ function setSection(section) {
   }
 }
 
-function updatePlaylistsToggleUi() {
-  el.playlistsBody.hidden = !state.playlistsOpen;
-  el.playlistsToggle.setAttribute('aria-expanded', state.playlistsOpen ? 'true' : 'false');
-  el.playlistsToggleInd.textContent = state.playlistsOpen ? '▾' : '▸';
+function updateSidePaneUi() {
+  if (el.sidePane) el.sidePane.hidden = !state.sideOpen;
+  if (el.sectionEvents) {
+    el.sectionEvents.classList.toggle('with-side', !!state.sideOpen);
+  }
+  if (el.sideToggleBtn) {
+    el.sideToggleBtn.textContent = state.sideOpen ? 'Скрыть источники' : 'Источники';
+  }
 }
 
-function setPlaylistsOpen(open) {
-  state.playlistsOpen = !!open;
+function setSideOpen(open) {
+  state.sideOpen = !!open;
   try {
-    localStorage.setItem(PLAYLISTS_OPEN_KEY, state.playlistsOpen ? '1' : '0');
+    localStorage.setItem(SIDE_OPEN_KEY, state.sideOpen ? '1' : '0');
   } catch (e) { /* ignore */ }
-  updatePlaylistsToggleUi();
+  updateSidePaneUi();
 }
 
 function updateScopeButtons() {
@@ -982,7 +986,7 @@ async function selectPlaylist(pl) {
   clearSelection();
   state.rows = [];
   setSection('events');
-  if (!state.playlistsOpen) setPlaylistsOpen(true);
+  if (!state.sideOpen) setSideOpen(true);
   renderPlaylists();
   el.eventsTitle.textContent = state.playlistName;
   el.eventsHint.textContent = 'Загрузка событий…';
@@ -1054,7 +1058,7 @@ async function connect(creds) {
     el.sectionTabs.hidden = false;
     setStatus('онлайн · ' + data.baseUrl, 'ok');
     toast('Подключено к ' + data.baseUrl, 'ok');
-    updatePlaylistsToggleUi();
+    updateSidePaneUi();
     await loadPlaylists();
     state.allEventsScope = 'recent';
     await selectAllEvents();
@@ -1538,8 +1542,8 @@ el.tabEvents.addEventListener('click', function () { setSection('events'); });
 el.tabCreate.addEventListener('click', function () { setSection('create'); });
 
 el.allEventsBtn.addEventListener('click', function () { selectAllEvents(); });
-el.playlistsToggle.addEventListener('click', function () {
-  setPlaylistsOpen(!state.playlistsOpen);
+el.sideToggleBtn.addEventListener('click', function () {
+  setSideOpen(!state.sideOpen);
 });
 
 el.reloadPlaylists.addEventListener('click', function () {
@@ -1626,8 +1630,11 @@ document.addEventListener('keydown', function (e) {
 });
 
 renderColsMenu();
-updatePlaylistsToggleUi();
+updateSidePaneUi();
 applyEditorFoldClass();
+// На старте гарантируем, что создание скрыто.
+el.sectionCreate.hidden = true;
+el.sectionEvents.hidden = false;
 
 (async function boot() {
   try {

@@ -39,7 +39,7 @@
     <section class="workspace" id="workspace" hidden>
       <!-- ===== Раздел: события ===== -->
       <section class="section-events" id="sectionEvents">
-        <aside class="side-pane" id="sidePane">
+        <aside class="side-pane" id="sidePane" hidden>
           <div class="side-block">
             <button type="button" class="side-all-btn" id="allEventsBtn">
               <span class="pl-name">Все события</span>
@@ -48,15 +48,10 @@
           </div>
 
           <div class="side-block playlists-block">
-            <button type="button" class="side-fold" id="playlistsToggle" aria-expanded="false">
+            <div class="side-fold static">
               <span>Плейлисты</span>
-              <span class="side-fold-ind" id="playlistsToggleInd">▸</span>
-            </button>
-            <div class="playlists-body" id="playlistsBody" hidden>
-              <button type="button" class="btn ghost sm side-reload" id="reloadPlaylists"
-                title="Заново загрузить плейлисты и текущий список событий с сервера">
-                Обновить с сервера
-              </button>
+            </div>
+            <div class="playlists-body" id="playlistsBody">
               <ul class="playlist-list" id="playlistList"></ul>
               <p class="empty" id="playlistEmpty" hidden>Плейлистов нет</p>
             </div>
@@ -67,9 +62,17 @@
           <div class="pane-head">
             <div class="pane-title">
               <h2 id="eventsTitle">События</h2>
-              <p class="lede" id="eventsHint">Выбери «Все события» или плейлист слева</p>
+              <p class="lede" id="eventsHint">Выбери «Все события» или плейлист</p>
             </div>
             <div class="pane-actions">
+              <button type="button" class="btn ghost" id="sideToggleBtn"
+                title="Показать или скрыть меню «Все события» и плейлисты">
+                Источники
+              </button>
+              <button type="button" class="btn ghost" id="reloadPlaylists"
+                title="Заново загрузить плейлисты и текущий список событий с сервера">
+                Обновить с сервера
+              </button>
               <button type="button" class="btn ghost" id="loadAllBtn" hidden
                 title="Показать все события без ограничения по дате">
                 Подгрузить все

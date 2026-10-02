@@ -101,11 +101,11 @@ function decodeCarrotText(s) {
 
 const MEDIA_ROOT_FOLDER_ID = '5535E4A7-94EE-45AD-A27B-9AFC737597B2';
 
-function defaultWsUrlFromBase(baseUrl) {
+function defaultWsUrlFromBase(baseUrl, port) {
     try {
         const u = new URL(baseUrl);
         const proto = u.protocol === 'https:' ? 'wss:' : 'ws:';
-        return proto + '//' + u.hostname + ':24710';
+        return proto + '//' + u.hostname + ':' + (port || 24710);
     } catch (e) {
         return null;
     }
@@ -123,7 +123,9 @@ class CarrotClient {
         this.notificationsEnabled = !!opts.notificationsEnabled;
         this.senderId = opts.senderId || 'ticker-client';
         this.receiverId = opts.receiverId || 'carrot-server';
-        this.wsUrl = opts.wsUrl || defaultWsUrlFromBase(this.baseUrl);
+        // 24710 — команды/плейлисты; 24712 — файлы/медиа (MediaAssetLibrary).
+        this.wsUrl = opts.wsUrl || defaultWsUrlFromBase(this.baseUrl, 24710);
+        this.wsFileUrl = opts.wsFileUrl || defaultWsUrlFromBase(this.baseUrl, 24712);
 
         this.token = null;
         this.tokenAcquiredAt = 0;
@@ -1045,10 +1047,11 @@ class CarrotClient {
         opts = opts || {};
         const rootId = opts.folderId || MEDIA_ROOT_FOLDER_ID;
         const deep = opts.deep !== false;
-        const wsUrl = this.wsUrl;
+        // Медиа ходит по WS обмена файлами (порт 24712), не 24710.
+        const wsUrl = opts.wsUrl || this.wsFileUrl || this.wsUrl;
         if (!wsUrl) {
             return Promise.reject(new CarrotError(
-                'Не задан WebSocket URL для загрузки медиа'
+                'Не задан WebSocket URL для медиа (CARROT_WS_FILE_URL, порт 24712)'
             ));
         }
         if (typeof WebSocket === 'undefined') {
@@ -1152,14 +1155,14 @@ class CarrotClient {
 
             ws.addEventListener('error', function () {
                 done(new CarrotError(
-                    'Ошибка WebSocket-соединения при загрузке медиа [' + wsUrl + ']',
+                    'Ошибка WebSocket медиа [' + wsUrl + ']. Нужен порт 24712 (обмен файлами).',
                     { url: wsUrl }
                 ));
             });
             ws.addEventListener('close', function () {
                 if (!settled) {
                     done(new CarrotError(
-                        'WebSocket закрыт до завершения загрузки медиа (stage=' + stage + ')'
+                        'WebSocket медиа закрыт до завершения (stage=' + stage + ', url=' + wsUrl + ')'
                     ));
                 }
             });
@@ -1174,34 +1177,25 @@ class CarrotClient {
                     return;
                 }
                 if (stage === 'wait-client-id' && /CmdGroup="ClientID"/.test(text)) {
-                    stage = 'login';
+                    // Файловый канал (24712): HandShake, затем сразу GetAssetFolder.
+                    // Users/LoginUnsecure здесь даёт Unknown Command Group.
+                    stage = 'media';
                     send(
                         '<Command CmdGroup="HandShake" MessageId="' + (msgId++) + '">' +
                         '<AppName>ticker-web</AppName>' +
                         '<SessionID>' + sessionId + '</SessionID></Command>'
                     );
-                    send(
-                        '<Command CmdGroup="Users" CmdName="LoginUnsecure" MessageId="' +
-                        (msgId++) + '">' +
-                        '<UserName>' + xmlEscape(self.login) + '</UserName>' +
-                        '<PassWord>' + xmlEscape(self.password) + '</PassWord></Command>'
-                    );
+                    requestNextFolder();
                     return;
                 }
-                if (stage === 'login') {
-                    if (/CmdName="LoginError"/.test(text)) {
-                        const m = text.match(/<Message>([\s\S]*?)<\/Message>/);
+                if (stage === 'media') {
+                    if (/Unknown Command Group/i.test(text)) {
                         done(new CarrotError(
-                            'WS LoginError: ' + decodeCarrotText(m ? m[1] : 'неверный логин/пароль')
+                            'WS ошибка медиа: Unknown Command Group на ' + wsUrl +
+                            '. Нужен порт 24712 (CARROT_WS_FILE_URL), не 24710.'
                         ));
                         return;
                     }
-                    if (/CmdName="LoginOk"/.test(text)) {
-                        requestNextFolder();
-                        return;
-                    }
-                }
-                if (stage === 'media') {
                     if (/CmdGroup="MediaAssetLibrary"/.test(text) ||
                         /FolderStructure|<\/Asset>|<Asset>/.test(text)) {
                         parseFolderXml(text);
