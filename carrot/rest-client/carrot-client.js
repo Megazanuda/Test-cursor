@@ -92,6 +92,15 @@ function xmlEscape(s) {
         .replace(/'/g, '&apos;');
 }
 
+// Carrot иногда кодирует пробелы/символы как _x0020_ в текстах ошибок.
+function decodeCarrotText(s) {
+    return String(s == null ? '' : s).replace(/_x([0-9A-Fa-f]{4})_/g, function (_, hex) {
+        return String.fromCharCode(parseInt(hex, 16));
+    });
+}
+
+const MEDIA_ROOT_FOLDER_ID = '5535E4A7-94EE-45AD-A27B-9AFC737597B2';
+
 function defaultWsUrlFromBase(baseUrl) {
     try {
         const u = new URL(baseUrl);
@@ -634,6 +643,10 @@ class CarrotClient {
         const vars = event.variables || [];
         const self = this;
         const varsXml = vars.map(function (v) { return self._variableToXml(v); }).join('');
+        // Пустой ExternalId у Carrot часто даёт AlreadyExists — по умолчанию = Id.
+        const externalId = (event.externalId != null && String(event.externalId).trim() !== '')
+            ? String(event.externalId).trim()
+            : event.id;
         return '<Command CmdGroup="Playlists" CmdName="CreateEventInDB" MessageId="' +
             messageId + '">' +
             '<Event>' +
@@ -641,6 +654,7 @@ class CarrotClient {
             '<Name>' + xmlEscape(event.name || '') + '</Name>' +
             '<Created>01.01.0001 0:00:00</Created>' +
             '<Changed>01.01.0001 0:00:00</Changed>' +
+            '<ExternalId>' + xmlEscape(externalId) + '</ExternalId>' +
             '<TemplateId>' + xmlEscape(event.templateId) + '</TemplateId>' +
             '<ContentId>' + xmlEscape(event.contentId || '') + '</ContentId>' +
             '<TemplateTypeInt>' + xmlEscape(
@@ -705,9 +719,14 @@ class CarrotClient {
                 );
             }
 
+            const id = e.id || crypto.randomUUID();
+            const externalId = (e.externalId != null && String(e.externalId).trim() !== '')
+                ? String(e.externalId).trim()
+                : id;
             prepared.push({
-                id: e.id || crypto.randomUUID(),
+                id: id,
                 name: String(e.name).trim(),
+                externalId: externalId,
                 templateId: e.templateId,
                 contentId: contentId,
                 templateTypeInt: (templateTypeInt != null) ? templateTypeInt : 1,
@@ -715,6 +734,39 @@ class CarrotClient {
                 comment: e.comment || '',
                 variables: variables
             });
+        }
+
+        // Проверка уникальности имени/externalId по текущему списку событий.
+        try {
+            const headers = await this.listEvents();
+            const byName = Object.create(null);
+            const byExt = Object.create(null);
+            (headers || []).forEach(function (h) {
+                if (h && h.name) byName[String(h.name).toLowerCase()] = h;
+                if (h && h.externalId) byExt[String(h.externalId).toLowerCase()] = h;
+            });
+            for (let i = 0; i < prepared.length; i++) {
+                const ev = prepared[i];
+                const nameHit = byName[ev.name.toLowerCase()];
+                if (nameHit) {
+                    throw new CarrotError(
+                        'Событие с именем «' + ev.name + '» уже существует (id: ' +
+                        (nameHit.id || '?') + ')',
+                        { errorCode: 42 }
+                    );
+                }
+                const extHit = byExt[String(ev.externalId).toLowerCase()];
+                if (extHit) {
+                    throw new CarrotError(
+                        'Событие с External id «' + ev.externalId +
+                        '» уже существует (id: ' + (extHit.id || '?') + ')',
+                        { errorCode: 42 }
+                    );
+                }
+            }
+        } catch (err) {
+            if (err instanceof CarrotError && err.errorCode === 42) throw err;
+            // listEvents недоступен — продолжаем, сервер сам ответит.
         }
 
         // REST: иногда есть POST /events.
@@ -725,6 +777,7 @@ class CarrotClient {
             const restBody = {
                 id: ev.id,
                 name: ev.name,
+                externalId: ev.externalId,
                 templateId: ev.templateId,
                 contentId: ev.contentId,
                 templateTypeInt: ev.templateTypeInt,
@@ -753,9 +806,9 @@ class CarrotClient {
                 created.push({ id: ev.id, name: ev.name, via: 'rest' });
                 continue;
             }
+            if (r.error instanceof CarrotError && r.error.errorCode) throw r.error;
             if (r.httpStatus && r.httpStatus !== 404 && r.httpStatus !== 405) {
-                // Доменные ошибки пробрасываем.
-                if (r.error instanceof CarrotError && r.error.errorCode) throw r.error;
+                throw r.error || new CarrotError('HTTP ' + r.httpStatus);
             }
             needWs.push(ev);
         }
@@ -909,13 +962,257 @@ class CarrotClient {
                         return;
                     }
                     if (/CmdName="[^"]*Error[^"]*"/.test(text) ||
-                        /CmdGroup="Error"/.test(text)) {
+                        /CmdGroup="Error"/.test(text) ||
+                        /already_x0020_exists|already exists/i.test(text)) {
+                        const m = text.match(/<Message>([\s\S]*?)<\/Message>/) ||
+                            text.match(/<Description>([\s\S]*?)<\/Description>/) ||
+                            text.match(/CmdName="([^"]+)"/);
+                        const cur = list[index] || {};
+                        const rawMsg = m ? m[1] : text.slice(0, 260);
+                        const msg = decodeCarrotText(rawMsg);
+                        done(new CarrotError(
+                            'Не удалось создать «' + (cur.name || cur.id || '?') + '»: ' +
+                            msg +
+                            ( /already exists/i.test(msg)
+                                ? ' — смени имя или External id'
+                                : ''),
+                            { errorCode: /already exists/i.test(msg) ? 42 : undefined }
+                        ));
+                    }
+                }
+            });
+        });
+    }
+
+    // Список медиа (REST, затем WS MediaAssetLibrary/GetAssetFolder).
+    async listMediaAssets(opts) {
+        opts = opts || {};
+        const restPaths = ['/media', '/assets', '/mediaAssets', '/media/assets'];
+        for (let i = 0; i < restPaths.length; i++) {
+            const r = await this._tryOnce('GET', restPaths[i]);
+            if (r.ok) {
+                const flat = this._flattenMedia(r.data);
+                if (flat.length) return flat;
+            }
+        }
+        return this.listMediaAssetsViaWebSocket({
+            folderId: opts.folderId || MEDIA_ROOT_FOLDER_ID,
+            deep: opts.deep !== false
+        });
+    }
+
+    _flattenMedia(raw) {
+        if (!raw) return [];
+        const out = [];
+        const seen = Object.create(null);
+        function walk(node) {
+            if (!node) return;
+            if (Array.isArray(node)) {
+                node.forEach(walk);
+                return;
+            }
+            if (typeof node !== 'object') return;
+            const id = node.id || node.ID || node.assetId || node.AssetId;
+            const name = node.name || node.Name;
+            const isAsset = id && name && (
+                node.assetTypeInt != null || node.AssetTypeInt != null ||
+                node.type === 'Asset' || node.kind === 'asset' ||
+                (!node.folders && !node.Folders && !node.children)
+            );
+            if (isAsset && !seen[id]) {
+                seen[id] = true;
+                out.push({
+                    id: id,
+                    name: name,
+                    assetTypeInt: (node.assetTypeInt != null) ? node.assetTypeInt
+                        : node.AssetTypeInt,
+                    parentId: node.parentId || node.ParentID || ''
+                });
+            }
+            walk(node.assets || node.Assets || node.items || node.Items ||
+                node.folderStructure || node.FolderStructure ||
+                node.folders || node.Folders || node.children);
+        }
+        walk(raw);
+        out.sort(function (a, b) {
+            return String(a.name || '').localeCompare(String(b.name || ''), 'ru');
+        });
+        return out;
+    }
+
+    listMediaAssetsViaWebSocket(opts) {
+        const self = this;
+        opts = opts || {};
+        const rootId = opts.folderId || MEDIA_ROOT_FOLDER_ID;
+        const deep = opts.deep !== false;
+        const wsUrl = this.wsUrl;
+        if (!wsUrl) {
+            return Promise.reject(new CarrotError(
+                'Не задан WebSocket URL для загрузки медиа'
+            ));
+        }
+        if (typeof WebSocket === 'undefined') {
+            return Promise.reject(new CarrotError(
+                'WebSocket недоступен в этой версии Node.js (нужен Node >= 21/22)'
+            ));
+        }
+        if (!this.login || !this.password) {
+            return Promise.reject(new Error('login/password обязательны для WS-медиа'));
+        }
+
+        const sessionId = crypto.randomUUID();
+        const timeoutMs = Math.max(this.timeoutMs, 25000);
+
+        return new Promise(function (resolve, reject) {
+            var ws;
+            var msgId = 1;
+            var stage = 'wait-client-id';
+            var settled = false;
+            const assets = [];
+            const seen = Object.create(null);
+            const pendingFolders = [rootId];
+            const fetchedFolders = Object.create(null);
+            var waitingFolder = null;
+
+            function done(err, value) {
+                if (settled) return;
+                settled = true;
+                clearTimeout(timer);
+                try { ws.close(); } catch (e) { /* ignore */ }
+                if (err) reject(err);
+                else resolve(value);
+            }
+
+            function send(xml) { ws.send(xml); }
+
+            function requestNextFolder() {
+                while (pendingFolders.length) {
+                    const fid = pendingFolders.shift();
+                    if (!fid || fetchedFolders[fid]) continue;
+                    fetchedFolders[fid] = true;
+                    waitingFolder = fid;
+                    stage = 'media';
+                    send(
+                        '<Command CmdGroup="MediaAssetLibrary" CmdName="GetAssetFolder" MessageId="' +
+                        (msgId++) + '">' +
+                        '<FolderID>' + xmlEscape(fid) + '</FolderID></Command>'
+                    );
+                    return;
+                }
+                assets.sort(function (a, b) {
+                    return String(a.name || '').localeCompare(String(b.name || ''), 'ru');
+                });
+                done(null, assets);
+            }
+
+            function parseFolderXml(text) {
+                const folderRe = /<Folder>([\s\S]*?)<\/Folder>/g;
+                const assetRe = /<Asset>([\s\S]*?)<\/Asset>/g;
+                var m;
+                while ((m = folderRe.exec(text))) {
+                    const block = m[1];
+                    const idM = block.match(/<ID>([^<]+)<\/ID>/i);
+                    if (idM && deep && !fetchedFolders[idM[1]] &&
+                        pendingFolders.indexOf(idM[1]) === -1) {
+                        // Только один уровень вложенности от корня, чтобы не уходить в бесконечность.
+                        if (waitingFolder === rootId) pendingFolders.push(idM[1]);
+                    }
+                }
+                while ((m = assetRe.exec(text))) {
+                    const block = m[1];
+                    const idM = block.match(/<ID>([^<]+)<\/ID>/i);
+                    const nameM = block.match(/<Name>([^<]*)<\/Name>/i);
+                    const typeM = block.match(/<AssetTypeInt>([^<]*)<\/AssetTypeInt>/i);
+                    const parentM = block.match(/<ParentID>([^<]*)<\/ParentID>/i);
+                    if (!idM || !nameM) continue;
+                    const id = idM[1];
+                    if (seen[id]) continue;
+                    seen[id] = true;
+                    assets.push({
+                        id: id,
+                        name: decodeCarrotText(nameM[1]),
+                        assetTypeInt: typeM ? parseInt(typeM[1], 10) : undefined,
+                        parentId: parentM ? parentM[1] : ''
+                    });
+                }
+            }
+
+            const timer = setTimeout(function () {
+                done(new CarrotError(
+                    'Таймаут WebSocket при загрузке медиа (stage=' + stage + ')'
+                ));
+            }, timeoutMs);
+
+            try {
+                ws = new WebSocket(wsUrl);
+            } catch (err) {
+                done(new CarrotError('Не удалось открыть WebSocket: ' + err.message, { url: wsUrl }));
+                return;
+            }
+
+            ws.addEventListener('error', function () {
+                done(new CarrotError(
+                    'Ошибка WebSocket-соединения при загрузке медиа [' + wsUrl + ']',
+                    { url: wsUrl }
+                ));
+            });
+            ws.addEventListener('close', function () {
+                if (!settled) {
+                    done(new CarrotError(
+                        'WebSocket закрыт до завершения загрузки медиа (stage=' + stage + ')'
+                    ));
+                }
+            });
+
+            ws.addEventListener('message', function (ev) {
+                const text = String(ev.data || '');
+                if (/CmdGroup="HeartBeat"/.test(text) && !/MessageId=/.test(text)) {
+                    send(
+                        '<Command CmdGroup="HeartBeat" MessageId="-1">' +
+                        '<SessionId>' + sessionId + '</SessionId></Command>'
+                    );
+                    return;
+                }
+                if (stage === 'wait-client-id' && /CmdGroup="ClientID"/.test(text)) {
+                    stage = 'login';
+                    send(
+                        '<Command CmdGroup="HandShake" MessageId="' + (msgId++) + '">' +
+                        '<AppName>ticker-web</AppName>' +
+                        '<SessionID>' + sessionId + '</SessionID></Command>'
+                    );
+                    send(
+                        '<Command CmdGroup="Users" CmdName="LoginUnsecure" MessageId="' +
+                        (msgId++) + '">' +
+                        '<UserName>' + xmlEscape(self.login) + '</UserName>' +
+                        '<PassWord>' + xmlEscape(self.password) + '</PassWord></Command>'
+                    );
+                    return;
+                }
+                if (stage === 'login') {
+                    if (/CmdName="LoginError"/.test(text)) {
+                        const m = text.match(/<Message>([\s\S]*?)<\/Message>/);
+                        done(new CarrotError(
+                            'WS LoginError: ' + decodeCarrotText(m ? m[1] : 'неверный логин/пароль')
+                        ));
+                        return;
+                    }
+                    if (/CmdName="LoginOk"/.test(text)) {
+                        requestNextFolder();
+                        return;
+                    }
+                }
+                if (stage === 'media') {
+                    if (/CmdGroup="MediaAssetLibrary"/.test(text) ||
+                        /FolderStructure|<\/Asset>|<Asset>/.test(text)) {
+                        parseFolderXml(text);
+                        requestNextFolder();
+                        return;
+                    }
+                    if (/CmdName="[^"]*Error[^"]*"/.test(text) || /CmdGroup="Error"/.test(text)) {
                         const m = text.match(/<Message>([\s\S]*?)<\/Message>/) ||
                             text.match(/<Description>([\s\S]*?)<\/Description>/);
-                        const cur = list[index] || {};
                         done(new CarrotError(
-                            'WS ошибка создания «' + (cur.name || cur.id || '?') + '»: ' +
-                            (m ? m[1] : text.slice(0, 220))
+                            'WS ошибка медиа: ' + decodeCarrotText(m ? m[1] : text.slice(0, 220))
                         ));
                     }
                 }
@@ -1096,8 +1393,9 @@ class CarrotClient {
             const event = {
                 id: h.id,
                 name: h.name || h.id,
-                changed: h.changed,
-                externalId: h.externalId,
+                created: h.created != null ? h.created : h.Created,
+                changed: h.changed != null ? h.changed : h.Changed,
+                externalId: h.externalId != null ? h.externalId : h.ExternalId,
                 templateId: h.templateId ||
                     (h.template && h.template.id) || '',
                 templateName: h.templateName ||
@@ -1189,4 +1487,10 @@ class CarrotClient {
     }
 }
 
-module.exports = { CarrotClient, CarrotError, ERROR_NAMES };
+module.exports = {
+    CarrotClient,
+    CarrotError,
+    ERROR_NAMES,
+    decodeCarrotText,
+    MEDIA_ROOT_FOLDER_ID
+};

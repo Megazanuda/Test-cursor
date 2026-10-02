@@ -199,6 +199,12 @@ async function handleApi(req, res, url) {
         });
     }
 
+    if (req.method === 'GET' && pathname === '/api/media') {
+        const c = ensureClient();
+        const assets = await c.listMediaAssets({ deep: true });
+        return sendJson(res, 200, { ok: true, media: assets || [] });
+    }
+
     if (req.method === 'GET' && pathname === '/api/templates') {
         const c = ensureClient();
         const templates = await c.listNormalizedTemplates();

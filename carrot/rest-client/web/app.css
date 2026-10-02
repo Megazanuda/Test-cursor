@@ -39,12 +39,37 @@ body {
 .top {
   display: flex;
   align-items: center;
-  justify-content: flex-end;
+  justify-content: space-between;
   gap: 1rem;
-  padding: 0.55rem 1rem;
+  padding: 0.45rem 1rem;
   background: var(--panel);
   border-bottom: 1px solid var(--line);
   flex-shrink: 0;
+}
+
+.section-tabs {
+  display: flex;
+  gap: 0.35rem;
+  align-items: center;
+}
+
+.section-tab {
+  border: 1px solid var(--line);
+  background: #fff;
+  color: var(--text);
+  border-radius: 6px;
+  padding: 0.4rem 0.9rem;
+  font: inherit;
+  font-size: 0.95rem;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.section-tab:hover { border-color: var(--accent); color: var(--accent); }
+.section-tab.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
 }
 
 .status-line {
@@ -54,7 +79,8 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  max-width: 90vw;
+  max-width: 50vw;
+  margin-left: auto;
 }
 
 .status-line.ok { color: #166534; }
@@ -189,14 +215,32 @@ input:focus, .filter:focus, textarea:focus {
   flex: 1;
   min-height: 0;
   height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.section-events {
+  flex: 1;
+  min-height: 0;
   display: grid;
   grid-template-columns: 220px minmax(0, 1fr);
-  grid-template-rows: minmax(0, 1fr);
   gap: 0.7rem;
   overflow: hidden;
 }
 
-.playlists-pane,
+.section-create {
+  flex: 1;
+  min-height: 0;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.side-pane,
 .events-pane {
   min-height: 0;
   max-height: 100%;
@@ -217,6 +261,59 @@ input:focus, .filter:focus, textarea:focus {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+}
+
+.side-block {
+  padding: 0.4rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.side-block:last-child { border-bottom: 0; flex: 1; min-height: 0; display: flex; flex-direction: column; }
+
+.side-all-btn,
+.side-fold {
+  width: 100%;
+  text-align: left;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  border-radius: 6px;
+  padding: 0.55rem 0.6rem;
+  cursor: pointer;
+  font: inherit;
+}
+
+.side-all-btn:hover,
+.side-fold:hover { background: var(--row-hover); }
+
+.side-all-btn.active {
+  background: var(--row-sel);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.side-fold {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-weight: 650;
+  color: var(--muted);
+}
+
+.side-fold-ind { color: var(--muted); }
+
+.playlists-body {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  margin-top: 0.25rem;
+}
+
+.playlists-body[hidden] { display: none !important; }
+
+.side-reload {
+  margin: 0 0.2rem 0.35rem;
+  width: calc(100% - 0.4rem);
 }
 
 .pane-head {
@@ -329,7 +426,8 @@ input:focus, .filter:focus, textarea:focus {
   box-shadow: inset 3px 0 0 var(--accent);
 }
 
-.playlist-list .pl-name {
+.playlist-list .pl-name,
+.side-all-btn .pl-name {
   display: block;
   font-weight: 650;
   font-size: 0.98rem;
@@ -338,7 +436,8 @@ input:focus, .filter:focus, textarea:focus {
   text-overflow: ellipsis;
 }
 
-.playlist-list .pl-id {
+.playlist-list .pl-id,
+.side-all-btn .pl-id {
   display: block;
   margin-top: 0.18rem;
   font-family: var(--mono);
@@ -410,7 +509,9 @@ input:focus, .filter:focus, textarea:focus {
 .events-table td.col-template { max-width: 14rem; width: 14rem; }
 
 .events-table th.col-changed,
-.events-table td.col-changed { max-width: 10.5rem; width: 10.5rem; }
+.events-table td.col-changed,
+.events-table th.col-created,
+.events-table td.col-created { max-width: 10.5rem; width: 10.5rem; }
 
 .events-table th.col-id,
 .events-table td.col-id { max-width: 20rem; width: 20rem; }
@@ -719,23 +820,7 @@ dialog::backdrop { background: rgba(15, 23, 42, 0.35); }
   gap: 0.45rem;
 }
 
-/* ----- Create events overlay (covers table + editor) ----- */
-
-.create-overlay {
-  position: absolute;
-  inset: 0;
-  z-index: 6;
-  display: flex;
-  flex-direction: column;
-  background: var(--panel);
-  border-top: 1px solid var(--line);
-  min-height: 0;
-  overflow: hidden;
-}
-
-.create-overlay[hidden] {
-  display: none !important;
-}
+/* ----- Create events section ----- */
 
 .create-list {
   flex: 1;
@@ -753,6 +838,8 @@ dialog::backdrop { background: rgba(15, 23, 42, 0.35); }
   border-radius: 8px;
   background: #fff;
   padding: 0.7rem 0.8rem 0.8rem;
+  cursor: pointer;
+  user-select: none;
 }
 
 .create-card.selected {
@@ -762,7 +849,7 @@ dialog::backdrop { background: rgba(15, 23, 42, 0.35); }
 
 .create-card-top {
   display: grid;
-  grid-template-columns: auto minmax(8rem, 1.2fr) minmax(10rem, 1.4fr) minmax(6rem, 0.7fr) auto;
+  grid-template-columns: minmax(8rem, 1.1fr) minmax(10rem, 1.3fr) minmax(8rem, 1.1fr);
   gap: 0.55rem;
   align-items: end;
   margin-bottom: 0.55rem;
@@ -776,24 +863,11 @@ dialog::backdrop { background: rgba(15, 23, 42, 0.35); }
   color: var(--muted);
   font-weight: 650;
   min-width: 0;
+  cursor: default;
 }
 
-.create-card-check {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding-bottom: 0.45rem;
-}
-
-.create-card-check input {
-  width: 1.05rem;
-  height: 1.05rem;
-  margin: 0;
-  accent-color: var(--accent);
-  cursor: pointer;
-}
-
-.create-card select {
+.create-card select,
+.var-row select {
   width: 100%;
   border: 1px solid var(--line);
   background: #fff;
@@ -805,7 +879,8 @@ dialog::backdrop { background: rgba(15, 23, 42, 0.35); }
   outline: none;
 }
 
-.create-card select:focus {
+.create-card select:focus,
+.var-row select:focus {
   border-color: var(--accent);
   box-shadow: 0 0 0 2px rgba(29, 78, 216, 0.16);
 }
@@ -829,9 +904,9 @@ dialog::backdrop { background: rgba(15, 23, 42, 0.35); }
 
 @media (max-width: 900px) {
   .connect-form { grid-template-columns: 1fr; }
-  .workspace {
+  .section-events {
     grid-template-columns: 1fr;
-    grid-template-rows: 150px minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
   }
   .var-row,
   .var-grid-compact .var-row { grid-template-columns: 1fr; }
@@ -839,12 +914,6 @@ dialog::backdrop { background: rgba(15, 23, 42, 0.35); }
   .var-grid-compact .var-row label { padding-top: 0; }
   .editor { max-height: 42vh; }
   .editor-head { flex-wrap: wrap; }
-  .status-line { max-width: 95vw; }
-  .pane-head-compact .btn { font-size: 0.88rem; }
-  .create-card-top {
-    grid-template-columns: auto 1fr;
-  }
-  .create-card-top label:nth-child(n+3) {
-    grid-column: 1 / -1;
-  }
+  .status-line { max-width: 55vw; }
+  .create-card-top { grid-template-columns: 1fr; }
 }

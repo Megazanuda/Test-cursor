@@ -5,6 +5,7 @@
 const COLUMNS = [
   { key: 'name', label: 'Event name', cls: 'col-name' },
   { key: 'templateName', label: 'Template name', cls: 'col-template' },
+  { key: 'created', label: 'Created', cls: 'col-created' },
   { key: 'changed', label: 'Last modified', cls: 'col-changed' },
   { key: 'id', label: 'Id', cls: 'col-id' },
   { key: 'externalId', label: 'External id', cls: 'col-ext' }
@@ -12,6 +13,7 @@ const COLUMNS = [
 
 const HIDDEN_COLS_KEY = 'carrot-web-hidden-columns';
 const EDITOR_FOLD_KEY = 'carrot-web-editor-folded';
+const PLAYLISTS_OPEN_KEY = 'carrot-web-playlists-open';
 const TWO_WEEKS_MS = 14 * 24 * 60 * 60 * 1000;
 
 function loadHiddenColumns() {
@@ -24,9 +26,17 @@ function loadHiddenColumns() {
   }
 }
 
-function loadEditorFolded() {
+function loadEditorUserCollapsed() {
   try {
     return localStorage.getItem(EDITOR_FOLD_KEY) === '1';
+  } catch (e) {
+    return false;
+  }
+}
+
+function loadPlaylistsOpen() {
+  try {
+    return localStorage.getItem(PLAYLISTS_OPEN_KEY) === '1';
   } catch (e) {
     return false;
   }
@@ -41,11 +51,11 @@ function blankCreateForm() {
   return {
     localId: newCreateFormId(),
     name: '',
+    externalId: '',
     templateId: '',
     contentId: '',
     templateTypeInt: 1,
     state: 'IN',
-    states: ['IN'],
     comment: '',
     variables: [],
     loadingTemplate: false
@@ -54,7 +64,9 @@ function blankCreateForm() {
 
 const state = {
   connected: false,
+  section: 'events', // events | create
   playlists: [],
+  playlistsOpen: loadPlaylistsOpen(),
   view: null,
   playlistId: null,
   playlistName: '',
@@ -66,18 +78,20 @@ const state = {
   anchorId: null,
   allEventsCache: null,
   allEventsLoading: false,
-  // 'recent' = last 2 weeks; 'all' = no date filter
   allEventsScope: 'recent',
   hiddenColumns: loadHiddenColumns(),
   eventDetails: Object.create(null),
   editorLoadToken: 0,
   varFilter: '',
-  editorFolded: loadEditorFolded(),
-  // Создание событий (оверлей поверх таблицы)
-  createOpen: false,
+  // true только если пользователь сам свернул панель
+  editorUserCollapsed: loadEditorUserCollapsed(),
+  editorFolded: loadEditorUserCollapsed(),
   templates: [],
   templatesLoaded: false,
   templateDetails: Object.create(null),
+  mediaAssets: [],
+  mediaLoaded: false,
+  mediaLoading: null,
   createForms: [blankCreateForm()],
   createSelectedIds: [],
   createAnchorId: null
@@ -85,6 +99,9 @@ const state = {
 
 const el = {
   statusLine: document.getElementById('statusLine'),
+  sectionTabs: document.getElementById('sectionTabs'),
+  tabEvents: document.getElementById('tabEvents'),
+  tabCreate: document.getElementById('tabCreate'),
   connectPanel: document.getElementById('connectPanel'),
   connectForm: document.getElementById('connectForm'),
   connectBtn: document.getElementById('connectBtn'),
@@ -92,6 +109,12 @@ const el = {
   login: document.getElementById('login'),
   password: document.getElementById('password'),
   workspace: document.getElementById('workspace'),
+  sectionEvents: document.getElementById('sectionEvents'),
+  sectionCreate: document.getElementById('sectionCreate'),
+  allEventsBtn: document.getElementById('allEventsBtn'),
+  playlistsToggle: document.getElementById('playlistsToggle'),
+  playlistsToggleInd: document.getElementById('playlistsToggleInd'),
+  playlistsBody: document.getElementById('playlistsBody'),
   playlistList: document.getElementById('playlistList'),
   playlistEmpty: document.getElementById('playlistEmpty'),
   reloadPlaylists: document.getElementById('reloadPlaylists'),
@@ -106,21 +129,17 @@ const el = {
   eventsBody: document.getElementById('eventsBody'),
   eventsEmpty: document.getElementById('eventsEmpty'),
   colsMenuBody: document.getElementById('colsMenuBody'),
-  eventsPane: document.querySelector('.events-pane'),
-  createPane: document.getElementById('createPane'),
-  createOpenBtn: document.getElementById('createOpenBtn'),
-  createCloseBtn: document.getElementById('createCloseBtn'),
   createHint: document.getElementById('createHint'),
   createList: document.getElementById('createList'),
   createAddBtn: document.getElementById('createAddBtn'),
   createRemoveBtn: document.getElementById('createRemoveBtn'),
+  createClearBtn: document.getElementById('createClearBtn'),
   createSubmitBtn: document.getElementById('createSubmitBtn'),
   editorPanel: document.getElementById('editorPanel'),
   editorTitle: document.getElementById('editorTitle'),
   editorSub: document.getElementById('editorSub'),
   editorTabs: document.getElementById('editorTabs'),
   editorBody: document.getElementById('editorBody'),
-  editorContent: document.getElementById('editorContent'),
   editorFoldBtn: document.getElementById('editorFoldBtn'),
   editorCollapseAll: document.getElementById('editorCollapseAll'),
   varFilter: document.getElementById('varFilter'),
@@ -143,7 +162,7 @@ function toast(message, kind) {
   el.toast.classList.remove('ok', 'err');
   if (kind) el.toast.classList.add(kind);
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(function () { el.toast.hidden = true; }, 4200);
+  toastTimer = setTimeout(function () { el.toast.hidden = true; }, 5200);
 }
 
 async function api(method, path, body) {
@@ -185,7 +204,7 @@ function pick(obj, keys) {
   return '';
 }
 
-function formatChanged(value) {
+function formatDateTime(value) {
   if (value == null || value === '') return '';
   const d = new Date(value);
   if (Number.isNaN(d.getTime())) return String(value);
@@ -198,19 +217,22 @@ function flattenRow(entry) {
   const event = entry.event || {};
   const item = entry.item || {};
   const template = event.template || item.template || {};
+  const createdRaw = pick(event, ['created', 'Created', 'createDate']);
+  const changedRaw = pick(event, ['changed', 'modified', 'updated', 'changeDate']);
 
   return {
     name: pick(event, ['name']) || pick(item, ['eventName', 'name']),
     templateName: pick(event, ['templateName']) ||
       pick(template, ['name']) ||
       pick(item, ['templateName']),
-    changed: formatChanged(pick(event, ['changed', 'modified', 'updated', 'changeDate'])),
-    changedRaw: pick(event, ['changed', 'modified', 'updated', 'changeDate']),
+    created: formatDateTime(createdRaw),
+    createdRaw: createdRaw,
+    changed: formatDateTime(changedRaw),
+    changedRaw: changedRaw,
     id: pick(event, ['id']) || pick(item, ['eventId']),
     externalId: pick(event, ['externalId']) || pick(item, ['externalId', 'eventExternalId']),
     _event: event,
-    _item: item,
-    _fetchError: event._fetchError || ''
+    _item: item
   };
 }
 
@@ -219,6 +241,10 @@ function isRecentRow(row) {
   const t = new Date(row.changedRaw).getTime();
   if (Number.isNaN(t)) return false;
   return (Date.now() - t) <= TWO_WEEKS_MS;
+}
+
+function isMediaType(type) {
+  return String(type || '').toLowerCase() === 'media';
 }
 
 function visibleColumns() {
@@ -237,19 +263,15 @@ function renderColsMenu() {
   COLUMNS.forEach(function (c) {
     const row = document.createElement('label');
     row.className = 'cols-row';
-
     const cb = document.createElement('input');
     cb.type = 'checkbox';
     cb.checked = !state.hiddenColumns[c.key];
-
     const text = document.createElement('span');
     text.className = 'cols-label';
     text.textContent = c.label;
-
     cb.addEventListener('change', function () {
-      if (cb.checked) {
-        delete state.hiddenColumns[c.key];
-      } else {
+      if (cb.checked) delete state.hiddenColumns[c.key];
+      else {
         const left = COLUMNS.filter(function (x) {
           return x.key !== c.key && !state.hiddenColumns[x.key];
         });
@@ -263,7 +285,6 @@ function renderColsMenu() {
       saveHiddenColumns();
       renderTable();
     });
-
     row.appendChild(cb);
     row.appendChild(text);
     el.colsMenuBody.appendChild(row);
@@ -276,7 +297,6 @@ function compareValues(a, b) {
   if (aEmpty && bEmpty) return 0;
   if (aEmpty) return 1;
   if (bEmpty) return -1;
-
   const an = Number(a);
   const bn = Number(b);
   if (!Number.isNaN(an) && !Number.isNaN(bn) && String(a).trim() !== '' && String(b).trim() !== '') {
@@ -284,7 +304,6 @@ function compareValues(a, b) {
     if (an > bn) return 1;
     return 0;
   }
-
   const as = String(a).toLowerCase();
   const bs = String(b).toLowerCase();
   if (as < bs) return -1;
@@ -310,7 +329,8 @@ function sortedFilteredRows() {
       });
     });
   }
-  const key = state.sortKey === 'changed' ? 'changedRaw' : state.sortKey;
+  const key = (state.sortKey === 'changed') ? 'changedRaw'
+    : (state.sortKey === 'created' ? 'createdRaw' : state.sortKey);
   const dir = state.sortDir;
   list.sort(function (a, b) {
     const cmp = compareValues(a[key], b[key]);
@@ -320,33 +340,47 @@ function sortedFilteredRows() {
   return list;
 }
 
+function setSection(section) {
+  state.section = section === 'create' ? 'create' : 'events';
+  el.sectionEvents.hidden = state.section !== 'events';
+  el.sectionCreate.hidden = state.section !== 'create';
+  el.tabEvents.classList.toggle('active', state.section === 'events');
+  el.tabCreate.classList.toggle('active', state.section === 'create');
+  if (state.section === 'create') {
+    renderCreateForms();
+    ensureTemplatesLoaded(false).then(function () {
+      return ensureMediaLoaded();
+    }).then(function () {
+      renderCreateForms();
+    }).catch(function (err) {
+      toast(err.message, 'err');
+    });
+  }
+}
+
+function updatePlaylistsToggleUi() {
+  el.playlistsBody.hidden = !state.playlistsOpen;
+  el.playlistsToggle.setAttribute('aria-expanded', state.playlistsOpen ? 'true' : 'false');
+  el.playlistsToggleInd.textContent = state.playlistsOpen ? '▾' : '▸';
+}
+
+function setPlaylistsOpen(open) {
+  state.playlistsOpen = !!open;
+  try {
+    localStorage.setItem(PLAYLISTS_OPEN_KEY, state.playlistsOpen ? '1' : '0');
+  } catch (e) { /* ignore */ }
+  updatePlaylistsToggleUi();
+}
+
 function updateScopeButtons() {
-  const onAll = state.view === 'all';
+  const onAll = state.view === 'all' && state.section === 'events';
   el.loadAllBtn.hidden = !(onAll && state.allEventsScope === 'recent');
   el.loadRecentBtn.hidden = !(onAll && state.allEventsScope === 'all');
 }
 
-function setCreateOverlayOpen(open) {
-  state.createOpen = !!open;
-  if (el.createPane) el.createPane.hidden = !state.createOpen;
-  if (el.createOpenBtn) {
-    el.createOpenBtn.hidden = state.createOpen;
-  }
-}
-
 function renderPlaylists() {
   el.playlistList.innerHTML = '';
-
-  const allLi = document.createElement('li');
-  const allBtn = document.createElement('button');
-  allBtn.type = 'button';
-  if (state.view === 'all') allBtn.classList.add('active');
-  allBtn.innerHTML =
-    '<span class="pl-name">Все события</span>' +
-    '<span class="pl-id">вся база</span>';
-  allBtn.addEventListener('click', function () { selectAllEvents(); });
-  allLi.appendChild(allBtn);
-  el.playlistList.appendChild(allLi);
+  el.allEventsBtn.classList.toggle('active', state.view === 'all');
 
   if (!state.playlists.length) {
     el.playlistEmpty.hidden = false;
@@ -360,8 +394,7 @@ function renderPlaylists() {
     if (state.view === 'playlist' && pl.id === state.playlistId) {
       btn.classList.add('active');
     }
-    btn.innerHTML =
-      '<span class="pl-name"></span><span class="pl-id"></span>';
+    btn.innerHTML = '<span class="pl-name"></span><span class="pl-id"></span>';
     btn.querySelector('.pl-name').textContent = pl.name || '(без имени)';
     btn.querySelector('.pl-id').textContent = pl.id || '';
     btn.addEventListener('click', function () { selectPlaylist(pl); });
@@ -429,46 +462,106 @@ function matchesVarFilter(v) {
     String(v.type || '').toLowerCase().indexOf(q) !== -1;
 }
 
+async function ensureMediaLoaded(force) {
+  if (state.mediaLoaded && !force) return state.mediaAssets;
+  if (state.mediaLoading) return state.mediaLoading;
+  state.mediaLoading = api('GET', '/api/media')
+    .then(function (data) {
+      state.mediaAssets = data.media || [];
+      state.mediaLoaded = true;
+      return state.mediaAssets;
+    })
+    .catch(function (err) {
+      state.mediaLoaded = false;
+      throw err;
+    })
+    .finally(function () {
+      state.mediaLoading = null;
+    });
+  return state.mediaLoading;
+}
+
+function fillMediaSelect(select, currentValue) {
+  select.innerHTML = '';
+  const empty = document.createElement('option');
+  empty.value = '';
+  empty.textContent = state.mediaLoaded
+    ? (state.mediaAssets.length ? '— медиа —' : 'Медиа не найдены')
+    : 'Загрузка медиа…';
+  select.appendChild(empty);
+  state.mediaAssets.forEach(function (m) {
+    const opt = document.createElement('option');
+    opt.value = m.id;
+    opt.textContent = m.name || m.id;
+    if (String(m.id) === String(currentValue)) opt.selected = true;
+    select.appendChild(opt);
+  });
+  if (currentValue && !state.mediaAssets.some(function (m) {
+    return String(m.id) === String(currentValue);
+  })) {
+    const opt = document.createElement('option');
+    opt.value = currentValue;
+    opt.textContent = currentValue;
+    opt.selected = true;
+    select.appendChild(opt);
+  }
+}
+
+function makeVarInput(v, onChange) {
+  const val = v.value == null ? '' : String(v.value);
+  if (isMediaType(v.type)) {
+    const select = document.createElement('select');
+    fillMediaSelect(select, val);
+    select.addEventListener('click', function (ev) { ev.stopPropagation(); });
+    select.addEventListener('change', function () { onChange(select.value); });
+    if (!state.mediaLoaded) {
+      ensureMediaLoaded(false).then(function () {
+        fillMediaSelect(select, select.value || val);
+      }).catch(function (err) {
+        toast('Медиа: ' + err.message, 'err');
+      });
+    }
+    return select;
+  }
+  const useArea = val.indexOf('\n') !== -1 || val.length > 80;
+  const input = useArea ? document.createElement('textarea') : document.createElement('input');
+  if (!useArea) input.type = 'text';
+  if (useArea) input.rows = Math.min(6, Math.max(2, val.split('\n').length));
+  input.value = val;
+  input.addEventListener('click', function (ev) { ev.stopPropagation(); });
+  input.addEventListener('input', function () { onChange(input.value); });
+  return input;
+}
+
 function buildVarEditor(eventId, variables, opts) {
   opts = opts || {};
   const wrap = document.createElement('div');
   wrap.className = opts.bare ? 'var-editor' : 'event-card-body var-editor';
-
   const all = variables || [];
   const filtered = all.filter(matchesVarFilter);
+
   if (!all.length) {
-    const p = document.createElement('p');
-    p.className = 'editor-empty';
-    p.textContent = 'У события нет переменных';
-    wrap.appendChild(p);
+    wrap.innerHTML = '<p class="editor-empty">У события нет переменных</p>';
     return wrap;
   }
-
   if (state.varFilter && !filtered.length) {
-    const p = document.createElement('p');
-    p.className = 'editor-empty';
-    p.textContent = 'Нет переменных по фильтру';
-    wrap.appendChild(p);
+    wrap.innerHTML = '<p class="editor-empty">Нет переменных по фильтру</p>';
     return wrap;
   }
-
-  const many = all.length > 10;
-  if (many || state.varFilter) {
+  if (all.length > 10 || state.varFilter) {
     const hint = document.createElement('p');
     hint.className = 'var-count-hint';
-    hint.textContent = 'Показано ' + filtered.length + ' из ' + all.length +
-      (state.varFilter ? '' : ' — сузь список фильтром сверху');
+    hint.textContent = 'Показано ' + filtered.length + ' из ' + all.length;
     wrap.appendChild(hint);
   }
 
   const grid = document.createElement('div');
-  grid.className = 'var-grid' + (many ? ' var-grid-compact' : '');
+  grid.className = 'var-grid' + (all.length > 10 ? ' var-grid-compact' : '');
   const inputs = [];
 
   filtered.forEach(function (v) {
     const row = document.createElement('div');
     row.className = 'var-row';
-
     const lab = document.createElement('label');
     const nameSpan = document.createElement('span');
     nameSpan.className = 'var-name';
@@ -480,24 +573,16 @@ function buildVarEditor(eventId, variables, opts) {
       type.textContent = v.type;
       lab.appendChild(type);
     }
-
-    const val = v.value == null ? '' : String(v.value);
-    const useArea = val.indexOf('\n') !== -1 || val.length > 80;
-    const input = useArea
-      ? document.createElement('textarea')
-      : document.createElement('input');
-    if (!useArea) input.type = 'text';
-    if (useArea) input.rows = Math.min(6, Math.max(2, val.split('\n').length));
-    input.value = val;
+    const input = makeVarInput(v, function (value) {
+      input._currentValue = value;
+    });
     input.dataset.varName = v.name || '';
-    input.setAttribute('aria-label', v.name || 'variable');
+    input._currentValue = v.value == null ? '' : String(v.value);
     inputs.push(input);
-
     row.appendChild(lab);
     row.appendChild(input);
     grid.appendChild(row);
   });
-
   wrap.appendChild(grid);
 
   const actions = document.createElement('div');
@@ -512,12 +597,12 @@ function buildVarEditor(eventId, variables, opts) {
       byName[v.name] = v.value == null ? '' : String(v.value);
     });
     inputs.forEach(function (inp) {
-      byName[inp.dataset.varName] = inp.value;
+      byName[inp.dataset.varName] =
+        inp._currentValue != null ? inp._currentValue : inp.value;
     });
     const full = Object.keys(byName).map(function (name) {
       return { name: name, value: byName[name] };
     });
-
     saveBtn.disabled = true;
     try {
       await api('PATCH', '/api/events/' + encodeURIComponent(eventId) + '/variables', full);
@@ -548,14 +633,16 @@ function applyEditorFoldClass() {
   el.editorPanel.classList.toggle('folded', !!state.editorFolded);
   el.editorFoldBtn.textContent = state.editorFolded ? '+' : '−';
   el.editorFoldBtn.title = state.editorFolded ? 'Развернуть панель' : 'Свернуть панель';
-  el.editorFoldBtn.setAttribute('aria-label', el.editorFoldBtn.title);
 }
 
-function setEditorFolded(folded) {
+function setEditorFolded(folded, fromUser) {
   state.editorFolded = !!folded;
-  try {
-    localStorage.setItem(EDITOR_FOLD_KEY, state.editorFolded ? '1' : '0');
-  } catch (e) { /* ignore */ }
+  if (fromUser) {
+    state.editorUserCollapsed = !!folded;
+    try {
+      localStorage.setItem(EDITOR_FOLD_KEY, state.editorUserCollapsed ? '1' : '0');
+    } catch (e) { /* ignore */ }
+  }
   applyEditorFoldClass();
 }
 
@@ -570,18 +657,18 @@ function setEditorChrome(n, loading) {
     el.editorTabs.hidden = true;
     el.editorTabs.innerHTML = '';
     el.editorSub.hidden = true;
-    el.editorSub.textContent = '';
     el.editorBody.innerHTML = '';
     return false;
   }
 
   el.editorPanel.hidden = false;
+  // Автооткрытие, если пользователь сам не сворачивал.
+  if (!state.editorUserCollapsed) state.editorFolded = false;
   applyEditorFoldClass();
   el.varFilter.hidden = false;
   el.editorTitle.textContent = 'Переменные';
   if (n === 1) {
     el.editorSub.hidden = true;
-    el.editorSub.textContent = '';
     el.editorCollapseAll.hidden = true;
     el.editorTabs.hidden = true;
     el.editorTabs.innerHTML = '';
@@ -614,38 +701,30 @@ function paintEditorItems(loaded) {
       el.editorBody.innerHTML = '<p class="editor-empty">' + escapeHtml(item.error) + '</p>';
       return;
     }
-    const vars = (item.event && item.event.variables) || [];
-    el.editorBody.appendChild(buildVarEditor(item.id, vars, { bare: true }));
+    el.editorBody.appendChild(buildVarEditor(item.id, (item.event && item.event.variables) || [], { bare: true }));
     return;
   }
 
   el.editorTabs.hidden = false;
-  const collapseByDefault = true;
-
   loaded.forEach(function (item, idx) {
     const tab = document.createElement('button');
     tab.type = 'button';
     tab.className = 'editor-tab' + (idx === 0 ? ' active' : '');
     tab.textContent = item.name || ('Событие ' + (idx + 1));
-    tab.title = item.name || '';
     tab.addEventListener('click', function () {
-      let card = null;
       el.editorBody.querySelectorAll('details.event-card').forEach(function (d) {
-        if (d.dataset.eventId === item.id) card = d;
         d.open = d.dataset.eventId === item.id;
       });
       el.editorTabs.querySelectorAll('.editor-tab').forEach(function (t) {
         t.classList.toggle('active', t === tab);
       });
-      if (card) card.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
     });
     el.editorTabs.appendChild(tab);
 
     const card = document.createElement('details');
     card.className = 'event-card';
     card.dataset.eventId = item.id;
-    card.open = !collapseByDefault || idx === 0;
-
+    card.open = idx === 0;
     const summary = document.createElement('summary');
     const title = document.createElement('span');
     title.className = 'ev-title';
@@ -658,32 +737,22 @@ function paintEditorItems(loaded) {
     summary.appendChild(title);
     summary.appendChild(meta);
     card.appendChild(summary);
-
     if (item.error) {
       const body = document.createElement('div');
       body.className = 'event-card-body';
-      const p = document.createElement('p');
-      p.className = 'editor-empty';
-      p.textContent = item.error;
-      body.appendChild(p);
+      body.innerHTML = '<p class="editor-empty">' + escapeHtml(item.error) + '</p>';
       card.appendChild(body);
     } else {
-      const vars = (item.event && item.event.variables) || [];
-      card.appendChild(buildVarEditor(item.id, vars));
+      card.appendChild(buildVarEditor(item.id, (item.event && item.event.variables) || []));
     }
-
     if (loaded.length > 3) {
       card.addEventListener('toggle', function () {
         if (!card.open) return;
         el.editorBody.querySelectorAll('details.event-card').forEach(function (d) {
           if (d !== card) d.open = false;
         });
-        el.editorTabs.querySelectorAll('.editor-tab').forEach(function (t, i) {
-          t.classList.toggle('active', loaded[i] && loaded[i].id === item.id);
-        });
       });
     }
-
     el.editorBody.appendChild(card);
   });
 }
@@ -695,8 +764,8 @@ async function renderEditor() {
   const token = ++state.editorLoadToken;
   el.editorBody.innerHTML = '<p class="editor-loading">Загрузка переменных…</p>';
   el.editorTabs.hidden = true;
-  el.editorTabs.innerHTML = '';
 
+  const hasMedia = [];
   const ids = state.selectedIds.slice();
   const loaded = [];
   for (let i = 0; i < ids.length; i++) {
@@ -704,24 +773,33 @@ async function renderEditor() {
     const row = state.rows.find(function (r) { return r.id === id; });
     try {
       const ev = await loadEventDetail(id);
+      const vars = (ev && ev.variables) || [];
+      if (vars.some(function (v) { return isMediaType(v.type); })) hasMedia.push(1);
       loaded.push({ id: id, name: (ev && ev.name) || (row && row.name) || id, event: ev });
     } catch (err) {
-      loaded.push({
-        id: id,
-        name: (row && row.name) || id,
-        error: err.message
-      });
+      loaded.push({ id: id, name: (row && row.name) || id, error: err.message });
     }
     if (token !== state.editorLoadToken) return;
   }
-
   if (token !== state.editorLoadToken) return;
+
+  if (hasMedia.length) {
+    try { await ensureMediaLoaded(false); } catch (e) { /* toast later in selects */ }
+  }
   setEditorChrome(n, false);
   paintEditorItems(loaded);
 }
 
 function updateSelectionUi() {
   renderEditor();
+}
+
+function plural(n) {
+  const m10 = n % 10;
+  const m100 = n % 100;
+  if (m10 === 1 && m100 !== 11) return 'ие';
+  if (m10 >= 2 && m10 <= 4 && (m100 < 10 || m100 >= 20)) return 'ия';
+  return 'ий';
 }
 
 function allEventsHint(flat) {
@@ -775,7 +853,6 @@ function renderTable() {
   }
 
   el.filterInput.disabled = false;
-
   const existing = Object.create(null);
   state.rows.forEach(function (r) { if (r.id) existing[r.id] = true; });
   state.selectedIds = state.selectedIds.filter(function (id) { return existing[id]; });
@@ -792,13 +869,9 @@ function renderTable() {
   if (!rows.length) {
     el.eventsTable.hidden = true;
     el.eventsEmpty.hidden = false;
-    if (state.view === 'all' && state.allEventsScope === 'recent') {
-      el.eventsEmpty.textContent = state.filter
-        ? 'Ничего не найдено по фильтру'
-        : 'За последние 2 недели изменений нет — нажми «Подгрузить все»';
-    } else {
-      el.eventsEmpty.textContent = 'Ничего не найдено по фильтру';
-    }
+    el.eventsEmpty.textContent = (state.view === 'all' && state.allEventsScope === 'recent' && !state.filter)
+      ? 'За последние 2 недели изменений нет — нажми «Подгрузить все»'
+      : 'Ничего не найдено по фильтру';
     updateSelectionUi();
     return;
   }
@@ -844,7 +917,6 @@ function renderTable() {
     tr.addEventListener('click', function (ev) { selectEvent(r.id, ev); });
     el.eventsBody.appendChild(tr);
   });
-
   updateSelectionUi();
 }
 
@@ -864,7 +936,7 @@ async function selectAllEvents(opts) {
   state.playlistId = null;
   state.playlistName = '';
   clearSelection();
-  setCreateOverlayOpen(false);
+  setSection('events');
   renderPlaylists();
   el.eventsTitle.textContent = 'Все события';
   el.deleteBtn.disabled = true;
@@ -881,7 +953,7 @@ async function selectAllEvents(opts) {
           if (state.view !== 'all') return;
           applyEventRows(flat, 'Все события');
         })
-        .catch(function () { /* оставляем кэш */ })
+        .catch(function () { /* cache */ })
         .finally(function () { state.allEventsLoading = false; });
     }
     return;
@@ -890,7 +962,6 @@ async function selectAllEvents(opts) {
   state.rows = [];
   el.eventsHint.textContent = 'Загрузка…';
   renderTable();
-
   try {
     state.allEventsLoading = true;
     const flat = await fetchAllEvents(force);
@@ -910,23 +981,21 @@ async function selectPlaylist(pl) {
   state.playlistName = pl.name || pl.id;
   clearSelection();
   state.rows = [];
-  setCreateOverlayOpen(false);
+  setSection('events');
+  if (!state.playlistsOpen) setPlaylistsOpen(true);
   renderPlaylists();
   el.eventsTitle.textContent = state.playlistName;
   el.eventsHint.textContent = 'Загрузка событий…';
   el.deleteBtn.disabled = true;
-  el.deleteBtn.textContent = 'Удалить';
   el.editorPanel.hidden = true;
   updateScopeButtons();
   renderTable();
-
   try {
     const data = await api('GET', '/api/playlists/' + encodeURIComponent(pl.id) + '/events');
-    const flat = (data.events || []).map(flattenRow);
     applyEventRows(
-      flat,
+      (data.events || []).map(flattenRow),
       state.playlistName,
-      'плейлист: ' + state.playlistName + ' · ' + flat.length + ' событий'
+      'плейлист: ' + state.playlistName + ' · ' + (data.events || []).length + ' событий'
     );
   } catch (err) {
     el.eventsHint.textContent = 'Ошибка загрузки';
@@ -935,28 +1004,124 @@ async function selectPlaylist(pl) {
   }
 }
 
-async function reloadCurrentView(opts) {
-  opts = opts || {};
-  if (state.createOpen) {
-    state.templatesLoaded = false;
-    await ensureTemplatesLoaded(true);
-    renderCreateForms();
-    return;
+function selectEvent(eventId, ev) {
+  ev = ev || {};
+  const rows = sortedFilteredRows();
+  const ids = rows.map(function (r) { return r.id; });
+  const shift = !!ev.shiftKey;
+  const toggle = !!(ev.ctrlKey || ev.metaKey);
+
+  if (shift && state.anchorId && ids.indexOf(state.anchorId) !== -1 &&
+      ids.indexOf(eventId) !== -1) {
+    const a = ids.indexOf(state.anchorId);
+    const b = ids.indexOf(eventId);
+    const range = ids.slice(Math.min(a, b), Math.max(a, b) + 1);
+    if (toggle) {
+      const merged = state.selectedIds.slice();
+      range.forEach(function (id) {
+        if (merged.indexOf(id) === -1) merged.push(id);
+      });
+      setSelection(merged, state.anchorId);
+    } else {
+      setSelection(range, state.anchorId);
+    }
+  } else if (toggle) {
+    const next = state.selectedIds.slice();
+    const idx = next.indexOf(eventId);
+    if (idx === -1) next.push(eventId);
+    else next.splice(idx, 1);
+    setSelection(next, eventId);
+  } else {
+    setSelection([eventId], eventId);
   }
-  if (state.view === 'all') {
-    await selectAllEvents({ force: !!opts.force });
-    return;
-  }
-  if (state.view === 'playlist' && state.playlistId) {
-    const pl = state.playlists.find(function (p) { return p.id === state.playlistId; }) ||
-      { id: state.playlistId, name: state.playlistName };
-    await selectPlaylist(pl);
-    return;
-  }
-  await loadPlaylists();
+  renderTable();
 }
 
-/* ---------------- Создание событий ---------------- */
+async function loadPlaylists() {
+  const data = await api('GET', '/api/playlists');
+  state.playlists = data.playlists || [];
+  renderPlaylists();
+}
+
+async function connect(creds) {
+  el.connectBtn.disabled = true;
+  setStatus('подключение…');
+  try {
+    const data = await api('POST', '/api/connect', creds);
+    state.connected = true;
+    el.connectPanel.hidden = true;
+    el.workspace.hidden = false;
+    el.sectionTabs.hidden = false;
+    setStatus('онлайн · ' + data.baseUrl, 'ok');
+    toast('Подключено к ' + data.baseUrl, 'ok');
+    updatePlaylistsToggleUi();
+    await loadPlaylists();
+    state.allEventsScope = 'recent';
+    await selectAllEvents();
+  } catch (err) {
+    setStatus(err.message, 'err');
+    toast(err.message, 'err');
+    throw err;
+  } finally {
+    el.connectBtn.disabled = false;
+  }
+}
+
+async function deleteSelected() {
+  const ids = state.selectedIds.slice();
+  if (!ids.length) return;
+  if (ids.length === 1) {
+    const row = state.rows.find(function (r) { return r.id === ids[0]; });
+    el.confirmText.textContent =
+      '«' + ((row && row.name) || ids[0]) + '» будет удалено на сервере. Это необратимо.';
+  } else {
+    el.confirmText.textContent = 'Будет удалено событий: ' + ids.length + '. Это необратимо.';
+  }
+  el.confirmDialog.showModal();
+  const result = await new Promise(function (resolve) {
+    el.confirmDialog.addEventListener('close', function onClose() {
+      el.confirmDialog.removeEventListener('close', onClose);
+      resolve(el.confirmDialog.returnValue);
+    });
+  });
+  if (result !== 'ok') return;
+
+  el.deleteBtn.disabled = true;
+  try {
+    const data = await api('POST', '/api/events/delete', { ids: ids });
+    const deleted = (data && data.deleted) ? data.deleted : [];
+    const failed = (data && data.failed) ? data.failed : [];
+    if (failed.length) toast('Удалено: ' + deleted.length + ', ошибок: ' + failed.length, 'err');
+    else toast('Удалено: ' + deleted.length, 'ok');
+    if (deleted.length) {
+      const drop = Object.create(null);
+      deleted.forEach(function (id) {
+        drop[id] = true;
+        delete state.eventDetails[id];
+      });
+      state.rows = state.rows.filter(function (r) { return !drop[r.id]; });
+      if (state.allEventsCache) {
+        state.allEventsCache = state.allEventsCache.filter(function (r) {
+          return !drop[r.id];
+        });
+      }
+    }
+    clearSelection();
+    if (state.view === 'all') applyEventRows(state.rows, 'Все события');
+    else if (state.view === 'playlist') {
+      applyEventRows(
+        state.rows,
+        state.playlistName,
+        'плейлист: ' + state.playlistName + ' · ' + state.rows.length + ' событий'
+      );
+    } else renderTable();
+  } catch (err) {
+    toast(err.message, 'err');
+    updateSelectionUi();
+  }
+}
+
+/* ---------------- Создание ---------------- */
 
 function createSelectedCount() {
   return state.createSelectedIds.length;
@@ -982,33 +1147,24 @@ function setCreateSelection(ids, anchorId) {
 
 function targetCreateForms(localId) {
   if (isCreateSelected(localId) && state.createSelectedIds.length > 1) {
-    return state.createForms.filter(function (f) {
-      return isCreateSelected(f.localId);
-    });
+    return state.createForms.filter(function (f) { return isCreateSelected(f.localId); });
   }
   return state.createForms.filter(function (f) { return f.localId === localId; });
 }
 
 function updateCreateActions() {
   const n = createSelectedCount();
-  const total = state.createForms.length;
-  el.createRemoveBtn.disabled = n === 0;
-  el.createRemoveBtn.textContent = n > 1 ? ('Удалить выбранные (' + n + ')') : 'Удалить выбранные';
   const ready = state.createForms.filter(function (f) {
     return f.templateId && String(f.name || '').trim();
   }).length;
+  el.createRemoveBtn.disabled = n === 0;
+  el.createRemoveBtn.textContent = n > 1 ? ('Удалить выбранные (' + n + ')') : 'Удалить выбранные';
+  el.createClearBtn.disabled = state.createForms.length === 0;
   el.createSubmitBtn.disabled = ready === 0;
-  el.createSubmitBtn.textContent = ready > 1
-    ? ('Создать (' + ready + ')')
-    : 'Создать';
-  if (n > 1) {
-    el.createHint.textContent =
-      'Выбрано полей: ' + n + ' — изменения имени, шаблона и переменных применяются ко всем выбранным.';
-  } else {
-    el.createHint.textContent =
-      'Добавь поля, выбери шаблон — переменные подгрузятся сами. Выдели несколько полей (Shift/Ctrl), чтобы править сразу все.';
-  }
-  void total;
+  el.createSubmitBtn.textContent = ready > 1 ? ('Создать (' + ready + ')') : 'Создать';
+  el.createHint.textContent = n > 1
+    ? ('Выбрано полей: ' + n + ' — имя, External id, шаблон и переменные применяются ко всем выбранным.')
+    : 'Добавь поля, выбери шаблон — переменные подгрузятся сами. Клик по карточке выделяет её; Shift/Ctrl — несколько.';
 }
 
 async function ensureTemplatesLoaded(force) {
@@ -1022,17 +1178,15 @@ async function ensureTemplatesLoaded(force) {
 async function loadTemplateDetail(templateId) {
   if (state.templateDetails[templateId]) return state.templateDetails[templateId];
   const data = await api('GET', '/api/templates/' + encodeURIComponent(templateId));
-  const tpl = data.template;
-  state.templateDetails[templateId] = tpl;
-  return tpl;
+  state.templateDetails[templateId] = data.template;
+  return data.template;
 }
 
 function applyTemplateToForm(form, tpl) {
   form.templateId = tpl.id;
   form.contentId = tpl.contentId || '';
   form.templateTypeInt = (tpl.templateTypeInt != null) ? tpl.templateTypeInt : 1;
-  form.states = (tpl.states && tpl.states.length) ? tpl.states.slice() : ['IN'];
-  form.state = tpl.defaultInState || form.states[0] || 'IN';
+  form.state = tpl.defaultInState || 'IN';
   form.variables = (tpl.variables || []).map(function (v) {
     return {
       id: v.id || '',
@@ -1055,31 +1209,6 @@ function applyTemplateToForm(form, tpl) {
   form.loadingTemplate = false;
 }
 
-async function openCreateOverlay() {
-  setCreateOverlayOpen(true);
-  setStatus('создание событий', 'ok');
-  renderCreateForms();
-  try {
-    await ensureTemplatesLoaded(false);
-    renderCreateForms();
-  } catch (err) {
-    toast(err.message, 'err');
-    setStatus(err.message, 'err');
-  }
-}
-
-function closeCreateOverlay() {
-  setCreateOverlayOpen(false);
-  if (state.view === 'all') {
-    setStatus(allEventsStatus(state.rows), 'ok');
-  } else if (state.view === 'playlist') {
-    setStatus(
-      'плейлист: ' + state.playlistName + ' · ' + state.rows.length + ' событий',
-      'ok'
-    );
-  }
-}
-
 function selectCreateForm(localId, ev) {
   ev = ev || {};
   const ids = state.createForms.map(function (f) { return f.localId; });
@@ -1090,24 +1219,20 @@ function selectCreateForm(localId, ev) {
       ids.indexOf(localId) !== -1) {
     const a = ids.indexOf(state.createAnchorId);
     const b = ids.indexOf(localId);
-    const from = Math.min(a, b);
-    const to = Math.max(a, b);
-    const range = ids.slice(from, to + 1);
-    if (toggle) {
-      const merged = state.createSelectedIds.slice();
-      range.forEach(function (id) {
-        if (merged.indexOf(id) === -1) merged.push(id);
-      });
-      setCreateSelection(merged, state.createAnchorId);
-    } else {
-      setCreateSelection(range, state.createAnchorId);
-    }
+    const range = ids.slice(Math.min(a, b), Math.max(a, b) + 1);
+    setCreateSelection(toggle
+      ? state.createSelectedIds.concat(range.filter(function (id) {
+        return state.createSelectedIds.indexOf(id) === -1;
+      }))
+      : range, state.createAnchorId);
   } else if (toggle) {
     const next = state.createSelectedIds.slice();
     const idx = next.indexOf(localId);
     if (idx === -1) next.push(localId);
     else next.splice(idx, 1);
     setCreateSelection(next, localId);
+  } else if (isCreateSelected(localId) && state.createSelectedIds.length === 1) {
+    setCreateSelection([], null);
   } else {
     setCreateSelection([localId], localId);
   }
@@ -1122,16 +1247,16 @@ async function onCreateTemplateChange(localId, templateId) {
     if (!templateId) {
       f.variables = [];
       f.contentId = '';
-      f.states = ['IN'];
-      f.state = 'IN';
       f.loadingTemplate = false;
     }
   });
   renderCreateForms();
   if (!templateId) return;
-
   try {
     const tpl = await loadTemplateDetail(templateId);
+    if ((tpl.variables || []).some(function (v) { return isMediaType(v.type); })) {
+      try { await ensureMediaLoaded(false); } catch (e) { /* selects handle */ }
+    }
     targets.forEach(function (f) { applyTemplateToForm(f, tpl); });
     renderCreateForms();
   } catch (err) {
@@ -1144,34 +1269,26 @@ async function onCreateTemplateChange(localId, templateId) {
   }
 }
 
+function syncFieldToSelected(localId, selector, value) {
+  if (createSelectedCount() <= 1) return;
+  el.createList.querySelectorAll('.create-card').forEach(function (card) {
+    const id = card.dataset.localId;
+    if (!isCreateSelected(id) || id === localId) return;
+    const node = card.querySelector(selector);
+    if (node && node.value !== value) node.value = value;
+  });
+}
+
 function onCreateNameChange(localId, name) {
   targetCreateForms(localId).forEach(function (f) { f.name = name; });
   updateCreateActions();
-  if (createSelectedCount() > 1) {
-    el.createList.querySelectorAll('.create-card').forEach(function (card) {
-      const id = card.dataset.localId;
-      if (!isCreateSelected(id) || id === localId) return;
-      const input = card.querySelector('.create-card-top input[type="text"]:not([readonly])');
-      if (input && input.value !== name) input.value = name;
-    });
-  }
+  syncFieldToSelected(localId, '[data-field="name"]', name);
 }
 
-function onCreateStateChange(localId, st) {
-  targetCreateForms(localId).forEach(function (f) {
-    f.state = st;
-    if (f.states.indexOf(st) === -1) f.states.push(st);
-  });
+function onCreateExternalIdChange(localId, externalId) {
+  targetCreateForms(localId).forEach(function (f) { f.externalId = externalId; });
   updateCreateActions();
-  if (createSelectedCount() > 1) {
-    el.createList.querySelectorAll('.create-card').forEach(function (card) {
-      const id = card.dataset.localId;
-      if (!isCreateSelected(id) || id === localId) return;
-      const selects = card.querySelectorAll('.create-card-top select');
-      const stateSelect = selects[1];
-      if (stateSelect && stateSelect.value !== st) stateSelect.value = st;
-    });
-  }
+  syncFieldToSelected(localId, '[data-field="externalId"]', externalId);
 }
 
 function onCreateVarChange(localId, varName, value) {
@@ -1179,46 +1296,38 @@ function onCreateVarChange(localId, varName, value) {
     const hit = f.variables.find(function (v) { return v.name === varName; });
     if (hit) hit.value = value;
   });
-  // Не перерисовываем всё на каждый символ — обновляем только actions.
   updateCreateActions();
-  // Синхронизируем значения в DOM у других выбранных карточек.
   if (createSelectedCount() > 1) {
     el.createList.querySelectorAll('.create-card').forEach(function (card) {
       const id = card.dataset.localId;
       if (!isCreateSelected(id) || id === localId) return;
-      const input = card.querySelector('[data-var-name="' + cssAttrEscape(varName) + '"]');
-      if (input && input.value !== value) input.value = value;
+      const input = card.querySelector('[data-var-name="' +
+        String(varName).replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"]');
+      if (input && input.value !== value) {
+        input.value = value;
+        input._currentValue = value;
+      }
     });
   }
 }
 
-function cssAttrEscape(s) {
-  return String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-}
-
 function renderCreateForms() {
-  if (!state.createOpen) return;
-  if (!el.createList) return;
+  if (state.section !== 'create' || !el.createList) return;
   const existing = Object.create(null);
   state.createForms.forEach(function (f) { existing[f.localId] = true; });
   state.createSelectedIds = state.createSelectedIds.filter(function (id) {
     return existing[id];
   });
-  if (state.createAnchorId && !existing[state.createAnchorId]) {
-    state.createAnchorId = null;
-  }
+  if (state.createAnchorId && !existing[state.createAnchorId]) state.createAnchorId = null;
 
   el.createList.innerHTML = '';
   if (!state.createForms.length) {
-    const p = document.createElement('p');
-    p.className = 'empty';
-    p.textContent = 'Нет полей — нажми «Добавить поле»';
-    el.createList.appendChild(p);
+    el.createList.innerHTML = '<p class="empty">Нет полей — нажми «Добавить поле»</p>';
     updateCreateActions();
     return;
   }
 
-  state.createForms.forEach(function (form, idx) {
+  state.createForms.forEach(function (form) {
     const card = document.createElement('article');
     card.className = 'create-card' + (isCreateSelected(form.localId) ? ' selected' : '');
     card.dataset.localId = form.localId;
@@ -1226,92 +1335,61 @@ function renderCreateForms() {
     const top = document.createElement('div');
     top.className = 'create-card-top';
 
-    const checkWrap = document.createElement('div');
-    checkWrap.className = 'create-card-check';
-    const check = document.createElement('input');
-    check.type = 'checkbox';
-    check.checked = isCreateSelected(form.localId);
-    check.title = 'Выбрать поле';
-    check.addEventListener('click', function (ev) {
-      ev.stopPropagation();
-      selectCreateForm(form.localId, {
-        shiftKey: ev.shiftKey,
-        ctrlKey: true,
-        metaKey: ev.metaKey
-      });
-    });
-    checkWrap.appendChild(check);
-
-    const nameLab = document.createElement('label');
-    nameLab.innerHTML = '<span>Имя события</span>';
-    const nameInput = document.createElement('input');
-    nameInput.type = 'text';
-    nameInput.value = form.name || '';
-    nameInput.placeholder = 'Event ' + (idx + 1);
-    nameInput.addEventListener('click', function (ev) { ev.stopPropagation(); });
-    nameInput.addEventListener('input', function () {
-      onCreateNameChange(form.localId, nameInput.value);
-    });
-    nameLab.appendChild(nameInput);
-
-    const tplLab = document.createElement('label');
-    tplLab.innerHTML = '<span>Шаблон</span>';
-    const tplSelect = document.createElement('select');
-    const emptyOpt = document.createElement('option');
-    emptyOpt.value = '';
-    emptyOpt.textContent = state.templatesLoaded ? '— выбери шаблон —' : 'Загрузка шаблонов…';
-    tplSelect.appendChild(emptyOpt);
-    state.templates.forEach(function (t) {
-      const opt = document.createElement('option');
-      opt.value = t.id;
-      opt.textContent = t.name || t.id;
-      if (t.id === form.templateId) opt.selected = true;
-      tplSelect.appendChild(opt);
-    });
-    if (form.templateId && !state.templates.some(function (t) { return t.id === form.templateId; })) {
-      const opt = document.createElement('option');
-      opt.value = form.templateId;
-      opt.textContent = form.templateId;
-      opt.selected = true;
-      tplSelect.appendChild(opt);
+    function field(labelText, fieldKey, maker) {
+      const lab = document.createElement('label');
+      lab.innerHTML = '<span></span>';
+      lab.querySelector('span').textContent = labelText;
+      const node = maker();
+      node.dataset.field = fieldKey;
+      node.addEventListener('click', function (ev) { ev.stopPropagation(); });
+      lab.appendChild(node);
+      lab.addEventListener('click', function (ev) { ev.stopPropagation(); });
+      top.appendChild(lab);
+      return node;
     }
-    tplSelect.addEventListener('click', function (ev) { ev.stopPropagation(); });
-    tplSelect.addEventListener('change', function () {
-      onCreateTemplateChange(form.localId, tplSelect.value);
-    });
-    tplLab.appendChild(tplSelect);
 
-    const stateLab = document.createElement('label');
-    stateLab.innerHTML = '<span>State</span>';
-    const stateSelect = document.createElement('select');
-    (form.states || ['IN']).forEach(function (st) {
-      const opt = document.createElement('option');
-      opt.value = st;
-      opt.textContent = st;
-      if (st === form.state) opt.selected = true;
-      stateSelect.appendChild(opt);
+    const nameInput = field('Имя события', 'name', function () {
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.value = form.name || '';
+      input.placeholder = 'Имя';
+      input.addEventListener('input', function () {
+        onCreateNameChange(form.localId, nameInput.value);
+      });
+      return input;
     });
-    stateSelect.disabled = !form.templateId;
-    stateSelect.addEventListener('click', function (ev) { ev.stopPropagation(); });
-    stateSelect.addEventListener('change', function () {
-      onCreateStateChange(form.localId, stateSelect.value);
+    void nameInput;
+
+    field('Шаблон', 'template', function () {
+      const select = document.createElement('select');
+      const emptyOpt = document.createElement('option');
+      emptyOpt.value = '';
+      emptyOpt.textContent = state.templatesLoaded ? '— выбери шаблон —' : 'Загрузка…';
+      select.appendChild(emptyOpt);
+      state.templates.forEach(function (t) {
+        const opt = document.createElement('option');
+        opt.value = t.id;
+        opt.textContent = t.name || t.id;
+        if (t.id === form.templateId) opt.selected = true;
+        select.appendChild(opt);
+      });
+      select.addEventListener('change', function () {
+        onCreateTemplateChange(form.localId, select.value);
+      });
+      return select;
     });
-    stateLab.appendChild(stateSelect);
 
-    const idxLab = document.createElement('label');
-    idxLab.innerHTML = '<span>№</span>';
-    const idxBox = document.createElement('input');
-    idxBox.type = 'text';
-    idxBox.value = String(idx + 1);
-    idxBox.readOnly = true;
-    idxBox.tabIndex = -1;
-    idxLab.appendChild(idxBox);
+    field('External id', 'externalId', function () {
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.value = form.externalId || '';
+      input.placeholder = 'пусто = новый GUID';
+      input.addEventListener('input', function () {
+        onCreateExternalIdChange(form.localId, input.value);
+      });
+      return input;
+    });
 
-    top.appendChild(checkWrap);
-    top.appendChild(nameLab);
-    top.appendChild(tplLab);
-    top.appendChild(stateLab);
-    top.appendChild(idxLab);
     card.appendChild(top);
 
     const varsWrap = document.createElement('div');
@@ -1327,7 +1405,6 @@ function renderCreateForms() {
       meta.className = 'create-card-meta';
       meta.textContent = 'Переменные шаблона: ' + form.variables.length;
       varsWrap.appendChild(meta);
-
       const grid = document.createElement('div');
       grid.className = 'var-grid' + (form.variables.length > 10 ? ' var-grid-compact' : '');
       form.variables.forEach(function (v) {
@@ -1344,19 +1421,10 @@ function renderCreateForms() {
           type.textContent = v.type;
           lab.appendChild(type);
         }
-        const val = v.value == null ? '' : String(v.value);
-        const useArea = val.indexOf('\n') !== -1 || val.length > 80;
-        const input = useArea
-          ? document.createElement('textarea')
-          : document.createElement('input');
-        if (!useArea) input.type = 'text';
-        if (useArea) input.rows = Math.min(5, Math.max(2, val.split('\n').length));
-        input.value = val;
-        input.dataset.varName = v.name || '';
-        input.addEventListener('click', function (ev) { ev.stopPropagation(); });
-        input.addEventListener('input', function () {
-          onCreateVarChange(form.localId, v.name, input.value);
+        const input = makeVarInput(v, function (value) {
+          onCreateVarChange(form.localId, v.name, value);
         });
+        input.dataset.varName = v.name || '';
         row.appendChild(lab);
         row.appendChild(input);
         grid.appendChild(row);
@@ -1372,27 +1440,17 @@ function renderCreateForms() {
 
     el.createList.appendChild(card);
   });
-
   updateCreateActions();
 }
 
 function addCreateForm() {
-  if (!state.createOpen) {
-    openCreateOverlay();
-  }
   const form = blankCreateForm();
   state.createForms.push(form);
   setCreateSelection([form.localId], form.localId);
-  // Гарантируем отрисовку даже если оверлей только что открыли.
-  state.createOpen = true;
-  if (el.createPane) el.createPane.hidden = false;
   renderCreateForms();
-  // Прокрутить к новому полю.
   requestAnimationFrame(function () {
-    const cards = el.createList && el.createList.querySelectorAll('.create-card');
-    if (cards && cards.length) {
-      cards[cards.length - 1].scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-    }
+    const cards = el.createList.querySelectorAll('.create-card');
+    if (cards.length) cards[cards.length - 1].scrollIntoView({ block: 'nearest', behavior: 'smooth' });
   });
 }
 
@@ -1406,12 +1464,19 @@ function removeSelectedCreateForms() {
   renderCreateForms();
 }
 
+function clearAllCreateForms() {
+  state.createForms = [blankCreateForm()];
+  setCreateSelection([], null);
+  renderCreateForms();
+}
+
 async function submitCreateForms() {
   const payload = state.createForms
     .filter(function (f) { return f.templateId && String(f.name || '').trim(); })
     .map(function (f) {
       return {
         name: String(f.name).trim(),
+        externalId: String(f.externalId || '').trim(),
         templateId: f.templateId,
         contentId: f.contentId,
         templateTypeInt: f.templateTypeInt,
@@ -1458,181 +1523,46 @@ async function submitCreateForms() {
   }
 }
 
-function removeRowsByIds(ids) {
-  const drop = Object.create(null);
-  (ids || []).forEach(function (id) {
-    drop[id] = true;
-    delete state.eventDetails[id];
-  });
-  state.rows = state.rows.filter(function (r) { return !drop[r.id]; });
-  if (state.allEventsCache) {
-    state.allEventsCache = state.allEventsCache.filter(function (r) {
-      return !drop[r.id];
-    });
-  }
-}
-
-function plural(n) {
-  const m10 = n % 10;
-  const m100 = n % 100;
-  if (m10 === 1 && m100 !== 11) return 'ие';
-  if (m10 >= 2 && m10 <= 4 && (m100 < 10 || m100 >= 20)) return 'ия';
-  return 'ий';
-}
-
-function selectEvent(eventId, ev) {
-  ev = ev || {};
-  const rows = sortedFilteredRows();
-  const ids = rows.map(function (r) { return r.id; });
-  const shift = !!ev.shiftKey;
-  const toggle = !!(ev.ctrlKey || ev.metaKey);
-
-  if (shift && state.anchorId && ids.indexOf(state.anchorId) !== -1 &&
-      ids.indexOf(eventId) !== -1) {
-    const a = ids.indexOf(state.anchorId);
-    const b = ids.indexOf(eventId);
-    const from = Math.min(a, b);
-    const to = Math.max(a, b);
-    const range = ids.slice(from, to + 1);
-    if (toggle) {
-      const merged = state.selectedIds.slice();
-      range.forEach(function (id) {
-        if (merged.indexOf(id) === -1) merged.push(id);
-      });
-      setSelection(merged, state.anchorId);
-    } else {
-      setSelection(range, state.anchorId);
-    }
-  } else if (toggle) {
-    const next = state.selectedIds.slice();
-    const idx = next.indexOf(eventId);
-    if (idx === -1) next.push(eventId);
-    else next.splice(idx, 1);
-    setSelection(next, eventId);
-  } else {
-    setSelection([eventId], eventId);
-  }
-
-  renderTable();
-}
-
-async function loadPlaylists() {
-  const data = await api('GET', '/api/playlists');
-  state.playlists = data.playlists || [];
-  renderPlaylists();
-  setStatus('плейлистов: ' + state.playlists.length, 'ok');
-}
-
-async function connect(creds) {
-  el.connectBtn.disabled = true;
-  setStatus('подключение…');
-  try {
-    const data = await api('POST', '/api/connect', creds);
-    state.connected = true;
-    el.connectPanel.hidden = true;
-    el.workspace.hidden = false;
-    setStatus('онлайн · ' + data.baseUrl, 'ok');
-    toast('Подключено к ' + data.baseUrl, 'ok');
-    await loadPlaylists();
-    state.allEventsScope = 'recent';
-    await selectAllEvents();
-  } catch (err) {
-    setStatus(err.message, 'err');
-    toast(err.message, 'err');
-    throw err;
-  } finally {
-    el.connectBtn.disabled = false;
-  }
-}
-
-async function deleteSelected() {
-  const ids = state.selectedIds.slice();
-  if (!ids.length) return;
-
-  if (ids.length === 1) {
-    const row = state.rows.find(function (r) { return r.id === ids[0]; });
-    const label = (row && row.name) ? row.name : ids[0];
-    el.confirmText.textContent =
-      '«' + label + '» (' + ids[0] + ') будет удалено на сервере. Это необратимо.';
-  } else {
-    el.confirmText.textContent =
-      'Будет удалено событий: ' + ids.length + '. Это необратимо.';
-  }
-
-  el.confirmDialog.showModal();
-  const result = await new Promise(function (resolve) {
-    el.confirmDialog.addEventListener('close', function onClose() {
-      el.confirmDialog.removeEventListener('close', onClose);
-      resolve(el.confirmDialog.returnValue);
-    });
-  });
-  if (result !== 'ok') return;
-
-  el.deleteBtn.disabled = true;
-  try {
-    const data = await api('POST', '/api/events/delete', { ids: ids });
-    const deleted = (data && data.deleted) ? data.deleted : [];
-    const failed = (data && data.failed) ? data.failed : [];
-    if (failed.length && deleted.length) {
-      toast('Удалено: ' + deleted.length + ', ошибок: ' + failed.length, 'err');
-    } else if (failed.length) {
-      const first = failed[0];
-      toast('Не удалено: ' + (first.error || failed.length + ' ошибок'), 'err');
-    } else {
-      toast('Удалено: ' + deleted.length, 'ok');
-    }
-    if (deleted.length) removeRowsByIds(deleted);
-    clearSelection();
-    if (state.view === 'all') {
-      applyEventRows(state.rows, 'Все события');
-    } else if (state.view === 'playlist') {
-      applyEventRows(
-        state.rows,
-        state.playlistName,
-        'плейлист: ' + state.playlistName + ' · ' + state.rows.length + ' событий'
-      );
-    } else {
-      renderTable();
-    }
-  } catch (err) {
-    toast(err.message, 'err');
-    setStatus(err.message, 'err');
-    updateSelectionUi();
-  }
-}
+/* ---------------- Events wiring ---------------- */
 
 el.connectForm.addEventListener('submit', function (e) {
   e.preventDefault();
-  const creds = {
+  connect({
     baseUrl: el.baseUrl.value.trim() || undefined,
     login: el.login.value.trim() || undefined,
     password: el.password.value || undefined
-  };
-  connect(creds).catch(function () { /* toast already shown */ });
+  }).catch(function () { /* toasted */ });
+});
+
+el.tabEvents.addEventListener('click', function () { setSection('events'); });
+el.tabCreate.addEventListener('click', function () { setSection('create'); });
+
+el.allEventsBtn.addEventListener('click', function () { selectAllEvents(); });
+el.playlistsToggle.addEventListener('click', function () {
+  setPlaylistsOpen(!state.playlistsOpen);
 });
 
 el.reloadPlaylists.addEventListener('click', function () {
   loadPlaylists()
-    .then(function () { return reloadCurrentView({ force: true }); })
+    .then(function () {
+      if (state.view === 'all') return selectAllEvents({ force: true });
+      if (state.view === 'playlist' && state.playlistId) {
+        return selectPlaylist({ id: state.playlistId, name: state.playlistName });
+      }
+    })
     .catch(function (err) { toast(err.message, 'err'); });
 });
 
 el.loadAllBtn.addEventListener('click', function () {
   state.allEventsScope = 'all';
-  if (state.allEventsCache) {
-    applyEventRows(state.allEventsCache, 'Все события');
-  } else {
-    selectAllEvents({ force: true, scope: 'all' });
-  }
+  if (state.allEventsCache) applyEventRows(state.allEventsCache, 'Все события');
+  else selectAllEvents({ force: true, scope: 'all' });
 });
 
 el.loadRecentBtn.addEventListener('click', function () {
   state.allEventsScope = 'recent';
-  if (state.allEventsCache) {
-    applyEventRows(state.allEventsCache, 'Все события');
-  } else {
-    selectAllEvents({ force: true, scope: 'recent' });
-  }
+  if (state.allEventsCache) applyEventRows(state.allEventsCache, 'Все события');
+  else selectAllEvents({ force: true, scope: 'recent' });
 });
 
 el.filterInput.addEventListener('input', function () {
@@ -1644,95 +1574,59 @@ el.varFilter.addEventListener('input', function () {
   state.varFilter = el.varFilter.value;
   if (selectedCount()) {
     state.editorLoadToken++;
-    renderEditorFromCache();
+    const ids = state.selectedIds.slice();
+    const loaded = ids.map(function (id) {
+      const row = state.rows.find(function (r) { return r.id === id; });
+      const ev = state.eventDetails[id];
+      if (!ev) {
+        return { id: id, name: (row && row.name) || id, error: 'Нет данных — выбери строку снова' };
+      }
+      return { id: id, name: ev.name || (row && row.name) || id, event: ev };
+    });
+    setEditorChrome(selectedCount(), false);
+    paintEditorItems(loaded);
   }
 });
 
-function renderEditorFromCache() {
-  const n = selectedCount();
-  if (!setEditorChrome(n, false)) return;
-  const ids = state.selectedIds.slice();
-  const loaded = ids.map(function (id) {
-    const row = state.rows.find(function (r) { return r.id === id; });
-    const ev = state.eventDetails[id];
-    if (!ev) {
-      return { id: id, name: (row && row.name) || id, error: 'Нет данных — выбери строку снова' };
-    }
-    return { id: id, name: ev.name || (row && row.name) || id, event: ev };
-  });
-  paintEditorItems(loaded);
-}
-
 el.editorFoldBtn.addEventListener('click', function () {
-  setEditorFolded(!state.editorFolded);
+  setEditorFolded(!state.editorFolded, true);
 });
 
 el.editorCollapseAll.addEventListener('click', function () {
   el.editorBody.querySelectorAll('details.event-card').forEach(function (d) {
     d.open = false;
   });
-  el.editorTabs.querySelectorAll('.editor-tab').forEach(function (t) {
-    t.classList.remove('active');
-  });
 });
 
-el.deleteBtn.addEventListener('click', function () {
-  deleteSelected();
+el.deleteBtn.addEventListener('click', function () { deleteSelected(); });
+
+el.createAddBtn.addEventListener('click', function (ev) {
+  ev.preventDefault();
+  addCreateForm();
 });
-
-if (el.createOpenBtn) {
-  el.createOpenBtn.addEventListener('click', function () {
-    openCreateOverlay();
-  });
-}
-
-if (el.createCloseBtn) {
-  el.createCloseBtn.addEventListener('click', function () {
-    closeCreateOverlay();
-  });
-}
-
-if (el.createAddBtn) {
-  el.createAddBtn.addEventListener('click', function (ev) {
-    ev.preventDefault();
-    ev.stopPropagation();
-    addCreateForm();
-  });
-}
-
-if (el.createRemoveBtn) {
-  el.createRemoveBtn.addEventListener('click', function () {
-    removeSelectedCreateForms();
-  });
-}
-
-if (el.createSubmitBtn) {
-  el.createSubmitBtn.addEventListener('click', function () {
-    submitCreateForms();
-  });
-}
+el.createRemoveBtn.addEventListener('click', function () { removeSelectedCreateForms(); });
+el.createClearBtn.addEventListener('click', function () { clearAllCreateForms(); });
+el.createSubmitBtn.addEventListener('click', function () { submitCreateForms(); });
 
 document.addEventListener('keydown', function (e) {
-  if (e.key === 'Escape' && state.createOpen && !el.confirmDialog.open) {
-    e.preventDefault();
-    closeCreateOverlay();
-    return;
-  }
-  if (e.key === 'Delete' && selectedCount() && !el.confirmDialog.open &&
-      !state.createOpen &&
+  if (e.key === 'Delete' && state.section === 'events' && selectedCount() &&
+      !el.confirmDialog.open &&
       document.activeElement &&
       document.activeElement.tagName !== 'INPUT' &&
-      document.activeElement.tagName !== 'TEXTAREA') {
+      document.activeElement.tagName !== 'TEXTAREA' &&
+      document.activeElement.tagName !== 'SELECT') {
     e.preventDefault();
     deleteSelected();
   }
-  if (e.key === 'Escape' && selectedCount() && !el.confirmDialog.open) {
+  if (e.key === 'Escape' && selectedCount() && !el.confirmDialog.open &&
+      state.section === 'events') {
     clearSelection();
     renderTable();
   }
 });
 
 renderColsMenu();
+updatePlaylistsToggleUi();
 applyEditorFoldClass();
 
 (async function boot() {
@@ -1742,11 +1636,8 @@ applyEditorFoldClass();
       if (health.defaults.baseUrl) el.baseUrl.value = health.defaults.baseUrl;
       if (health.defaults.login) el.login.value = health.defaults.login;
     }
-    if (health.hasEnv) {
-      await connect({});
-    } else {
-      setStatus('заполни .env или форму подключения');
-    }
+    if (health.hasEnv) await connect({});
+    else setStatus('заполни .env или форму подключения');
   } catch (err) {
     setStatus(err.message, 'err');
   }
