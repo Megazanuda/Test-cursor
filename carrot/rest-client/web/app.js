@@ -247,6 +247,32 @@ function isMediaType(type) {
   return String(type || '').toLowerCase() === 'media';
 }
 
+// В Carrot Media-значение хранится как «id;имя» без пробелов вокруг ';'.
+function parseMediaValue(raw) {
+  const s = raw == null ? '' : String(raw);
+  if (!s) return { id: '', name: '' };
+  const i = s.indexOf(';');
+  if (i === -1) return { id: s, name: '' };
+  return { id: s.slice(0, i), name: s.slice(i + 1) };
+}
+
+function encodeMediaValue(id, name) {
+  if (id == null || String(id) === '') return '';
+  return String(id) + ';' + String(name == null ? '' : name);
+}
+
+function normalizeMediaValue(raw) {
+  const parsed = parseMediaValue(raw);
+  if (!parsed.id) return '';
+  if (parsed.name) return encodeMediaValue(parsed.id, parsed.name);
+  const hit = state.mediaAssets.find(function (m) {
+    return String(m.id) === String(parsed.id);
+  });
+  return hit
+    ? encodeMediaValue(hit.id, hit.name || '')
+    : encodeMediaValue(parsed.id, '');
+}
+
 function visibleColumns() {
   const vis = COLUMNS.filter(function (c) { return !state.hiddenColumns[c.key]; });
   return vis.length ? vis : COLUMNS.slice(0, 1);
@@ -498,25 +524,29 @@ async function ensureMediaLoaded(force) {
 
 function fillMediaSelect(select, currentValue) {
   select.innerHTML = '';
+  const currentId = parseMediaValue(currentValue).id;
   const empty = document.createElement('option');
   empty.value = '';
   empty.textContent = state.mediaLoaded
     ? (state.mediaAssets.length ? '— медиа —' : 'Медиа не найдены')
     : 'Загрузка медиа…';
   select.appendChild(empty);
+  var matched = false;
   state.mediaAssets.forEach(function (m) {
     const opt = document.createElement('option');
-    opt.value = m.id;
+    opt.value = encodeMediaValue(m.id, m.name || '');
     opt.textContent = m.name || m.id;
-    if (String(m.id) === String(currentValue)) opt.selected = true;
+    if (currentId && String(m.id) === String(currentId)) {
+      opt.selected = true;
+      matched = true;
+    }
     select.appendChild(opt);
   });
-  if (currentValue && !state.mediaAssets.some(function (m) {
-    return String(m.id) === String(currentValue);
-  })) {
+  if (currentValue && currentId && !matched) {
+    const parsed = parseMediaValue(currentValue);
     const opt = document.createElement('option');
-    opt.value = currentValue;
-    opt.textContent = currentValue;
+    opt.value = normalizeMediaValue(currentValue);
+    opt.textContent = parsed.name || parsed.id;
     opt.selected = true;
     select.appendChild(opt);
   }
@@ -528,7 +558,9 @@ function makeVarInput(v, onChange) {
     const select = document.createElement('select');
     fillMediaSelect(select, val);
     select.addEventListener('click', function (ev) { ev.stopPropagation(); });
-    select.addEventListener('change', function () { onChange(select.value); });
+    select.addEventListener('change', function () {
+      onChange(normalizeMediaValue(select.value));
+    });
     if (!state.mediaLoaded) {
       ensureMediaLoaded(false).then(function () {
         fillMediaSelect(select, select.value || val);
@@ -608,15 +640,19 @@ function buildVarEditor(eventId, variables, opts) {
   saveBtn.textContent = 'Сохранить переменные';
   saveBtn.addEventListener('click', async function () {
     const byName = Object.create(null);
+    const typeByName = Object.create(null);
     all.forEach(function (v) {
       byName[v.name] = v.value == null ? '' : String(v.value);
+      typeByName[v.name] = v.type;
     });
     inputs.forEach(function (inp) {
       byName[inp.dataset.varName] =
         inp._currentValue != null ? inp._currentValue : inp.value;
     });
     const full = Object.keys(byName).map(function (name) {
-      return { name: name, value: byName[name] };
+      var value = byName[name];
+      if (isMediaType(typeByName[name])) value = normalizeMediaValue(value);
+      return { name: name, value: value };
     });
     saveBtn.disabled = true;
     try {
@@ -1498,11 +1534,13 @@ async function submitCreateForms() {
         state: f.state || 'IN',
         comment: f.comment || '',
         variables: (f.variables || []).map(function (v) {
+          var value = v.value == null ? '' : String(v.value);
+          if (isMediaType(v.type)) value = normalizeMediaValue(value);
           return {
             id: v.id,
             name: v.name,
             type: v.type,
-            value: v.value == null ? '' : String(v.value),
+            value: value,
             fieldId: v.fieldId,
             defaultValue: v.defaultValue,
             resetMedia: v.resetMedia,
