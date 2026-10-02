@@ -997,60 +997,178 @@ class CarrotClient {
         });
     }
 
-    // Список медиа (REST, затем WS MediaAssetLibrary/GetAssetFolder).
+    // Список медиа: REST GET /assets/folder/{folderId} (swagger), затем WS 24712.
     async listMediaAssets(opts) {
         opts = opts || {};
+        const deep = opts.deep !== false;
+        const preferredRoot = opts.folderId || MEDIA_ROOT_FOLDER_ID;
+
+        const viaRest = await this.listMediaAssetsViaRestFolder({
+            folderId: preferredRoot,
+            deep: deep
+        });
+        if (viaRest.assets.length) {
+            console.log('[media] REST /assets/folder: ' + viaRest.assets.length +
+                ' активов, папок=' + viaRest.foldersOk);
+            return viaRest.assets;
+        }
+
         const restPaths = ['/media', '/assets', '/mediaAssets', '/media/assets'];
         for (let i = 0; i < restPaths.length; i++) {
             const r = await this._tryOnce('GET', restPaths[i]);
             if (r.ok) {
                 const flat = this._flattenMedia(r.data);
-                if (flat.length) return flat;
+                if (flat.length) {
+                    console.log('[media] REST ' + restPaths[i] + ': ' + flat.length);
+                    return flat;
+                }
             }
         }
-        return this.listMediaAssetsViaWebSocket({
-            folderId: opts.folderId || MEDIA_ROOT_FOLDER_ID,
-            deep: opts.deep !== false
-        });
+
+        try {
+            const viaWs = await this.listMediaAssetsViaWebSocket({
+                folderId: preferredRoot,
+                deep: deep
+            });
+            if (viaWs && viaWs.length) {
+                console.log('[media] WS 24712: ' + viaWs.length + ' активов');
+                return viaWs;
+            }
+        } catch (err) {
+            const hint = viaRest.lastErr || (err && err.message) || 'пустой ответ';
+            throw new CarrotError(
+                'Медиа не загрузились. REST /assets/folder пуст' +
+                (viaRest.foldersOk ? '' : ' (папки не открылись)') +
+                '; WS: ' + hint,
+                { code: err && err.code, url: err && err.url }
+            );
+        }
+
+        throw new CarrotError(
+            'Медиа не найдены: REST /assets/folder/{id} вернул 0 активов' +
+            (viaRest.foldersOk
+                ? ' (папок просмотрено: ' + viaRest.foldersOk + ')'
+                : ' (не удалось открыть ни одну папку' +
+                    (viaRest.lastErr ? ': ' + viaRest.lastErr : '') + ')') +
+            '. Проверь GUID корня и доступ к REST/WS 24712.'
+        );
     }
 
-    _flattenMedia(raw) {
-        if (!raw) return [];
-        const out = [];
+    // Swagger: GET /assets/folder/{folderId} — обход дерева папок.
+    async listMediaAssetsViaRestFolder(opts) {
+        opts = opts || {};
+        const deep = opts.deep !== false;
+        const preferredRoot = opts.folderId || MEDIA_ROOT_FOLDER_ID;
+        const pending = [];
+        [preferredRoot, MEDIA_EMPTY_FOLDER_ID, MEDIA_ROOT_FOLDER_ID].forEach(function (id) {
+            if (id && pending.indexOf(id) === -1) pending.push(id);
+        });
+        const fetched = Object.create(null);
+        const assets = [];
         const seen = Object.create(null);
-        function walk(node) {
+        var foldersOk = 0;
+        var lastErr = null;
+        var scanned = 0;
+
+        while (pending.length && scanned < MEDIA_MAX_FOLDERS) {
+            const fid = pending.shift();
+            if (!fid || fetched[fid]) continue;
+            fetched[fid] = true;
+            scanned++;
+            const r = await this._tryOnce(
+                'GET',
+                '/assets/folder/' + encodeURIComponent(fid)
+            );
+            if (!r.ok) {
+                lastErr = r.message || ('HTTP ' + (r.httpStatus || '?'));
+                continue;
+            }
+            foldersOk++;
+            const parsed = this._parseMediaFolderPayload(r.data);
+            for (let i = 0; i < parsed.assets.length; i++) {
+                const a = parsed.assets[i];
+                if (!a.id || seen[a.id]) continue;
+                seen[a.id] = true;
+                assets.push(a);
+            }
+            if (deep) {
+                for (let i = 0; i < parsed.folderIds.length; i++) {
+                    const child = parsed.folderIds[i];
+                    if (child && !fetched[child] && pending.indexOf(child) === -1 &&
+                        pending.length + scanned < MEDIA_MAX_FOLDERS) {
+                        pending.push(child);
+                    }
+                }
+            }
+        }
+
+        assets.sort(function (a, b) {
+            return String(a.name || '').localeCompare(String(b.name || ''), 'ru');
+        });
+        return { assets: assets, foldersOk: foldersOk, lastErr: lastErr, scanned: scanned };
+    }
+
+    _parseMediaFolderPayload(raw) {
+        const assets = [];
+        const folderIds = [];
+        const seenA = Object.create(null);
+        const seenF = Object.create(null);
+        function addFolder(id) {
+            if (!id || seenF[id]) return;
+            seenF[id] = true;
+            folderIds.push(id);
+        }
+        function addAsset(node) {
+            const id = node.id || node.ID || node.assetId || node.AssetId;
+            if (!id || seenA[id]) return;
+            const name = node.name || node.Name;
+            seenA[id] = true;
+            assets.push({
+                id: id,
+                name: (name != null && String(name) !== '') ? name : id,
+                assetTypeInt: (node.assetTypeInt != null) ? node.assetTypeInt
+                    : node.AssetTypeInt,
+                parentId: node.parentId || node.ParentID || node.ParentId || ''
+            });
+        }
+        function walk(node, under) {
             if (!node) return;
             if (Array.isArray(node)) {
-                node.forEach(walk);
+                node.forEach(function (n) { walk(n, under); });
                 return;
             }
             if (typeof node !== 'object') return;
+
             const id = node.id || node.ID || node.assetId || node.AssetId;
             const name = node.name || node.Name;
-            const isAsset = id && name && (
-                node.assetTypeInt != null || node.AssetTypeInt != null ||
-                node.type === 'Asset' || node.kind === 'asset' ||
-                (!node.folders && !node.Folders && !node.children)
-            );
-            if (isAsset && !seen[id]) {
-                seen[id] = true;
-                out.push({
-                    id: id,
-                    name: name,
-                    assetTypeInt: (node.assetTypeInt != null) ? node.assetTypeInt
-                        : node.AssetTypeInt,
-                    parentId: node.parentId || node.ParentID || ''
-                });
-            }
-            walk(node.assets || node.Assets || node.items || node.Items ||
-                node.folderStructure || node.FolderStructure ||
-                node.folders || node.Folders || node.children);
+            const hasType = node.assetTypeInt != null || node.AssetTypeInt != null;
+            const typeStr = String(node.type || node.kind || '').toLowerCase();
+            const isAsset = !!(id && (
+                hasType || typeStr === 'asset' || under === 'assets'
+            ));
+            const isFolder = !!(id && !isAsset && (
+                typeStr === 'folder' || under === 'folders' ||
+                (name != null && (node.parentId != null || node.ParentID != null ||
+                    node.ParentId != null) && !hasType)
+            ));
+
+            if (isAsset) addAsset(node);
+            else if (isFolder) addFolder(id);
+
+            walk(node.assets || node.Assets, 'assets');
+            walk(node.items || node.Items, under);
+            walk(node.folders || node.Folders, 'folders');
+            walk(node.folderStructure || node.FolderStructure, under);
+            walk(node.children, under);
         }
-        walk(raw);
-        out.sort(function (a, b) {
+        walk(raw, '');
+        return { assets: assets, folderIds: folderIds };
+    }
+
+    _flattenMedia(raw) {
+        return this._parseMediaFolderPayload(raw).assets.sort(function (a, b) {
             return String(a.name || '').localeCompare(String(b.name || ''), 'ru');
         });
-        return out;
     }
 
     listMediaAssetsViaWebSocket(opts) {

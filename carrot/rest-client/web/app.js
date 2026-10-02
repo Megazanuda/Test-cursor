@@ -92,6 +92,7 @@ const state = {
   mediaAssets: [],
   mediaLoaded: false,
   mediaLoading: null,
+  mediaHint: '',
   createForms: [blankCreateForm()],
   createSelectedIds: [],
   createAnchorId: null
@@ -478,10 +479,15 @@ async function ensureMediaLoaded(force) {
     .then(function (data) {
       state.mediaAssets = data.media || [];
       state.mediaLoaded = true;
+      state.mediaHint = data.hint || '';
+      if (!state.mediaAssets.length && state.mediaHint) {
+        toast('Медиа: ' + state.mediaHint, 'err');
+      }
       return state.mediaAssets;
     })
     .catch(function (err) {
       state.mediaLoaded = false;
+      state.mediaHint = err.message || String(err);
       throw err;
     })
     .finally(function () {
@@ -495,7 +501,7 @@ function fillMediaSelect(select, currentValue) {
   const empty = document.createElement('option');
   empty.value = '';
   empty.textContent = state.mediaLoaded
-    ? (state.mediaAssets.length ? '— медиа —' : 'Медиа не найдены (проверь WS 24712)')
+    ? (state.mediaAssets.length ? '— медиа —' : 'Медиа не найдены')
     : 'Загрузка медиа…';
   select.appendChild(empty);
   state.mediaAssets.forEach(function (m) {
