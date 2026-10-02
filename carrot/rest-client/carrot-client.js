@@ -749,25 +749,16 @@ class CarrotClient {
             });
         }
 
-        // Проверка уникальности имени/externalId по текущему списку событий.
+        // Имена событий в Carrot могут повторяться. Уникален ExternalId
+        // (если пустой — подставляем Id, см. выше).
         try {
             const headers = await this.listEvents();
-            const byName = Object.create(null);
             const byExt = Object.create(null);
             (headers || []).forEach(function (h) {
-                if (h && h.name) byName[String(h.name).toLowerCase()] = h;
                 if (h && h.externalId) byExt[String(h.externalId).toLowerCase()] = h;
             });
             for (let i = 0; i < prepared.length; i++) {
                 const ev = prepared[i];
-                const nameHit = byName[ev.name.toLowerCase()];
-                if (nameHit) {
-                    throw new CarrotError(
-                        'Событие с именем «' + ev.name + '» уже существует (id: ' +
-                        (nameHit.id || '?') + ')',
-                        { errorCode: 42 }
-                    );
-                }
                 const extHit = byExt[String(ev.externalId).toLowerCase()];
                 if (extHit) {
                     throw new CarrotError(
@@ -987,7 +978,7 @@ class CarrotClient {
                             'Не удалось создать «' + (cur.name || cur.id || '?') + '»: ' +
                             msg +
                             ( /already exists/i.test(msg)
-                                ? ' — смени имя или External id'
+                                ? ' — смени External id (имена могут совпадать)'
                                 : ''),
                             { errorCode: /already exists/i.test(msg) ? 42 : undefined }
                         ));
