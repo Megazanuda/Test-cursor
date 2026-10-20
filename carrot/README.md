@@ -352,6 +352,23 @@ copy .env.example .env
 (файл с блоками через `---` или автогенератор). Подробности — в
 [`rest-client/README.md`](./rest-client/README.md).
 
+## Веб-UI на Flask (`flask-client/`)
+
+Каталог [`flask-client/`](./flask-client) — Python/Flask порт браузера плейлистов
+и событий (замена Node `web-server.js`). Подробности функций —
+[`flask-client/docs/ARCHITECTURE.md`](./flask-client/docs/ARCHITECTURE.md).
+
+```bat
+cd carrot\flask-client
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+copy .env.example .env
+web.cmd
+```
+
+Открой http://127.0.0.1:3456
+
 Чтобы менять строки, пока графика уже в эфире, у события должен быть включён
 `allowRuntimeChange`.
 
