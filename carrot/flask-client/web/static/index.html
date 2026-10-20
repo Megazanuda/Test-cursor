@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Плейлисты и события</title>
+  <link rel="stylesheet" href="/app.css" />
+</head>
+<body>
+  <header class="top">
+    <nav class="section-tabs" id="sectionTabs" hidden>
+      <button type="button" class="section-tab active" data-section="events" id="tabEvents">События</button>
+      <button type="button" class="section-tab" data-section="create" id="tabCreate">Создание</button>
+    </nav>
+    <span class="status-line" id="statusLine">не подключено</span>
+  </header>
+
+  <main class="shell">
+    <section class="connect" id="connectPanel">
+      <h1>Подключение</h1>
+      <p class="lede">REST или значения из <code>.env</code>.</p>
+      <form id="connectForm" class="connect-form" autocomplete="off">
+        <label>
+          <span>Base URL</span>
+          <input id="baseUrl" name="baseUrl" type="url" placeholder="http://172.17.97.71:5001" />
+        </label>
+        <label>
+          <span>Login</span>
+          <input id="login" name="login" type="text" autocomplete="username" />
+        </label>
+        <label>
+          <span>Password</span>
+          <input id="password" name="password" type="password" autocomplete="current-password" />
+        </label>
+        <button type="submit" class="btn primary" id="connectBtn">Подключить</button>
+      </form>
+    </section>
+
+    <section class="workspace" id="workspace" hidden>
+      <!-- ===== Раздел: события ===== -->
+      <section class="section-events" id="sectionEvents">
+        <button type="button" class="side-rail" id="sideToggleBtn"
+          title="Показать источники" aria-label="Показать источники" aria-expanded="false">›</button>
+
+        <aside class="side-pane" id="sidePane" hidden>
+          <div class="side-block">
+            <button type="button" class="side-all-btn" id="allEventsBtn">
+              <span class="pl-name">Все события</span>
+              <span class="pl-id">вся база</span>
+            </button>
+          </div>
+
+          <div class="side-block playlists-block">
+            <div class="side-fold static">
+              <span>Плейлисты</span>
+            </div>
+            <div class="playlists-body" id="playlistsBody">
+              <ul class="playlist-list" id="playlistList"></ul>
+              <p class="empty" id="playlistEmpty" hidden>Плейлистов нет</p>
+            </div>
+          </div>
+        </aside>
+
+        <section class="events-pane">
+          <div class="pane-head">
+            <div class="pane-title">
+              <h2 id="eventsTitle">События</h2>
+              <p class="lede" id="eventsHint">Выбери «Все события» или плейлист</p>
+            </div>
+            <div class="pane-actions">
+              <button type="button" class="btn ghost icon-btn" id="reloadPlaylists"
+                title="Обновить с сервера" aria-label="Обновить с сервера">↻</button>
+              <button type="button" class="btn ghost sm" id="loadAllBtn" hidden
+                title="Показать все события без ограничения по дате">
+                Все
+              </button>
+              <button type="button" class="btn ghost sm" id="loadRecentBtn" hidden
+                title="Показать только изменённые за последние 2 недели">
+                2 нед.
+              </button>
+              <details class="cols-menu" id="colsMenu">
+                <summary class="btn ghost sm">Колонки</summary>
+                <div class="cols-menu-body" id="colsMenuBody"></div>
+              </details>
+              <input type="search" id="filterInput" class="filter" placeholder="Фильтр…" disabled />
+              <button type="button" class="btn danger sm" id="deleteBtn" disabled>Удалить</button>
+            </div>
+          </div>
+
+          <div class="events-body" id="eventsBodyWrap">
+            <div class="table-wrap" id="tableWrap">
+              <table class="events-table" id="eventsTable" hidden>
+                <thead id="eventsHead"></thead>
+                <tbody id="eventsBody"></tbody>
+              </table>
+              <p class="empty" id="eventsEmpty">Выбери «Все события» или плейлист слева</p>
+            </div>
+
+            <aside class="editor" id="editorPanel" hidden>
+              <div class="editor-head">
+                <button type="button" class="fold-btn" id="editorFoldBtn" title="Свернуть панель" aria-label="Свернуть панель">−</button>
+                <div class="editor-head-text">
+                  <h3 id="editorTitle">Переменные</h3>
+                  <p class="lede" id="editorSub" hidden></p>
+                </div>
+                <div class="editor-head-actions">
+                  <input type="search" id="varFilter" class="filter filter-sm" placeholder="Фильтр переменных…" hidden />
+                  <button type="button" class="btn ghost sm" id="editorCollapseAll" hidden>Свернуть все</button>
+                </div>
+              </div>
+              <div class="editor-content" id="editorContent">
+                <div class="editor-tabs" id="editorTabs" hidden></div>
+                <div class="editor-body" id="editorBody"></div>
+              </div>
+            </aside>
+          </div>
+        </section>
+      </section>
+
+      <!-- ===== Раздел: создание ===== -->
+      <section class="section-create" id="sectionCreate" hidden>
+        <div class="pane-head">
+          <div class="pane-title">
+            <h2>Создание событий</h2>
+            <p class="lede" id="createHint">Добавь поля, выбери шаблон — переменные подгрузятся сами. Клик по карточке выделяет её; Shift/Ctrl — несколько.</p>
+          </div>
+          <div class="pane-actions">
+            <button type="button" class="btn ghost sm" id="createAddBtn">+ поле</button>
+            <button type="button" class="btn ghost sm" id="createRemoveBtn" disabled>Удалить</button>
+            <button type="button" class="btn ghost sm" id="createClearBtn">Очистить</button>
+            <button type="button" class="btn primary sm" id="createSubmitBtn" disabled>Создать</button>
+          </div>
+        </div>
+        <div class="create-list" id="createList"></div>
+      </section>
+    </section>
+  </main>
+
+  <div class="toast" id="toast" hidden role="status"></div>
+
+  <dialog id="confirmDialog">
+    <form method="dialog" class="confirm-box">
+      <h3>Удалить выбранные события?</h3>
+      <p id="confirmText"></p>
+      <div class="confirm-actions">
+        <button value="cancel" class="btn ghost">Отмена</button>
+        <button value="ok" class="btn danger">Удалить</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,317 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""Flask-прокси к Carrot Broadcast REST/WS + раздача HTML UI.
+
+Замена Node web-server.js. Браузер ходит только сюда (CORS/JWT),
+а сервер использует carrot_client.CarrotClient.
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+import traceback
+from pathlib import Path
+from typing import Any, Optional
+
+from dotenv import load_dotenv
+from flask import Flask, jsonify, request, send_from_directory
+
+from carrot_client import CarrotClient, CarrotError
+
+ROOT = Path(__file__).resolve().parent
+STATIC_DIR = ROOT / "web" / "static"
+
+# .env рядом с app.py или в cwd
+load_dotenv(ROOT / ".env")
+load_dotenv()
+
+HOST = os.environ.get("CARROT_WEB_HOST", "127.0.0.1")
+PORT = int(os.environ.get("CARROT_WEB_PORT", "3456"))
+
+app = Flask(
+    __name__,
+    static_folder=str(STATIC_DIR),
+    static_url_path="",
+)
+app.config["JSON_AS_ASCII"] = False
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+)
+log = logging.getLogger("carrot-flask")
+
+_client: Optional[CarrotClient] = None
+_client_key: str = ""
+
+
+def env(name: str, default: Optional[str] = None) -> Optional[str]:
+    return os.environ[name] if name in os.environ else default
+
+
+def ensure_client(creds: Optional[dict[str, Any]] = None) -> CarrotClient:
+    """Вернуть (или создать) singleton CarrotClient по кредам/env."""
+    global _client, _client_key
+    creds = creds or {}
+    base_url = creds.get("baseUrl") or creds.get("base_url") or env("CARROT_BASE_URL")
+    login = creds.get("login") or env("CARROT_LOGIN")
+    password = creds.get("password") or env("CARROT_PASSWORD")
+    if not base_url:
+        raise ValueError("Нужен CARROT_BASE_URL или baseUrl в форме")
+    if not login or not password:
+        raise ValueError("Нужны login/password (из .env или формы)")
+
+    ws_url = creds.get("wsUrl") or creds.get("ws_url") or env("CARROT_WS_URL")
+    ws_file_url = (
+        creds.get("wsFileUrl") or creds.get("ws_file_url") or env("CARROT_WS_FILE_URL")
+    )
+    key = f"{base_url}\0{login}\0{password}\0{ws_url or ''}\0{ws_file_url or ''}"
+    if _client is None or _client_key != key:
+        _client = CarrotClient(
+            {
+                "baseUrl": base_url,
+                "login": login,
+                "password": password,
+                "wsUrl": ws_url,
+                "wsFileUrl": ws_file_url,
+                "senderId": env("CARROT_SENDER_ID", "ticker-web"),
+                "receiverId": env("CARROT_RECEIVER_ID", "carrot-server"),
+            }
+        )
+        _client_key = key
+    return _client
+
+
+def err_payload(err: BaseException) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "ok": False,
+        "error": str(err) if err else "unknown",
+    }
+    if isinstance(err, CarrotError):
+        payload["errorCode"] = err.error_code
+        payload["httpStatus"] = err.http_status
+    return payload
+
+
+@app.errorhandler(Exception)
+def on_error(err: Exception):  # type: ignore[no-untyped-def]
+    log.error("API error: %s\n%s", err, traceback.format_exc())
+    status = 500
+    if isinstance(err, CarrotError) and err.http_status and 400 <= err.http_status < 600:
+        status = err.http_status
+    elif isinstance(err, ValueError):
+        status = 400
+    return jsonify(err_payload(err)), status
+
+
+# ---------------------------------------------------------------------------
+# Static UI
+# ---------------------------------------------------------------------------
+
+@app.get("/")
+def index():
+    return send_from_directory(STATIC_DIR, "index.html")
+
+
+# ---------------------------------------------------------------------------
+# API (совместимо с rest-client/web-server.js)
+# ---------------------------------------------------------------------------
+
+@app.get("/api/health")
+def api_health():
+    return jsonify(
+        {
+            "ok": True,
+            "hasEnv": bool(
+                env("CARROT_BASE_URL") and env("CARROT_LOGIN") and env("CARROT_PASSWORD")
+            ),
+            "defaults": {
+                "baseUrl": env("CARROT_BASE_URL", "") or "",
+                "login": env("CARROT_LOGIN", "") or "",
+            },
+            "backend": "flask",
+        }
+    )
+
+
+@app.post("/api/connect")
+def api_connect():
+    body = request.get_json(silent=True) or {}
+    client = ensure_client(body)
+    client.authenticate()
+    return jsonify(
+        {
+            "ok": True,
+            "baseUrl": client.base_url,
+            "login": body.get("login") or env("CARROT_LOGIN", "") or "",
+        }
+    )
+
+
+@app.get("/api/playlists")
+def api_playlists():
+    client = ensure_client()
+    return jsonify({"ok": True, "playlists": client.list_playlists() or []})
+
+
+@app.get("/api/playlists/<playlist_id>/events")
+def api_playlist_events(playlist_id: str):
+    client = ensure_client()
+    rows = client.list_playlist_events(playlist_id)
+    return jsonify({"ok": True, "events": rows})
+
+
+@app.get("/api/events")
+def api_events():
+    import time
+
+    client = ensure_client()
+    force = request.args.get("force") == "1"
+    rows = client.list_all_events({"force": force})
+    now_ms = time.time() * 1000
+    cached = (
+        not force
+        and client._all_events_cache is not None
+        and (now_ms - client._all_events_cache_at) < client._all_events_cache_ttl_ms
+    )
+    return jsonify({"ok": True, "events": rows, "cached": cached})
+
+
+@app.get("/api/media")
+def api_media():
+    client = ensure_client()
+    assets = client.list_media_assets({"deep": True}) or []
+    log.info("[media] загружено активов: %s", len(assets))
+    return jsonify({"ok": True, "media": assets})
+
+
+@app.get("/api/templates")
+def api_templates():
+    client = ensure_client()
+    templates = client.list_normalized_templates()
+    return jsonify(
+        {
+            "ok": True,
+            "templates": [
+                {
+                    "id": t.get("id"),
+                    "name": t.get("name"),
+                    "contentId": t.get("contentId"),
+                    "templateTypeInt": t.get("templateTypeInt"),
+                    "defaultInState": t.get("defaultInState"),
+                    "states": t.get("states"),
+                    "variableCount": len(t.get("variables") or []),
+                }
+                for t in templates
+            ],
+        }
+    )
+
+
+@app.get("/api/templates/<template_id>")
+def api_template_detail(template_id: str):
+    client = ensure_client()
+    template = client.get_normalized_template(template_id)
+    return jsonify({"ok": True, "template": template})
+
+
+@app.post("/api/events/create")
+def api_events_create():
+    body = request.get_json(silent=True) or {}
+    events = body.get("events") if isinstance(body, dict) else None
+    if events is None and isinstance(body, list):
+        events = body
+    if not events:
+        return jsonify(
+            {
+                "ok": False,
+                "error": "Нужен массив events: [{ name, templateId, variables? }, ...]",
+            }
+        ), 400
+    client = ensure_client()
+    result = client.create_events(events)
+    return jsonify({"ok": True, "created": result.get("created") or []})
+
+
+@app.post("/api/events/delete")
+def api_events_delete():
+    body = request.get_json(silent=True) or {}
+    ids = body.get("ids") if isinstance(body, dict) else None
+    if not ids:
+        return jsonify({"ok": False, "error": "Нужен массив ids"}), 400
+    client = ensure_client()
+    deleted: list[str] = []
+    failed: list[dict[str, str]] = []
+    for event_id in ids:
+        try:
+            client.delete_event(event_id)
+            deleted.append(event_id)
+        except Exception as err:  # noqa: BLE001
+            failed.append({"id": event_id, "error": str(err)})
+    return jsonify({"ok": True, "deleted": deleted, "failed": failed})
+
+
+@app.patch("/api/events/<event_id>/variables")
+def api_event_variables(event_id: str):
+    body = request.get_json(silent=True)
+    if isinstance(body, list):
+        vars_list = body
+    elif isinstance(body, dict) and isinstance(body.get("variables"), list):
+        vars_list = body["variables"]
+    else:
+        return jsonify(
+            {
+                "ok": False,
+                "error": "Нужен массив [{name, value}, ...] или { variables: [...] }",
+            }
+        ), 400
+    client = ensure_client()
+    client.edit_variables(event_id, vars_list)
+    return jsonify({"ok": True, "eventId": event_id})
+
+
+@app.get("/api/events/<event_id>")
+def api_event_get(event_id: str):
+    client = ensure_client()
+    event = client.get_event(event_id)
+    return jsonify({"ok": True, "event": event})
+
+
+@app.delete("/api/events/<event_id>")
+def api_event_delete(event_id: str):
+    client = ensure_client()
+    client.delete_event(event_id)
+    return jsonify({"ok": True, "deleted": event_id})
+
+
+def _host_port(port: int) -> str:
+    base = env("CARROT_BASE_URL") or ""
+    try:
+        from urllib.parse import urlparse
+
+        host = urlparse(base).hostname or "хост"
+        return f"{host}:{port}"
+    except Exception:
+        return f"хост:{port}"
+
+
+def main() -> None:
+    ws_hint = env("CARROT_WS_URL") or (
+        f"(по умолчанию ws://{_host_port(24710)})" if env("CARROT_BASE_URL") else "(не задан)"
+    )
+    ws_file_hint = env("CARROT_WS_FILE_URL") or (
+        f"(по умолчанию ws://{_host_port(24712)})" if env("CARROT_BASE_URL") else "(не задан)"
+    )
+    print(f"Carrot playlist browser (Flask): http://{HOST}:{PORT}")
+    print(
+        f"Конфиг: CARROT_BASE_URL={env('CARROT_BASE_URL') or '(не задан)'}, "
+        f"login={env('CARROT_LOGIN') or '(не задан)'}"
+    )
+    print(f"Удаление/создание событий: REST + WebSocket {ws_hint}")
+    print(f"Медиа: REST /assets/folder/{{id}}, fallback WS {ws_file_hint}")
+    app.run(host=HOST, port=PORT, debug=False, threaded=True)
+
+
+if __name__ == "__main__":
+    main()
