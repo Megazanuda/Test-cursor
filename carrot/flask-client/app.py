@@ -186,6 +186,41 @@ def api_media():
     return jsonify({"ok": True, "media": assets})
 
 
+@app.post("/api/media/upload")
+def api_media_upload():
+    """
+    Загрузка файла в медиабиблиотеку Carrot (TUS 1.0.0 по REST Guide V.3).
+
+    multipart/form-data:
+      file — обязательный файл
+      folderId — необязательный GUID папки (по умолчанию корневая медиабиблиотека)
+    """
+    upload = request.files.get("file")
+    if not upload or not upload.filename:
+        return jsonify({"ok": False, "error": "Нужен файл в поле file"}), 400
+
+    folder_id = (
+        request.form.get("folderId")
+        or request.form.get("folder_id")
+        or request.args.get("folderId")
+        or ""
+    )
+    raw = upload.read()
+    if not raw:
+        return jsonify({"ok": False, "error": "Пустой файл"}), 400
+
+    client = ensure_client()
+    asset = client.upload_asset(raw, upload.filename, folder_id or None)
+    media_value = f"{asset['id']};{asset.get('name') or upload.filename}"
+    log.info(
+        "[media] загружен ассет %s (%s байт) → %s",
+        asset.get("name"),
+        len(raw),
+        asset.get("id"),
+    )
+    return jsonify({"ok": True, "asset": asset, "mediaValue": media_value})
+
+
 @app.get("/api/templates")
 def api_templates():
     client = ensure_client()

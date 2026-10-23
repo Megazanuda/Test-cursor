@@ -132,6 +132,8 @@ const el = {
   createHint: document.getElementById('createHint'),
   createList: document.getElementById('createList'),
   createAddBtn: document.getElementById('createAddBtn'),
+  mediaUploadBtn: document.getElementById('mediaUploadBtn'),
+  mediaUploadInput: document.getElementById('mediaUploadInput'),
   createRemoveBtn: document.getElementById('createRemoveBtn'),
   createClearBtn: document.getElementById('createClearBtn'),
   createSubmitBtn: document.getElementById('createSubmitBtn'),
@@ -552,14 +554,102 @@ function fillMediaSelect(select, currentValue) {
   }
 }
 
+function refreshAllMediaSelects(preferredValue) {
+  document.querySelectorAll('select').forEach(function (sel) {
+    if (!sel.closest('.var-row') && !sel.classList.contains('media-select')) return;
+    if (!sel.classList.contains('media-select') &&
+        !(sel.options && sel.options[0] &&
+          /медиа|Загрузка медиа/i.test(sel.options[0].textContent || ''))) {
+      return;
+    }
+    const cur = preferredValue || sel.value || '';
+    fillMediaSelect(sel, cur);
+  });
+}
+
+async function uploadMediaFile(file) {
+  if (!file) return null;
+  const fd = new FormData();
+  fd.append('file', file, file.name);
+  const res = await fetch('/api/media/upload', { method: 'POST', body: fd });
+  const text = await res.text();
+  var json = null;
+  try { json = text ? JSON.parse(text) : null; }
+  catch (e) { throw new Error('Ответ сервера не JSON (HTTP ' + res.status + ')'); }
+  if (!res.ok || (json && json.ok === false)) {
+    throw new Error((json && json.error) || ('HTTP ' + res.status));
+  }
+  const asset = json.asset || {};
+  const mediaValue = json.mediaValue || encodeMediaValue(asset.id, asset.name || file.name);
+  // Обновить кэш: force reload list, но сразу вставить новый ассет.
+  state.mediaLoaded = false;
+  try {
+    await ensureMediaLoaded(true);
+  } catch (e) {
+    if (!state.mediaAssets.some(function (m) { return String(m.id) === String(asset.id); })) {
+      state.mediaAssets.push({
+        id: asset.id,
+        name: asset.name || file.name,
+        assetTypeInt: asset.assetTypeInt != null ? asset.assetTypeInt : asset.type
+      });
+      state.mediaLoaded = true;
+    }
+  }
+  if (asset.id && !state.mediaAssets.some(function (m) {
+    return String(m.id) === String(asset.id);
+  })) {
+    state.mediaAssets.push({
+      id: asset.id,
+      name: asset.name || file.name,
+      assetTypeInt: asset.assetTypeInt != null ? asset.assetTypeInt : asset.type
+    });
+  }
+  refreshAllMediaSelects(mediaValue);
+  return { asset: asset, mediaValue: mediaValue };
+}
+
 function makeVarInput(v, onChange) {
   const val = v.value == null ? '' : String(v.value);
   if (isMediaType(v.type)) {
+    const wrap = document.createElement('div');
+    wrap.className = 'media-input';
     const select = document.createElement('select');
+    select.className = 'media-select';
     fillMediaSelect(select, val);
     select.addEventListener('click', function (ev) { ev.stopPropagation(); });
     select.addEventListener('change', function () {
       onChange(normalizeMediaValue(select.value));
+    });
+    const upBtn = document.createElement('button');
+    upBtn.type = 'button';
+    upBtn.className = 'btn ghost sm media-upload-btn';
+    upBtn.title = 'Загрузить файл в Carrot';
+    upBtn.textContent = '↑';
+    const fileInput = document.createElement('input');
+    fileInput.type = 'file';
+    fileInput.hidden = true;
+    fileInput.accept = 'image/*,video/*,.png,.jpg,.jpeg,.gif,.bmp,.tif,.tiff,.webp,.mp4,.mov,.avi,.mxf,.webm';
+    upBtn.addEventListener('click', function (ev) {
+      ev.stopPropagation();
+      fileInput.click();
+    });
+    fileInput.addEventListener('change', async function () {
+      const file = fileInput.files && fileInput.files[0];
+      fileInput.value = '';
+      if (!file) return;
+      upBtn.disabled = true;
+      try {
+        const result = await uploadMediaFile(file);
+        if (result && result.mediaValue) {
+          fillMediaSelect(select, result.mediaValue);
+          onChange(result.mediaValue);
+          toast('Медиа загружено: ' + (result.asset.name || file.name), 'ok');
+        }
+      } catch (err) {
+        toast('Загрузка медиа: ' + err.message, 'err');
+      } finally {
+        upBtn.disabled = false;
+      }
     });
     if (!state.mediaLoaded) {
       ensureMediaLoaded(false).then(function () {
@@ -568,7 +658,16 @@ function makeVarInput(v, onChange) {
         toast('Медиа: ' + err.message, 'err');
       });
     }
-    return select;
+    wrap.appendChild(select);
+    wrap.appendChild(upBtn);
+    wrap.appendChild(fileInput);
+    // Совместимость с сохранением переменных: value/_currentValue на обёртке.
+    Object.defineProperty(wrap, 'value', {
+      get: function () { return select.value; },
+      set: function (v) { fillMediaSelect(select, v || ''); },
+      configurable: true
+    });
+    return wrap;
   }
   const useArea = val.indexOf('\n') !== -1 || val.length > 80;
   const input = useArea ? document.createElement('textarea') : document.createElement('input');
@@ -1657,6 +1756,26 @@ el.createAddBtn.addEventListener('click', function (ev) {
   ev.preventDefault();
   addCreateForm();
 });
+if (el.mediaUploadBtn && el.mediaUploadInput) {
+  el.mediaUploadBtn.addEventListener('click', function (ev) {
+    ev.preventDefault();
+    el.mediaUploadInput.click();
+  });
+  el.mediaUploadInput.addEventListener('change', async function () {
+    const file = el.mediaUploadInput.files && el.mediaUploadInput.files[0];
+    el.mediaUploadInput.value = '';
+    if (!file) return;
+    el.mediaUploadBtn.disabled = true;
+    try {
+      const result = await uploadMediaFile(file);
+      toast('Медиа загружено: ' + ((result && result.asset && result.asset.name) || file.name), 'ok');
+    } catch (err) {
+      toast('Загрузка медиа: ' + err.message, 'err');
+    } finally {
+      el.mediaUploadBtn.disabled = false;
+    }
+  });
+}
 el.createRemoveBtn.addEventListener('click', function () { removeSelectedCreateForms(); });
 el.createClearBtn.addEventListener('click', function () { clearAllCreateForms(); });
 el.createSubmitBtn.addEventListener('click', function () { submitCreateForms(); });

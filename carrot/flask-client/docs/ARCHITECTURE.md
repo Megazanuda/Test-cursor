@@ -300,6 +300,20 @@ Fetch + normalize; список сортируется по имени (casefold
 3. Если пусто — WS 24712.
 4. Если всё пусто — `CarrotError` с диагностикой.
 
+##### `upload_asset(file_bytes, filename, folder_id=None) → Asset`
+Загрузка по **Carrot REST API Guide V.3 §6** (протокол **TUS 1.0.0**):
+
+1. `POST /assets/upload` — пустое тело; заголовки  
+   `Tus-Resumable: 1.0.0`, `Upload-Length`, `Upload-Metadata: filename <base64(name)>`.  
+   Из `Location` берётся `fileId`.
+2. `PATCH /assets/upload/{fileId}` — чанки `application/offset+octet-stream`  
+   с `Upload-Offset` (докачка после разрыва через `HEAD`).
+3. `POST /assets/register/{fileId}` — тело JSON-строка GUID папки  
+   (по умолчанию корневая `5535E4A7-…`). Ответ — `Asset`.  
+   Одноимённый ассет в папке **перезаписывается** (id сохраняется).
+
+Значение медиа-переменной: `{AssetId};{AssetName}`.
+
 ##### `list_media_assets_via_rest_folder` → `{assets, foldersOk, lastErr, scanned}`
 Очередь папок: preferred, Empty, MEDIA_ROOT.  
 Парсинг через `_parse_media_folder_payload`.
@@ -363,6 +377,7 @@ Fetch + normalize; список сортируется по имени (casefold
 | GET | `/api/playlists/<id>/events` | `api_playlist_events` | `list_playlist_events` |
 | GET | `/api/events?force=1` | `api_events` | `list_all_events` |
 | GET | `/api/media` | `api_media` | `list_media_assets` |
+| POST | `/api/media/upload` | `api_media_upload` | `upload_asset` (multipart `file`, опц. `folderId`) |
 | GET | `/api/templates` | `api_templates` | `list_normalized_templates` (урезанный DTO) |
 | GET | `/api/templates/<id>` | `api_template_detail` | `get_normalized_template` |
 | POST | `/api/events/create` | `api_events_create` | `create_events` |

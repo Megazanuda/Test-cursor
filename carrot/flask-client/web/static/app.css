@@ -913,6 +913,25 @@ dialog::backdrop { background: rgba(15, 23, 42, 0.35); }
 }
 
 .create-card select,
+.media-input {
+  display: flex;
+  gap: 0.35rem;
+  align-items: center;
+  min-width: 0;
+}
+
+.media-input .media-select {
+  flex: 1;
+  min-width: 0;
+}
+
+.media-input .media-upload-btn {
+  flex-shrink: 0;
+  width: 2rem;
+  padding-left: 0;
+  padding-right: 0;
+}
+
 .var-row select {
   width: 100%;
   border: 1px solid var(--line);

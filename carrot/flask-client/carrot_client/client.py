@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import base64
 import re
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any, Optional, Union
 from urllib.parse import quote, urlencode
 
 import requests
@@ -818,6 +819,187 @@ class CarrotClient:
         )
 
     listMediaAssets = list_media_assets
+
+    def upload_asset(
+        self,
+        file_bytes: Union[bytes, bytearray],
+        filename: str,
+        folder_id: Optional[str] = None,
+        *,
+        chunk_size: int = 1024 * 1024,
+    ) -> dict[str, Any]:
+        """
+        Загрузить файл в медиабиблиотеку Carrot (REST API Guide V.3, §6 «Ассеты»).
+
+        Протокол TUS 1.0.0, три шага:
+          1) POST /assets/upload — создать сессию (Upload-Length, Upload-Metadata)
+          2) PATCH /assets/upload/{fileId} — чанки сырых байт
+          3) POST /assets/register/{fileId} — зарегистрировать как Asset в папке
+
+        Возвращает нормализованный ассет {id, name, assetTypeInt/type, …}.
+        Значение медиа-переменной события: ``{id};{name}``.
+        """
+        data = bytes(file_bytes or b"")
+        name = (filename or "").strip()
+        if not name:
+            raise ValueError("Нужно имя файла (filename)")
+        if not data:
+            raise ValueError("Пустой файл")
+
+        self._ensure_token()
+        timeout_s = max(self.timeout_ms / 1000.0, 60.0)
+
+        # --- 1. create upload ---
+        meta = "filename " + base64.b64encode(name.encode("utf-8")).decode("ascii")
+        create_headers = {
+            "Authorization": "Bearer " + (self.token or ""),
+            "Tus-Resumable": "1.0.0",
+            "Upload-Length": str(len(data)),
+            "Upload-Metadata": meta,
+        }
+        create_url = self.base_url + "/assets/upload" + self._envelope_query()
+        try:
+            res = self._session.post(
+                create_url, headers=create_headers, data=b"", timeout=timeout_s
+            )
+        except Exception as err:
+            raise _wrap_net_error(err, create_url) from err
+
+        if res.status_code == 401:
+            self.token = None
+            self._ensure_token()
+            create_headers["Authorization"] = "Bearer " + (self.token or "")
+            try:
+                res = self._session.post(
+                    create_url, headers=create_headers, data=b"", timeout=timeout_s
+                )
+            except Exception as err:
+                raise _wrap_net_error(err, create_url) from err
+
+        if res.status_code not in (200, 201):
+            raise CarrotError(
+                f"TUS create failed HTTP {res.status_code}: "
+                f"{(res.text or '')[:220]}",
+                http_status=res.status_code,
+                url=create_url,
+            )
+
+        location = res.headers.get("Location") or res.headers.get("location") or ""
+        file_id = location.rstrip("/").split("/")[-1] if location else ""
+        if not file_id:
+            # иногда fileId приходит в теле
+            try:
+                body = res.json()
+                file_id = (
+                    (body.get("data") or {}).get("fileId")
+                    or body.get("fileId")
+                    or ""
+                )
+            except Exception:
+                file_id = ""
+        if not file_id:
+            raise CarrotError(
+                "TUS create: нет fileId в Location",
+                http_status=res.status_code,
+                url=create_url,
+            )
+
+        # --- 2. PATCH chunks ---
+        offset = 0
+        while offset < len(data):
+            chunk = data[offset : offset + chunk_size]
+            patch_headers = {
+                "Authorization": "Bearer " + (self.token or ""),
+                "Tus-Resumable": "1.0.0",
+                "Upload-Offset": str(offset),
+                "Content-Type": "application/offset+octet-stream",
+                "Content-Length": str(len(chunk)),
+            }
+            patch_url = (
+                self.base_url
+                + "/assets/upload/"
+                + quote(str(file_id), safe="")
+                + self._envelope_query()
+            )
+            try:
+                pres = self._session.patch(
+                    patch_url, headers=patch_headers, data=chunk, timeout=timeout_s
+                )
+            except Exception as err:
+                raise _wrap_net_error(err, patch_url) from err
+
+            if pres.status_code == 401:
+                self.token = None
+                self._ensure_token()
+                patch_headers["Authorization"] = "Bearer " + (self.token or "")
+                try:
+                    pres = self._session.patch(
+                        patch_url, headers=patch_headers, data=chunk, timeout=timeout_s
+                    )
+                except Exception as err:
+                    raise _wrap_net_error(err, patch_url) from err
+
+            if pres.status_code not in (200, 204):
+                raise CarrotError(
+                    f"TUS patch failed HTTP {pres.status_code} @offset={offset}: "
+                    f"{(pres.text or '')[:220]}",
+                    http_status=pres.status_code,
+                    url=patch_url,
+                )
+
+            off_hdr = pres.headers.get("Upload-Offset") or pres.headers.get(
+                "upload-offset"
+            )
+            if off_hdr is not None and str(off_hdr).strip() != "":
+                try:
+                    offset = int(off_hdr)
+                    continue
+                except ValueError:
+                    pass
+            offset += len(chunk)
+
+        # --- 3. register as Asset ---
+        # Тело — JSON-строка GUID папки; пусто → Guid.Empty (корень).
+        folder = (folder_id or "").strip()
+        # По умолчанию — исторический корень медиабиблиотеки (как в §6).
+        if not folder:
+            folder = MEDIA_ROOT_FOLDER_ID
+
+        asset_raw = self._request(
+            "POST",
+            "/assets/register/" + quote(str(file_id), safe=""),
+            folder,  # requests json=str → "guid"
+        )
+        return self._normalize_asset(asset_raw, fallback_name=name)
+
+    uploadAsset = upload_asset
+
+    def _normalize_asset(
+        self, raw: Any, fallback_name: str = ""
+    ) -> dict[str, Any]:
+        """Привести Asset из REST к {id, name, assetTypeInt, parentId}."""
+        if not raw or not isinstance(raw, dict):
+            raise CarrotError("Пустой ответ register ассета")
+        aid = raw.get("id") or raw.get("ID") or raw.get("assetId") or raw.get("AssetId")
+        name = raw.get("name") or raw.get("Name") or fallback_name or ""
+        if not aid:
+            raise CarrotError("Ответ register без id ассета")
+        typ = raw.get("type")
+        if typ is None:
+            typ = raw.get("assetTypeInt")
+            if typ is None:
+                typ = raw.get("AssetTypeInt")
+        return {
+            "id": aid,
+            "name": name,
+            "assetTypeInt": typ,
+            "type": typ,
+            "parentId": raw.get("parentId")
+            or raw.get("ParentID")
+            or raw.get("ParentId")
+            or "",
+            "changed": raw.get("changed") or raw.get("Changed"),
+        }
 
     def list_media_assets_via_rest_folder(
         self, opts: Optional[dict[str, Any]] = None
