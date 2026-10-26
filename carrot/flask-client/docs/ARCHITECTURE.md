@@ -314,6 +314,11 @@ Fetch + normalize; список сортируется по имени (casefold
 
 Значение медиа-переменной: `{AssetId};{AssetName}`.
 
+##### Excel-импорт (`excel_import.py`)
+- `read_excel_rows(bytes)` — первый лист openpyxl → матрица строк.
+- `rows_to_event_drafts(rows, template)` — колонка 1 = имя, последняя = External id,
+  середина = `template.variables` по порядку; опциональный заголовок.
+
 ##### `list_media_assets_via_rest_folder` → `{assets, foldersOk, lastErr, scanned}`
 Очередь папок: preferred, Empty, MEDIA_ROOT.  
 Парсинг через `_parse_media_folder_payload`.
@@ -381,6 +386,7 @@ Fetch + normalize; список сортируется по имени (casefold
 | GET | `/api/templates` | `api_templates` | `list_normalized_templates` (урезанный DTO) |
 | GET | `/api/templates/<id>` | `api_template_detail` | `get_normalized_template` |
 | POST | `/api/events/create` | `api_events_create` | `create_events` |
+| POST | `/api/events/import-excel` | `api_events_import_excel` | Excel → `rows_to_event_drafts` → `create_events` |
 | POST | `/api/events/delete` | `api_events_delete` | `delete_event` по списку ids |
 | PATCH | `/api/events/<id>/variables` | `api_event_variables` | `edit_variables` |
 | GET | `/api/events/<id>` | `api_event_get` | `get_event` |

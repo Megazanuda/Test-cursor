@@ -18,6 +18,7 @@ from dotenv import load_dotenv
 from flask import Flask, jsonify, request, send_from_directory
 
 from carrot_client import CarrotClient, CarrotError
+from carrot_client.excel_import import read_excel_rows, rows_to_event_drafts
 
 ROOT = Path(__file__).resolve().parent
 STATIC_DIR = ROOT / "web" / "static"
@@ -267,6 +268,98 @@ def api_events_create():
     client = ensure_client()
     result = client.create_events(events)
     return jsonify({"ok": True, "created": result.get("created") or []})
+
+
+@app.post("/api/events/import-excel")
+def api_events_import_excel():
+    """
+    Создать ивенты из Excel по выбранному шаблону.
+
+    multipart/form-data:
+      file — .xlsx/.xlsm
+      templateId — GUID шаблона
+      hasHeader — optional 0/1 (авто: если 1-я ячейка похожа на «имя»/name)
+
+    Столбцы: 1 = имя, последний = External id, между ними = переменные
+    шаблона в порядке template.variables.
+    """
+    upload = request.files.get("file")
+    if not upload or not upload.filename:
+        return jsonify({"ok": False, "error": "Нужен Excel-файл в поле file"}), 400
+
+    template_id = (
+        request.form.get("templateId")
+        or request.form.get("template_id")
+        or request.args.get("templateId")
+        or ""
+    ).strip()
+    if not template_id:
+        return jsonify({"ok": False, "error": "Нужен templateId"}), 400
+
+    has_header_raw = (
+        request.form.get("hasHeader")
+        or request.form.get("has_header")
+        or request.args.get("hasHeader")
+    )
+    has_header: Optional[bool]
+    if has_header_raw is None or str(has_header_raw).strip() == "":
+        has_header = None
+    else:
+        has_header = str(has_header_raw).strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "y",
+            "on",
+        )
+
+    raw = upload.read()
+    try:
+        rows = read_excel_rows(raw)
+    except ValueError as err:
+        return jsonify({"ok": False, "error": str(err)}), 400
+
+    client = ensure_client()
+    template = client.get_normalized_template(template_id)
+    parsed = rows_to_event_drafts(rows, template, has_header=has_header)
+    drafts = parsed["drafts"]
+    if not drafts:
+        return jsonify(
+            {
+                "ok": False,
+                "error": "Нет строк для создания",
+                "skipped": parsed["skipped"],
+                "headerSkipped": parsed["headerSkipped"],
+                "variableNames": parsed["variableNames"],
+            }
+        ), 400
+
+    # служебное поле _excelRow не уходит в Carrot
+    events = []
+    for d in drafts:
+        ev = {k: v for k, v in d.items() if not k.startswith("_")}
+        events.append(ev)
+
+    result = client.create_events(events)
+    created = result.get("created") or []
+    log.info(
+        "[excel] шаблон %s: строк=%s создано=%s пропущено=%s",
+        template.get("name") or template_id,
+        len(drafts),
+        len(created),
+        len(parsed["skipped"]),
+    )
+    return jsonify(
+        {
+            "ok": True,
+            "created": created,
+            "skipped": parsed["skipped"],
+            "headerSkipped": parsed["headerSkipped"],
+            "variableNames": parsed["variableNames"],
+            "templateId": template_id,
+            "templateName": template.get("name") or "",
+        }
+    )
 
 
 @app.post("/api/events/delete")

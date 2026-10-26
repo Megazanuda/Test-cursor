@@ -132,11 +132,14 @@ const el = {
   createHint: document.getElementById('createHint'),
   createList: document.getElementById('createList'),
   createAddBtn: document.getElementById('createAddBtn'),
-  mediaUploadBtn: document.getElementById('mediaUploadBtn'),
-  mediaUploadInput: document.getElementById('mediaUploadInput'),
   createRemoveBtn: document.getElementById('createRemoveBtn'),
   createClearBtn: document.getElementById('createClearBtn'),
   createSubmitBtn: document.getElementById('createSubmitBtn'),
+  mediaUploadBtn: document.getElementById('mediaUploadBtn'),
+  mediaUploadInput: document.getElementById('mediaUploadInput'),
+  excelTemplateSelect: document.getElementById('excelTemplateSelect'),
+  excelImportBtn: document.getElementById('excelImportBtn'),
+  excelImportInput: document.getElementById('excelImportInput'),
   editorPanel: document.getElementById('editorPanel'),
   editorTitle: document.getElementById('editorTitle'),
   editorSub: document.getElementById('editorSub'),
@@ -554,19 +557,6 @@ function fillMediaSelect(select, currentValue) {
   }
 }
 
-function refreshAllMediaSelects(preferredValue) {
-  document.querySelectorAll('select').forEach(function (sel) {
-    if (!sel.closest('.var-row') && !sel.classList.contains('media-select')) return;
-    if (!sel.classList.contains('media-select') &&
-        !(sel.options && sel.options[0] &&
-          /медиа|Загрузка медиа/i.test(sel.options[0].textContent || ''))) {
-      return;
-    }
-    const cur = preferredValue || sel.value || '';
-    fillMediaSelect(sel, cur);
-  });
-}
-
 async function uploadMediaFile(file) {
   if (!file) return null;
   const fd = new FormData();
@@ -669,6 +659,35 @@ function makeVarInput(v, onChange) {
     });
     return wrap;
   }
+
+  if (v.type === 'Boolean') {
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.readOnly = true;
+    input.className = 'var-boolean-toggle';
+
+    const currentValStr = v.value != null ? String(v.value).toLowerCase().trim() : '';
+    let isTrue = (currentValStr === '1' || currentValStr === 'true' || v.value === true);
+    function updateToggleState() {
+      input.value = isTrue ? 'ВКЛЮЧЕНО' : 'ВЫКЛЮЧЕНО';
+      if (isTrue) {
+        input.classList.add('active-true');
+        input.classList.remove('active-false');
+      } else {
+        input.classList.add('active-false');
+        input.classList.remove('active-true');
+      }
+    }
+    updateToggleState();
+    input.addEventListener('click', function (ev) {
+      ev.stopPropagation();
+      isTrue = !isTrue;
+      updateToggleState();
+      onChange(isTrue ? '1' : '0');
+    });
+    return input;
+  }
+
   const useArea = val.indexOf('\n') !== -1 || val.length > 80;
   const input = useArea ? document.createElement('textarea') : document.createElement('input');
   if (!useArea) input.type = 'text';
@@ -687,7 +706,7 @@ function buildVarEditor(eventId, variables, opts) {
   const filtered = all.filter(matchesVarFilter);
 
   if (!all.length) {
-    wrap.innerHTML = '<p class="editor-empty">У события нет переменных</p>';
+    wrap.innerHTML = '<p class="editor-empty">У ивента нет переменных</p>';
     return wrap;
   }
   if (state.varFilter && !filtered.length) {
@@ -736,7 +755,7 @@ function buildVarEditor(eventId, variables, opts) {
   const saveBtn = document.createElement('button');
   saveBtn.type = 'button';
   saveBtn.className = 'btn primary sm';
-  saveBtn.textContent = 'Сохранить переменные';
+  saveBtn.textContent = 'Сохранить изменение';
   saveBtn.addEventListener('click', async function () {
     const byName = Object.create(null);
     const typeByName = Object.create(null);
@@ -798,7 +817,7 @@ function setEditorFolded(folded, fromUser) {
 
 function setEditorChrome(n, loading) {
   el.deleteBtn.disabled = n === 0;
-  el.deleteBtn.textContent = n > 1 ? ('Удалить (' + n + ')') : 'Удалить';
+  el.deleteBtn.textContent = n > 1 ? ('Удалить ивент (' + n + ')') : 'Удалить ивент';
 
   if (n === 0) {
     el.editorPanel.hidden = true;
@@ -826,7 +845,7 @@ function setEditorChrome(n, loading) {
     el.editorSub.hidden = false;
     el.editorSub.textContent = loading
       ? ('Загрузка · выбрано ' + n)
-      : ('Выбрано событий: ' + n);
+      : ('Выбрано ивентов: ' + n);
     el.editorCollapseAll.hidden = false;
   }
   return true;
@@ -861,13 +880,16 @@ function paintEditorItems(loaded) {
     tab.type = 'button';
     tab.className = 'editor-tab' + (idx === 0 ? ' active' : '');
     tab.textContent = item.name || ('Событие ' + (idx + 1));
-    tab.addEventListener('click', function () {
-      el.editorBody.querySelectorAll('details.event-card').forEach(function (d) {
-        d.open = d.dataset.eventId === item.id;
-      });
-      el.editorTabs.querySelectorAll('.editor-tab').forEach(function (t) {
-        t.classList.toggle('active', t === tab);
-      });
+	tab.addEventListener('click', function (ev) {
+      ev.stopPropagation();
+      const targetCard = el.editorBody.querySelector(`details.event-card[data-event-id="${item.id}"]`);
+      if (targetCard) {
+        const summary = targetCard.querySelector('summary');
+        if (summary) {
+          summary.click(); 
+        }
+      }
+
     });
     el.editorTabs.appendChild(tab);
 
@@ -895,7 +917,7 @@ function paintEditorItems(loaded) {
     } else {
       card.appendChild(buildVarEditor(item.id, (item.event && item.event.variables) || []));
     }
-    if (loaded.length > 3) {
+    if (loaded.length > 1) {
       card.addEventListener('toggle', function () {
         if (!card.open) return;
         el.editorBody.querySelectorAll('details.event-card').forEach(function (d) {
@@ -940,6 +962,24 @@ async function renderEditor() {
   paintEditorItems(loaded);
 }
 
+
+      card.addEventListener('click', function (ev) {
+        const allCards = Array.from(el.editorBody.querySelectorAll('details.event-card'));
+        const clickedIndex = allCards.indexOf(card);
+        if (clickedIndex !== -1) {
+          const allTabs = el.editorTabs.querySelectorAll('.editor-tab');
+          allTabs.forEach(function (t, tabIndex) {
+            t.classList.toggle('active', tabIndex === clickedIndex);
+          });
+		            const mainTableRows = document.querySelectorAll('tr.selected');
+
+          if (mainTableRows.length > 0) {
+            mainTableRows.forEach(function (row, rowIndex) {
+              row.classList.toggle('main-table-row-selected', rowIndex === clickedIndex);
+            });
+          }
+        }
+      });
 function updateSelectionUi() {
   renderEditor();
 }
@@ -947,25 +987,25 @@ function updateSelectionUi() {
 function plural(n) {
   const m10 = n % 10;
   const m100 = n % 100;
-  if (m10 === 1 && m100 !== 11) return 'ие';
-  if (m10 >= 2 && m10 <= 4 && (m100 < 10 || m100 >= 20)) return 'ия';
-  return 'ий';
+  if (m10 === 1 && m100 !== 11) return '';
+  if (m10 >= 2 && m10 <= 4 && (m100 < 10 || m100 >= 20)) return 'а';
+  return 'ов';
 }
 
 function allEventsHint(flat) {
   const total = flat.length;
   if (state.allEventsScope === 'recent') {
     const recent = flat.filter(isRecentRow).length;
-    return recent + ' событ' + plural(recent) + ' за 2 недели · всего в базе ' + total;
+    return recent + ' ивент' + plural(recent) + ' за 2 недели · всего в базе ' + total;
   }
-  return total + ' событ' + plural(total) + ' · вся база';
+  return total + ' ивент' + plural(total) + ' · вся база';
 }
 
 function allEventsStatus(flat) {
   if (state.allEventsScope === 'recent') {
-    return 'все события · за 2 недели · ' + flat.filter(isRecentRow).length + '/' + flat.length;
+    return 'все ивенты · за 2 недели · ' + flat.filter(isRecentRow).length + '/' + flat.length;
   }
-  return 'все события · ' + flat.length;
+  return 'все ивенты · ' + flat.length;
 }
 
 function applyEventRows(flat, title, statusText, opts) {
@@ -981,7 +1021,7 @@ function applyEventRows(flat, title, statusText, opts) {
     el.eventsHint.textContent = allEventsHint(flat);
     setStatus(allEventsStatus(flat), 'ok');
   } else {
-    el.eventsHint.textContent = flat.length + ' событ' + plural(flat.length);
+    el.eventsHint.textContent = flat.length + ' ивент' + plural(flat.length);
     setStatus(statusText, 'ok');
   }
   updateScopeButtons();
@@ -996,7 +1036,7 @@ function renderTable() {
   updateScopeButtons();
 
   if (!hasView()) {
-    el.eventsEmpty.textContent = 'Выбери «Все события» или плейлист слева';
+    el.eventsEmpty.textContent = 'Выбери «Все ивенты» или плейлист слева';
     setEditorChrome(0);
     el.filterInput.disabled = true;
     return;
@@ -1010,8 +1050,8 @@ function renderTable() {
 
   if (!state.rows.length) {
     el.eventsEmpty.textContent = state.view === 'all'
-      ? 'Событий в базе нет'
-      : 'В этом плейлисте нет событий';
+      ? ''
+      : 'В этом плейлисте нет ивентов';
     setEditorChrome(0);
     return;
   }
@@ -1088,20 +1128,20 @@ async function selectAllEvents(opts) {
   clearSelection();
   setSection('events');
   renderPlaylists();
-  el.eventsTitle.textContent = 'Все события';
+  el.eventsTitle.textContent = 'Все ивенты';
   el.deleteBtn.disabled = true;
-  el.deleteBtn.textContent = 'Удалить';
+  el.deleteBtn.textContent = 'Удалить ивент';
   el.editorPanel.hidden = true;
   updateScopeButtons();
 
   if (!force && state.allEventsCache) {
-    applyEventRows(state.allEventsCache, 'Все события');
+    applyEventRows(state.allEventsCache, 'Все ивенты');
     if (!state.allEventsLoading) {
       state.allEventsLoading = true;
       fetchAllEvents(false)
         .then(function (flat) {
           if (state.view !== 'all') return;
-          applyEventRows(flat, 'Все события');
+          applyEventRows(flat, 'Все ивенты');
         })
         .catch(function () { /* cache */ })
         .finally(function () { state.allEventsLoading = false; });
@@ -1115,7 +1155,7 @@ async function selectAllEvents(opts) {
   try {
     state.allEventsLoading = true;
     const flat = await fetchAllEvents(force);
-    applyEventRows(flat, 'Все события');
+    applyEventRows(flat, 'Все ивенты');
   } catch (err) {
     el.eventsHint.textContent = 'Ошибка загрузки';
     toast(err.message, 'err');
@@ -1135,7 +1175,7 @@ async function selectPlaylist(pl) {
   if (!state.sideOpen) setSideOpen(true);
   renderPlaylists();
   el.eventsTitle.textContent = state.playlistName;
-  el.eventsHint.textContent = 'Загрузка событий…';
+  el.eventsHint.textContent = 'Загрузка ивентов…';
   el.deleteBtn.disabled = true;
   el.editorPanel.hidden = true;
   updateScopeButtons();
@@ -1145,7 +1185,7 @@ async function selectPlaylist(pl) {
     applyEventRows(
       (data.events || []).map(flattenRow),
       state.playlistName,
-      'плейлист: ' + state.playlistName + ' · ' + (data.events || []).length + ' событий'
+      'плейлист: ' + state.playlistName + ' · ' + (data.events || []).length + ' ивентов'
     );
   } catch (err) {
     el.eventsHint.textContent = 'Ошибка загрузки';
@@ -1225,7 +1265,7 @@ async function deleteSelected() {
     el.confirmText.textContent =
       '«' + ((row && row.name) || ids[0]) + '» будет удалено на сервере. Это необратимо.';
   } else {
-    el.confirmText.textContent = 'Будет удалено событий: ' + ids.length + '. Это необратимо.';
+    el.confirmText.textContent = 'Будет удалено ивентов: ' + ids.length + '. Это необратимо.';
   }
   el.confirmDialog.showModal();
   const result = await new Promise(function (resolve) {
@@ -1257,12 +1297,12 @@ async function deleteSelected() {
       }
     }
     clearSelection();
-    if (state.view === 'all') applyEventRows(state.rows, 'Все события');
+    if (state.view === 'all') applyEventRows(state.rows, 'Все ивенты');
     else if (state.view === 'playlist') {
       applyEventRows(
         state.rows,
         state.playlistName,
-        'плейлист: ' + state.playlistName + ' · ' + state.rows.length + ' событий'
+        'плейлист: ' + state.playlistName + ' · ' + state.rows.length + ' ивентов'
       );
     } else renderTable();
   } catch (err) {
@@ -1312,9 +1352,10 @@ function updateCreateActions() {
   el.createClearBtn.disabled = state.createForms.length === 0;
   el.createSubmitBtn.disabled = ready === 0;
   el.createSubmitBtn.textContent = ready > 1 ? ('Создать (' + ready + ')') : 'Создать';
+  el.createHint.style.whiteSpace = 'pre-line';
   el.createHint.textContent = n > 1
     ? ('Выбрано полей: ' + n + ' — имя, External id, шаблон и переменные применяются ко всем выбранным.')
-    : 'Добавь поля, выбери шаблон — переменные подгрузятся сами. Клик по карточке выделяет её; Shift/Ctrl — несколько.';
+    : 'Добавь + ивент вручную или: шаблон для Excel → «Импорт Excel».\nВ Excel: 1-й столбец = имя, последний = External id, между ними = переменные шаблона по порядку.\nПустой External id при создании заменяется на новый GUID.';
 }
 
 async function ensureTemplatesLoaded(force) {
@@ -1322,6 +1363,7 @@ async function ensureTemplatesLoaded(force) {
   const data = await api('GET', '/api/templates');
   state.templates = data.templates || [];
   state.templatesLoaded = true;
+  fillExcelTemplateSelect();
   return state.templates;
 }
 
@@ -1407,8 +1449,11 @@ async function onCreateTemplateChange(localId, templateId) {
     if ((tpl.variables || []).some(function (v) { return isMediaType(v.type); })) {
       try { await ensureMediaLoaded(false); } catch (e) { /* selects handle */ }
     }
-    targets.forEach(function (f) { applyTemplateToForm(f, tpl); });
-    renderCreateForms();
+		targets.forEach(function (f) {
+		applyTemplateToForm(f, tpl);
+	});
+
+		renderCreateForms();
   } catch (err) {
     targets.forEach(function (f) {
       f.loadingTemplate = false;
@@ -1430,7 +1475,10 @@ function syncFieldToSelected(localId, selector, value) {
 }
 
 function onCreateNameChange(localId, name) {
-  targetCreateForms(localId).forEach(function (f) { f.name = name; });
+  targetCreateForms(localId).forEach(function (f) {
+    f.name = name;
+  });
+
   updateCreateActions();
   syncFieldToSelected(localId, '[data-field="name"]', name);
 }
@@ -1442,10 +1490,13 @@ function onCreateExternalIdChange(localId, externalId) {
 }
 
 function onCreateVarChange(localId, varName, value) {
-  targetCreateForms(localId).forEach(function (f) {
-    const hit = f.variables.find(function (v) { return v.name === varName; });
-    if (hit) hit.value = value;
-  });
+	targetCreateForms(localId).forEach(function (f) {
+		const hit = f.variables.find(function (v) {
+			return v.name === varName;
+			});
+
+  if (hit) hit.value = value;
+	});
   updateCreateActions();
   if (createSelectedCount() > 1) {
     el.createList.querySelectorAll('.create-card').forEach(function (card) {
@@ -1472,7 +1523,7 @@ function renderCreateForms() {
 
   el.createList.innerHTML = '';
   if (!state.createForms.length) {
-    el.createList.innerHTML = '<p class="empty">Нет полей — нажми «Добавить поле»</p>';
+    el.createList.innerHTML = '<p class="empty"> </p>';
     updateCreateActions();
     return;
   }
@@ -1498,7 +1549,7 @@ function renderCreateForms() {
       return node;
     }
 
-    const nameInput = field('Имя события', 'name', function () {
+    const nameInput = field('Имя ивента', 'name', function () {
       const input = document.createElement('input');
       input.type = 'text';
       input.value = form.name || '';
@@ -1533,7 +1584,7 @@ function renderCreateForms() {
       const input = document.createElement('input');
       input.type = 'text';
       input.value = form.externalId || '';
-      input.placeholder = 'пусто = новый GUID';
+      input.placeholder = ' ';
       input.addEventListener('input', function () {
         onCreateExternalIdChange(form.localId, input.value);
       });
@@ -1663,7 +1714,7 @@ async function submitCreateForms() {
   try {
     const data = await api('POST', '/api/events/create', { events: payload });
     const created = (data && data.created) ? data.created : [];
-    toast('Создано событий: ' + created.length, 'ok');
+    toast('Создано ивентов: ' + created.length, 'ok');
     state.allEventsCache = null;
     state.createForms = [blankCreateForm()];
     setCreateSelection([], null);
@@ -1707,13 +1758,13 @@ el.reloadPlaylists.addEventListener('click', function () {
 
 el.loadAllBtn.addEventListener('click', function () {
   state.allEventsScope = 'all';
-  if (state.allEventsCache) applyEventRows(state.allEventsCache, 'Все события');
+  if (state.allEventsCache) applyEventRows(state.allEventsCache, 'Все ивенты');
   else selectAllEvents({ force: true, scope: 'all' });
 });
 
 el.loadRecentBtn.addEventListener('click', function () {
   state.allEventsScope = 'recent';
-  if (state.allEventsCache) applyEventRows(state.allEventsCache, 'Все события');
+  if (state.allEventsCache) applyEventRows(state.allEventsCache, 'Все ивенты');
   else selectAllEvents({ force: true, scope: 'recent' });
 });
 
@@ -1756,6 +1807,10 @@ el.createAddBtn.addEventListener('click', function (ev) {
   ev.preventDefault();
   addCreateForm();
 });
+el.createRemoveBtn.addEventListener('click', function () { removeSelectedCreateForms(); });
+el.createClearBtn.addEventListener('click', function () { clearAllCreateForms(); });
+el.createSubmitBtn.addEventListener('click', function () { submitCreateForms(); });
+
 if (el.mediaUploadBtn && el.mediaUploadInput) {
   el.mediaUploadBtn.addEventListener('click', function (ev) {
     ev.preventDefault();
@@ -1776,9 +1831,30 @@ if (el.mediaUploadBtn && el.mediaUploadInput) {
     }
   });
 }
-el.createRemoveBtn.addEventListener('click', function () { removeSelectedCreateForms(); });
-el.createClearBtn.addEventListener('click', function () { clearAllCreateForms(); });
-el.createSubmitBtn.addEventListener('click', function () { submitCreateForms(); });
+if (el.excelImportBtn && el.excelImportInput) {
+  el.excelImportBtn.addEventListener('click', function (ev) {
+    ev.preventDefault();
+    if (!el.excelTemplateSelect || !el.excelTemplateSelect.value) {
+      toast('Сначала выбери шаблон для Excel', 'err');
+      return;
+    }
+    el.excelImportInput.click();
+  });
+  el.excelImportInput.addEventListener('change', async function () {
+    const file = el.excelImportInput.files && el.excelImportInput.files[0];
+    el.excelImportInput.value = '';
+    if (!file) return;
+    el.excelImportBtn.disabled = true;
+    try {
+      await importEventsFromExcel(file);
+    } catch (err) {
+      toast('Импорт Excel: ' + err.message, 'err');
+    } finally {
+      el.excelImportBtn.disabled = false;
+    }
+  });
+}
+
 
 document.addEventListener('keydown', function (e) {
   if (e.key === 'Delete' && state.section === 'events' && selectedCount() &&
@@ -1817,3 +1893,123 @@ el.sectionEvents.hidden = false;
     setStatus(err.message, 'err');
   }
 })();
+
+function addSmartNumberedPostfix() {
+	  const hasSelectedCard = document.querySelector('.create-card.selected') !== null;
+ 
+  if (hasSelectedCard) {
+    alert('Нельзя нумеровать если не задан внешний ID или есть активное выделение! Сбросьте выделение двойным кликом по одной карточке.');
+    return;
+  }
+  const allCards = Array.from(document.querySelectorAll('.create-card'));
+  
+  if (allCards.length === 0) {
+    alert('На странице нет ни одной карточки для нумерации!');
+    return;
+  }
+  
+  const nameCounters = {};
+
+  let updatedCount = 0;
+
+  allCards.forEach((card) => {
+const eddiInput = card.querySelector('[data-field="externalId"]');
+
+    if (eddiInput && eddiInput.value.trim()) {
+      let currentName = eddiInput.value.trim().replace(/_\d+\$/, '');
+      if (!nameCounters[currentName]) {
+        nameCounters[currentName] = 1;
+      } else {
+        nameCounters[currentName] += 1;
+      }
+
+      const currentNumber = nameCounters[currentName];
+      const postfix = String(currentNumber).padStart(3, '0');
+      eddiInput.value = currentName + '_' + postfix;
+      eddiInput.dispatchEvent(new Event('input', { bubbles: true }));
+      eddiInput.dispatchEvent(new Event('change', { bubbles: true }));
+      
+      updatedCount++;
+    }
+  });
+}
+
+document.addEventListener('DOMContentLoaded', function () {
+  const myCounterButton = document.getElementById('counterExID');
+  
+  if (myCounterButton) {
+    myCounterButton.addEventListener('click', function (ev) {
+      ev.preventDefault();
+      addSmartNumberedPostfix();
+    });
+  }
+});
+
+
+function fillExcelTemplateSelect() {
+  if (!el.excelTemplateSelect) return;
+  const cur = el.excelTemplateSelect.value || '';
+  el.excelTemplateSelect.innerHTML = '';
+  const empty = document.createElement('option');
+  empty.value = '';
+  empty.textContent = state.templatesLoaded ? '— шаблон для Excel —' : 'Загрузка шаблонов…';
+  el.excelTemplateSelect.appendChild(empty);
+  (state.templates || []).forEach(function (t) {
+    const opt = document.createElement('option');
+    opt.value = t.id;
+    opt.textContent = t.name || t.id;
+    if (t.id === cur) opt.selected = true;
+    el.excelTemplateSelect.appendChild(opt);
+  });
+}
+
+async function importEventsFromExcel(file) {
+  if (!file) return;
+  const templateId = el.excelTemplateSelect && el.excelTemplateSelect.value;
+  if (!templateId) {
+    toast('Сначала выбери шаблон для Excel', 'err');
+    return;
+  }
+  const fd = new FormData();
+  fd.append('file', file, file.name);
+  fd.append('templateId', templateId);
+  const res = await fetch('/api/events/import-excel', { method: 'POST', body: fd });
+  const text = await res.text();
+  var json = null;
+  try { json = text ? JSON.parse(text) : null; }
+  catch (e) { throw new Error('Ответ сервера не JSON (HTTP ' + res.status + ')'); }
+  if (!res.ok || (json && json.ok === false)) {
+    throw new Error((json && json.error) || ('HTTP ' + res.status));
+  }
+  const created = (json && json.created) ? json.created : [];
+  const skipped = (json && json.skipped) ? json.skipped : [];
+  state.allEventsCache = null;
+  var msg = 'Из Excel создано ивентов: ' + created.length;
+  if (skipped.length) msg += ' (пропущено строк: ' + skipped.length + ')';
+  toast(msg, created.length ? 'ok' : 'err');
+  return json;
+}
+
+const themeToggleBtn = document.getElementById('ThemeToggle');
+
+if (localStorage.getItem('site-theme') === 'dark') {
+  document.documentElement.classList.add('dark-theme');
+}
+
+if (themeToggleBtn) {
+  themeToggleBtn.addEventListener('click', () => {
+    document.documentElement.classList.toggle('dark-theme');
+    if (document.documentElement.classList.contains('dark-theme')) {
+      localStorage.setItem('site-theme', 'dark');
+    } else {
+      localStorage.setItem('site-theme', 'light');
+    }
+  });
+}
+
+document.addEventListener('click', function (event) {
+  const menu = document.getElementById('colsMenu');
+  if (menu && menu.hasAttribute('open') && !menu.contains(event.target)) {
+    menu.removeAttribute('open');
+  }
+});

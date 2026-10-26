@@ -3,14 +3,16 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Плейлисты и события</title>
+  <title>Плейлисты и ивенты</title>
   <link rel="stylesheet" href="/app.css" />
 </head>
 <body>
   <header class="top">
     <nav class="section-tabs" id="sectionTabs" hidden>
-      <button type="button" class="section-tab active" data-section="events" id="tabEvents">События</button>
+      <button type="button" class="section-tab active" data-section="events" id="tabEvents">Ивенты</button>
       <button type="button" class="section-tab" data-section="create" id="tabCreate">Создание</button>
+	  <button type="button" class="section-tab" id="ThemeToggle">Переключение темы</button>
+	  
     </nav>
     <span class="status-line" id="statusLine">не подключено</span>
   </header>
@@ -45,7 +47,7 @@
         <aside class="side-pane" id="sidePane" hidden>
           <div class="side-block">
             <button type="button" class="side-all-btn" id="allEventsBtn">
-              <span class="pl-name">Все события</span>
+              <span class="pl-name">Все ивенты</span>
               <span class="pl-id">вся база</span>
             </button>
           </div>
@@ -64,26 +66,35 @@
         <section class="events-pane">
           <div class="pane-head">
             <div class="pane-title">
-              <h2 id="eventsTitle">События</h2>
-              <p class="lede" id="eventsHint">Выбери «Все события» или плейлист</p>
+              <h2 id="eventsTitle">Ивенты</h2>
+              <p class="lede" id="eventsHint">Выбери «Все ивенты» или плейлист</p>
             </div>
             <div class="pane-actions">
-              <button type="button" class="btn ghost icon-btn" id="reloadPlaylists"
-                title="Обновить с сервера" aria-label="Обновить с сервера">↻</button>
+              <button type="button" class="btn ghost sm" id="reloadPlaylists"
+                title="Обновить с сервера" aria-label="Обновить с сервера">Обновить информацию</button>
               <button type="button" class="btn ghost sm" id="loadAllBtn" hidden
                 title="Показать все события без ограничения по дате">
-                Все
+                Получить ивенты за все время
               </button>
               <button type="button" class="btn ghost sm" id="loadRecentBtn" hidden
                 title="Показать только изменённые за последние 2 недели">
-                2 нед.
+                Получить ивенты за 2 недели
               </button>
               <details class="cols-menu" id="colsMenu">
                 <summary class="btn ghost sm">Колонки</summary>
                 <div class="cols-menu-body" id="colsMenuBody"></div>
               </details>
+			  <script>
+				document.addEventListener('click', function(event) {
+					const menu = document.getElementById('colsMenu');
+
+					if (menu.hasAttribute('open') && !menu.contains(event.target)) {
+						menu.removeAttribute('open');
+					}
+				});
+			  </script>
               <input type="search" id="filterInput" class="filter" placeholder="Фильтр…" disabled />
-              <button type="button" class="btn danger sm" id="deleteBtn" disabled>Удалить</button>
+              <button type="button" class="btn danger sm" id="deleteBtn" disabled>Удалить ивент</button>
             </div>
           </div>
 
@@ -93,14 +104,14 @@
                 <thead id="eventsHead"></thead>
                 <tbody id="eventsBody"></tbody>
               </table>
-              <p class="empty" id="eventsEmpty">Выбери «Все события» или плейлист слева</p>
+              <p class="empty" id="eventsEmpty">Выбери «Все ивенты» или плейлист слева</p>
             </div>
 
             <aside class="editor" id="editorPanel" hidden>
               <div class="editor-head">
                 <button type="button" class="fold-btn" id="editorFoldBtn" title="Свернуть панель" aria-label="Свернуть панель">−</button>
                 <div class="editor-head-text">
-                  <h3 id="editorTitle">Переменные</h3>
+                  <h3 id="editorTitle">Переменные ивента</h3>
                   <p class="lede" id="editorSub" hidden></p>
                 </div>
                 <div class="editor-head-actions">
@@ -121,18 +132,27 @@
       <section class="section-create" id="sectionCreate" hidden>
         <div class="pane-head">
           <div class="pane-title">
-            <h2>Создание событий</h2>
-            <p class="lede" id="createHint">Добавь поля, выбери шаблон — переменные подгрузятся сами. Клик по карточке выделяет её; Shift/Ctrl — несколько.</p>
+            <h2>Создание ивентов</h2>
+            <p class="lede" id="createHint">Добавь ивент вручную или импортируй Excel: выбери шаблон → «Импорт Excel». В файле: 1-й столбец = имя, последний = External id, между ними = переменные шаблона по порядку. Клик по карточке выделяет её; Shift/Ctrl — несколько.</p>
           </div>
           <div class="pane-actions">
-            <button type="button" class="btn ghost sm" id="createAddBtn">+ поле</button>
+            <button type="button" class="btn ghost sm" id="createAddBtn">+ ивент</button>
             <button type="button" class="btn ghost sm" id="mediaUploadBtn"
               title="Загрузить файл в медиабиблиотеку Carrot">Загрузить медиа</button>
             <input type="file" id="mediaUploadInput" hidden
               accept="image/*,video/*,.png,.jpg,.jpeg,.gif,.bmp,.tif,.tiff,.webp,.mp4,.mov,.avi,.mxf,.webm" />
-            <button type="button" class="btn ghost sm" id="createRemoveBtn" disabled>Удалить</button>
+            <select id="excelTemplateSelect" class="excel-template-select" title="Шаблон для импорта Excel"
+              aria-label="Шаблон для импорта Excel">
+              <option value="">— шаблон для Excel —</option>
+            </select>
+            <button type="button" class="btn ghost sm" id="excelImportBtn"
+              title="Создать ивенты из Excel: 1-й столбец = имя, последний = External id, остальные = переменные">Импорт Excel</button>
+            <input type="file" id="excelImportInput" hidden
+              accept=".xlsx,.xlsm,.xltx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" />
+			<!--<button type="button" class="btn ghost sm" id="counterExID">Авто-номер ID</button>-->
+            <button type="button" class="btn ghost sm" id="createRemoveBtn" disabled>Удалить ивент</button>
             <button type="button" class="btn ghost sm" id="createClearBtn">Очистить</button>
-            <button type="button" class="btn primary sm" id="createSubmitBtn" disabled>Создать</button>
+            <button type="button" class="btn primary sm" id="createSubmitBtn" disabled>Создать ивент</button>
           </div>
         </div>
         <div class="create-list" id="createList"></div>
@@ -144,11 +164,11 @@
 
   <dialog id="confirmDialog">
     <form method="dialog" class="confirm-box">
-      <h3>Удалить выбранные события?</h3>
+      <h3>Удалить выбранные Ивенты?</h3>
       <p id="confirmText"></p>
       <div class="confirm-actions">
         <button value="cancel" class="btn ghost">Отмена</button>
-        <button value="ok" class="btn danger">Удалить</button>
+        <button value="ok" class="btn danger">Удалить ивент</button>
       </div>
     </form>
   </dialog>
