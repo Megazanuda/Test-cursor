@@ -925,6 +925,17 @@ function paintEditorItems(loaded) {
         });
       });
     }
+    card.addEventListener('click', function () {
+      const allCards = Array.from(el.editorBody.querySelectorAll('details.event-card'));
+      const clickedIndex = allCards.indexOf(card);
+      if (clickedIndex === -1) return;
+      el.editorTabs.querySelectorAll('.editor-tab').forEach(function (t, tabIndex) {
+        t.classList.toggle('active', tabIndex === clickedIndex);
+      });
+      document.querySelectorAll('tr.selected').forEach(function (row, rowIndex) {
+        row.classList.toggle('main-table-row-selected', rowIndex === clickedIndex);
+      });
+    });
     el.editorBody.appendChild(card);
   });
 }
@@ -962,24 +973,6 @@ async function renderEditor() {
   paintEditorItems(loaded);
 }
 
-
-      card.addEventListener('click', function (ev) {
-        const allCards = Array.from(el.editorBody.querySelectorAll('details.event-card'));
-        const clickedIndex = allCards.indexOf(card);
-        if (clickedIndex !== -1) {
-          const allTabs = el.editorTabs.querySelectorAll('.editor-tab');
-          allTabs.forEach(function (t, tabIndex) {
-            t.classList.toggle('active', tabIndex === clickedIndex);
-          });
-		            const mainTableRows = document.querySelectorAll('tr.selected');
-
-          if (mainTableRows.length > 0) {
-            mainTableRows.forEach(function (row, rowIndex) {
-              row.classList.toggle('main-table-row-selected', rowIndex === clickedIndex);
-            });
-          }
-        }
-      });
 function updateSelectionUi() {
   renderEditor();
 }
