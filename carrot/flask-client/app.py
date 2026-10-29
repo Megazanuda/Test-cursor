@@ -18,7 +18,11 @@ from dotenv import load_dotenv
 from flask import Flask, jsonify, request, send_from_directory
 
 from carrot_client import CarrotClient, CarrotError
-from carrot_client.excel_import import read_excel_rows, rows_to_event_drafts
+from carrot_client.excel_import import (
+    read_excel_rows,
+    resolve_media_in_drafts,
+    rows_to_event_drafts,
+)
 
 ROOT = Path(__file__).resolve().parent
 STATIC_DIR = ROOT / "web" / "static"
@@ -270,6 +274,38 @@ def api_events_create():
     return jsonify({"ok": True, "created": result.get("created") or []})
 
 
+@app.post("/api/settings/check-media-folder")
+def api_check_media_folder():
+    """Проверить, что локальная папка медиа существует и доступна."""
+    body = request.get_json(silent=True) or {}
+    folder = (
+        (body.get("path") if isinstance(body, dict) else None)
+        or request.args.get("path")
+        or ""
+    )
+    folder = str(folder).strip()
+    if not folder:
+        return jsonify({"ok": False, "error": "Нужен path"}), 400
+    from pathlib import Path
+
+    root = Path(folder).expanduser()
+    if not root.exists():
+        return jsonify({"ok": False, "error": f"Путь не существует: {folder}"}), 400
+    if not root.is_dir():
+        return jsonify({"ok": False, "error": f"Это не папка: {folder}"}), 400
+    sample = sorted(
+        p.name for p in root.iterdir() if p.is_file()
+    )[:8]
+    return jsonify(
+        {
+            "ok": True,
+            "path": str(root.resolve()),
+            "fileCountHint": len(sample),
+            "sample": sample,
+        }
+    )
+
+
 @app.post("/api/events/import-excel")
 def api_events_import_excel():
     """
@@ -278,10 +314,11 @@ def api_events_import_excel():
     multipart/form-data:
       file — .xlsx/.xlsm
       templateId — GUID шаблона
+      mediaFolder — опц. локальная папка для Media-файлов из Excel
       hasHeader — optional 0/1 (авто: если 1-я ячейка похожа на «имя»/name)
 
     Столбцы: 1 = имя, последний = External id, между ними = переменные
-    шаблона в порядке template.variables.
+    шаблона в порядке template.variables. Для Media — имя файла.
     """
     upload = request.files.get("file")
     if not upload or not upload.filename:
@@ -295,6 +332,12 @@ def api_events_import_excel():
     ).strip()
     if not template_id:
         return jsonify({"ok": False, "error": "Нужен templateId"}), 400
+
+    media_folder = (
+        request.form.get("mediaFolder")
+        or request.form.get("media_folder")
+        or ""
+    ).strip() or None
 
     has_header_raw = (
         request.form.get("hasHeader")
@@ -334,6 +377,29 @@ def api_events_import_excel():
             }
         ), 400
 
+    media_report: dict[str, Any] = {
+        "resolved": 0,
+        "uploaded": 0,
+        "reused": 0,
+        "warnings": [],
+    }
+    if parsed.get("mediaVarIndexes"):
+        try:
+            assets = client.list_media_assets({"deep": True}) or []
+        except Exception as err:  # noqa: BLE001
+            log.warning("[excel] список медиа недоступен: %s", err)
+            assets = []
+
+        def _upload(file_bytes: bytes, filename: str) -> dict[str, Any]:
+            return client.upload_asset(file_bytes, filename)
+
+        media_report = resolve_media_in_drafts(
+            drafts,
+            assets=assets,
+            media_folder=media_folder,
+            upload_file=_upload,
+        )
+
     # служебное поле _excelRow не уходит в Carrot
     events = []
     for d in drafts:
@@ -343,11 +409,13 @@ def api_events_import_excel():
     result = client.create_events(events)
     created = result.get("created") or []
     log.info(
-        "[excel] шаблон %s: строк=%s создано=%s пропущено=%s",
+        "[excel] шаблон %s: строк=%s создано=%s media upload=%s reuse=%s warn=%s",
         template.get("name") or template_id,
         len(drafts),
         len(created),
-        len(parsed["skipped"]),
+        media_report.get("uploaded"),
+        media_report.get("reused"),
+        len(media_report.get("warnings") or []),
     )
     return jsonify(
         {
@@ -358,6 +426,7 @@ def api_events_import_excel():
             "variableNames": parsed["variableNames"],
             "templateId": template_id,
             "templateName": template.get("name") or "",
+            "media": media_report,
         }
     )
 

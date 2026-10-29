@@ -11,8 +11,6 @@
     <nav class="section-tabs" id="sectionTabs" hidden>
       <button type="button" class="section-tab active" data-section="events" id="tabEvents">Ивенты</button>
       <button type="button" class="section-tab" data-section="create" id="tabCreate">Создание</button>
-	  <button type="button" class="section-tab" id="ThemeToggle">Переключение темы</button>
-	  
     </nav>
     <span class="status-line" id="statusLine">не подключено</span>
   </header>
@@ -52,15 +50,36 @@
             </button>
           </div>
 
-          <div class="side-block playlists-block">
-            <div class="side-fold static">
-              <span>Плейлисты</span>
+          <details class="side-group" id="playlistsGroup" open>
+            <summary class="side-group-summary">Плейлисты</summary>
+            <div class="side-block playlists-block">
+              <div class="playlists-body" id="playlistsBody">
+                <ul class="playlist-list" id="playlistList"></ul>
+                <p class="empty" id="playlistEmpty" hidden>Плейлистов нет</p>
+              </div>
             </div>
-            <div class="playlists-body" id="playlistsBody">
-              <ul class="playlist-list" id="playlistList"></ul>
-              <p class="empty" id="playlistEmpty" hidden>Плейлистов нет</p>
+          </details>
+
+          <details class="side-group" id="settingsGroup">
+            <summary class="side-group-summary">Настройки</summary>
+            <div class="side-block settings-block" id="settingsBody">
+              <div class="settings-row">
+                <span class="settings-label">Цветовая тема</span>
+                <button type="button" class="btn ghost sm" id="themeToggleBtn"
+                  title="Переключить светлую/тёмную тему">Тема: светлая</button>
+              </div>
+              <div class="settings-row">
+                <label class="settings-label" for="mediaFolderInput">Папка медиа для Excel</label>
+                <input type="text" id="mediaFolderInput" class="settings-input"
+                  placeholder="C:\Media\Carrot" spellcheck="false" />
+                <p class="settings-hint">
+                  Если в Excel указано имя файла, которого ещё нет в Carrot —
+                  ищем его здесь и загружаем.
+                </p>
+                <button type="button" class="btn ghost sm" id="mediaFolderSaveBtn">Сохранить папку</button>
+              </div>
             </div>
-          </div>
+          </details>
         </aside>
 
         <section class="events-pane">
@@ -84,15 +103,6 @@
                 <summary class="btn ghost sm">Колонки</summary>
                 <div class="cols-menu-body" id="colsMenuBody"></div>
               </details>
-			  <script>
-				document.addEventListener('click', function(event) {
-					const menu = document.getElementById('colsMenu');
-
-					if (menu.hasAttribute('open') && !menu.contains(event.target)) {
-						menu.removeAttribute('open');
-					}
-				});
-			  </script>
               <input type="search" id="filterInput" class="filter" placeholder="Фильтр…" disabled />
               <button type="button" class="btn danger sm" id="deleteBtn" disabled>Удалить ивент</button>
             </div>
@@ -133,7 +143,7 @@
         <div class="pane-head">
           <div class="pane-title">
             <h2>Создание ивентов</h2>
-            <p class="lede" id="createHint">Добавь ивент вручную или импортируй Excel: выбери шаблон → «Импорт Excel». В файле: 1-й столбец = имя, последний = External id, между ними = переменные шаблона по порядку. Клик по карточке выделяет её; Shift/Ctrl — несколько.</p>
+            <p class="lede" id="createHint">Добавь ивент вручную или импортируй Excel. В файле: 1-й столбец = имя, последний = External id, между ними = переменные шаблона по порядку (для Media — имя файла).</p>
           </div>
           <div class="pane-actions">
             <button type="button" class="btn ghost sm" id="createAddBtn">+ ивент</button>
@@ -141,15 +151,8 @@
               title="Загрузить файл в медиабиблиотеку Carrot">Загрузить медиа</button>
             <input type="file" id="mediaUploadInput" hidden
               accept="image/*,video/*,.png,.jpg,.jpeg,.gif,.bmp,.tif,.tiff,.webp,.mp4,.mov,.avi,.mxf,.webm" />
-            <select id="excelTemplateSelect" class="excel-template-select" title="Шаблон для импорта Excel"
-              aria-label="Шаблон для импорта Excel">
-              <option value="">— шаблон для Excel —</option>
-            </select>
             <button type="button" class="btn ghost sm" id="excelImportBtn"
-              title="Создать ивенты из Excel: 1-й столбец = имя, последний = External id, остальные = переменные">Импорт Excel</button>
-            <input type="file" id="excelImportInput" hidden
-              accept=".xlsx,.xlsm,.xltx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" />
-			<!--<button type="button" class="btn ghost sm" id="counterExID">Авто-номер ID</button>-->
+              title="Создать ивенты из Excel">Импорт Excel</button>
             <button type="button" class="btn ghost sm" id="createRemoveBtn" disabled>Удалить ивент</button>
             <button type="button" class="btn ghost sm" id="createClearBtn">Очистить</button>
             <button type="button" class="btn primary sm" id="createSubmitBtn" disabled>Создать ивент</button>
@@ -170,6 +173,26 @@
         <button value="cancel" class="btn ghost">Отмена</button>
         <button value="ok" class="btn danger">Удалить ивент</button>
       </div>
+    </form>
+  </dialog>
+
+  <dialog id="excelImportDialog">
+    <form method="dialog" class="excel-import-box" id="excelImportForm">
+      <h3>Импорт из Excel</h3>
+      <p class="lede">Сначала шаблон, затем файл. Для Media-колонок — имена файлов (из Carrot или из папки в Настройках).</p>
+      <label class="excel-import-field">
+        <span>Шаблон</span>
+        <select id="excelTemplateSelect" class="excel-template-select"
+          aria-label="Шаблон для импорта Excel">
+          <option value="">— выбери шаблон —</option>
+        </select>
+      </label>
+      <div class="confirm-actions">
+        <button type="submit" value="cancel" class="btn ghost">Отмена</button>
+        <button type="button" class="btn primary" id="excelPickFileBtn" disabled>Выбрать Excel…</button>
+      </div>
+      <input type="file" id="excelImportInput" hidden
+        accept=".xlsx,.xlsm,.xltx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" />
     </form>
   </dialog>
 

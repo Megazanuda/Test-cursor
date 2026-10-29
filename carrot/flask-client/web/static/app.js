@@ -14,6 +14,8 @@ const COLUMNS = [
 const HIDDEN_COLS_KEY = 'carrot-web-hidden-columns';
 const EDITOR_FOLD_KEY = 'carrot-web-editor-folded';
 const SIDE_OPEN_KEY = 'carrot-web-side-open';
+const MEDIA_FOLDER_KEY = 'carrot-media-folder';
+const THEME_KEY = 'site-theme';
 const TWO_WEEKS_MS = 14 * 24 * 60 * 60 * 1000;
 
 function loadHiddenColumns() {
@@ -137,9 +139,17 @@ const el = {
   createSubmitBtn: document.getElementById('createSubmitBtn'),
   mediaUploadBtn: document.getElementById('mediaUploadBtn'),
   mediaUploadInput: document.getElementById('mediaUploadInput'),
-  excelTemplateSelect: document.getElementById('excelTemplateSelect'),
   excelImportBtn: document.getElementById('excelImportBtn'),
+  excelImportDialog: document.getElementById('excelImportDialog'),
+  excelImportForm: document.getElementById('excelImportForm'),
+  excelTemplateSelect: document.getElementById('excelTemplateSelect'),
+  excelPickFileBtn: document.getElementById('excelPickFileBtn'),
   excelImportInput: document.getElementById('excelImportInput'),
+  themeToggleBtn: document.getElementById('themeToggleBtn'),
+  mediaFolderInput: document.getElementById('mediaFolderInput'),
+  mediaFolderSaveBtn: document.getElementById('mediaFolderSaveBtn'),
+  playlistsGroup: document.getElementById('playlistsGroup'),
+  settingsGroup: document.getElementById('settingsGroup'),
   editorPanel: document.getElementById('editorPanel'),
   editorTitle: document.getElementById('editorTitle'),
   editorSub: document.getElementById('editorSub'),
@@ -1348,7 +1358,7 @@ function updateCreateActions() {
   el.createHint.style.whiteSpace = 'pre-line';
   el.createHint.textContent = n > 1
     ? ('Выбрано полей: ' + n + ' — имя, External id, шаблон и переменные применяются ко всем выбранным.')
-    : 'Добавь + ивент вручную или: шаблон для Excel → «Импорт Excel».\nВ Excel: 1-й столбец = имя, последний = External id, между ними = переменные шаблона по порядку.\nПустой External id при создании заменяется на новый GUID.';
+    : 'Добавь + ивент или «Импорт Excel» (шаблон выбирается в диалоге).\nExcel: 1-й столбец = имя, последний = External id, середина = переменные (Media = имя файла).\nПапка медиа — в боковом меню → Настройки.';
 }
 
 async function ensureTemplatesLoaded(force) {
@@ -1824,29 +1834,6 @@ if (el.mediaUploadBtn && el.mediaUploadInput) {
     }
   });
 }
-if (el.excelImportBtn && el.excelImportInput) {
-  el.excelImportBtn.addEventListener('click', function (ev) {
-    ev.preventDefault();
-    if (!el.excelTemplateSelect || !el.excelTemplateSelect.value) {
-      toast('Сначала выбери шаблон для Excel', 'err');
-      return;
-    }
-    el.excelImportInput.click();
-  });
-  el.excelImportInput.addEventListener('change', async function () {
-    const file = el.excelImportInput.files && el.excelImportInput.files[0];
-    el.excelImportInput.value = '';
-    if (!file) return;
-    el.excelImportBtn.disabled = true;
-    try {
-      await importEventsFromExcel(file);
-    } catch (err) {
-      toast('Импорт Excel: ' + err.message, 'err');
-    } finally {
-      el.excelImportBtn.disabled = false;
-    }
-  });
-}
 
 
 document.addEventListener('keydown', function (e) {
@@ -1939,13 +1926,42 @@ document.addEventListener('DOMContentLoaded', function () {
 });
 
 
+function getMediaFolder() {
+  try { return localStorage.getItem(MEDIA_FOLDER_KEY) || ''; }
+  catch (e) { return ''; }
+}
+
+function setMediaFolder(path) {
+  const v = String(path || '').trim();
+  try {
+    if (v) localStorage.setItem(MEDIA_FOLDER_KEY, v);
+    else localStorage.removeItem(MEDIA_FOLDER_KEY);
+  } catch (e) { /* ignore */ }
+  if (el.mediaFolderInput) el.mediaFolderInput.value = v;
+  return v;
+}
+
+function applyTheme(theme) {
+  const dark = theme === 'dark';
+  document.documentElement.classList.toggle('dark-theme', dark);
+  try { localStorage.setItem(THEME_KEY, dark ? 'dark' : 'light'); }
+  catch (e) { /* ignore */ }
+  if (el.themeToggleBtn) {
+    el.themeToggleBtn.textContent = dark ? 'Тема: тёмная' : 'Тема: светлая';
+  }
+}
+
+function currentTheme() {
+  return document.documentElement.classList.contains('dark-theme') ? 'dark' : 'light';
+}
+
 function fillExcelTemplateSelect() {
   if (!el.excelTemplateSelect) return;
   const cur = el.excelTemplateSelect.value || '';
   el.excelTemplateSelect.innerHTML = '';
   const empty = document.createElement('option');
   empty.value = '';
-  empty.textContent = state.templatesLoaded ? '— шаблон для Excel —' : 'Загрузка шаблонов…';
+  empty.textContent = state.templatesLoaded ? '— выбери шаблон —' : 'Загрузка шаблонов…';
   el.excelTemplateSelect.appendChild(empty);
   (state.templates || []).forEach(function (t) {
     const opt = document.createElement('option');
@@ -1954,18 +1970,42 @@ function fillExcelTemplateSelect() {
     if (t.id === cur) opt.selected = true;
     el.excelTemplateSelect.appendChild(opt);
   });
+  if (el.excelPickFileBtn) {
+    el.excelPickFileBtn.disabled = !el.excelTemplateSelect.value;
+  }
+}
+
+async function openExcelImportDialog() {
+  fillExcelTemplateSelect();
+  if (el.excelPickFileBtn) {
+    el.excelPickFileBtn.disabled = !(el.excelTemplateSelect && el.excelTemplateSelect.value);
+  }
+  if (el.excelImportDialog && el.excelImportDialog.showModal) {
+    el.excelImportDialog.showModal();
+  }
+  try {
+    await ensureTemplatesLoaded(false);
+    fillExcelTemplateSelect();
+  } catch (err) {
+    toast('Шаблоны: ' + err.message, 'err');
+  }
+  if (el.excelPickFileBtn) {
+    el.excelPickFileBtn.disabled = !(el.excelTemplateSelect && el.excelTemplateSelect.value);
+  }
 }
 
 async function importEventsFromExcel(file) {
   if (!file) return;
   const templateId = el.excelTemplateSelect && el.excelTemplateSelect.value;
   if (!templateId) {
-    toast('Сначала выбери шаблон для Excel', 'err');
+    toast('Сначала выбери шаблон', 'err');
     return;
   }
   const fd = new FormData();
   fd.append('file', file, file.name);
   fd.append('templateId', templateId);
+  const folder = getMediaFolder();
+  if (folder) fd.append('mediaFolder', folder);
   const res = await fetch('/api/events/import-excel', { method: 'POST', body: fd });
   const text = await res.text();
   var json = null;
@@ -1976,27 +2016,99 @@ async function importEventsFromExcel(file) {
   }
   const created = (json && json.created) ? json.created : [];
   const skipped = (json && json.skipped) ? json.skipped : [];
+  const media = (json && json.media) ? json.media : {};
   state.allEventsCache = null;
+  state.mediaLoaded = false;
   var msg = 'Из Excel создано ивентов: ' + created.length;
   if (skipped.length) msg += ' (пропущено строк: ' + skipped.length + ')';
-  toast(msg, created.length ? 'ok' : 'err');
+  if (media.uploaded) msg += ', загружено медиа: ' + media.uploaded;
+  if (media.reused) msg += ', медиа из Carrot: ' + media.reused;
+  const warns = media.warnings || [];
+  if (warns.length) {
+    msg += ', предупреждений медиа: ' + warns.length;
+    toast(msg, created.length ? 'ok' : 'err');
+    toast('Медиа: ' + (warns[0].file || '') + ' — ' + (warns[0].reason || ''), 'err');
+  } else {
+    toast(msg, created.length ? 'ok' : 'err');
+  }
   return json;
 }
 
-const themeToggleBtn = document.getElementById('ThemeToggle');
-
-if (localStorage.getItem('site-theme') === 'dark') {
-  document.documentElement.classList.add('dark-theme');
+if (el.excelImportBtn) {
+  el.excelImportBtn.addEventListener('click', function (ev) {
+    ev.preventDefault();
+    openExcelImportDialog().catch(function (err) {
+      toast('Импорт Excel: ' + err.message, 'err');
+    });
+  });
+}
+if (el.excelTemplateSelect) {
+  el.excelTemplateSelect.addEventListener('change', function () {
+    if (el.excelPickFileBtn) {
+      el.excelPickFileBtn.disabled = !el.excelTemplateSelect.value;
+    }
+  });
+}
+if (el.excelPickFileBtn && el.excelImportInput) {
+  el.excelPickFileBtn.addEventListener('click', function (ev) {
+    ev.preventDefault();
+    if (!el.excelTemplateSelect || !el.excelTemplateSelect.value) {
+      toast('Сначала выбери шаблон', 'err');
+      return;
+    }
+    el.excelImportInput.click();
+  });
+  el.excelImportInput.addEventListener('change', async function () {
+    const file = el.excelImportInput.files && el.excelImportInput.files[0];
+    el.excelImportInput.value = '';
+    if (!file) return;
+    el.excelPickFileBtn.disabled = true;
+    try {
+      await importEventsFromExcel(file);
+      if (el.excelImportDialog && el.excelImportDialog.open) {
+        el.excelImportDialog.close();
+      }
+    } catch (err) {
+      toast('Импорт Excel: ' + err.message, 'err');
+    } finally {
+      el.excelPickFileBtn.disabled = !(el.excelTemplateSelect && el.excelTemplateSelect.value);
+    }
+  });
+}
+if (el.excelImportForm) {
+  el.excelImportForm.addEventListener('submit', function () {
+    /* method=dialog cancel */
+  });
 }
 
-if (themeToggleBtn) {
-  themeToggleBtn.addEventListener('click', () => {
-    document.documentElement.classList.toggle('dark-theme');
-    if (document.documentElement.classList.contains('dark-theme')) {
-      localStorage.setItem('site-theme', 'dark');
-    } else {
-      localStorage.setItem('site-theme', 'light');
+if (el.mediaFolderInput) {
+  el.mediaFolderInput.value = getMediaFolder();
+}
+if (el.mediaFolderSaveBtn) {
+  el.mediaFolderSaveBtn.addEventListener('click', async function () {
+    const path = el.mediaFolderInput ? el.mediaFolderInput.value.trim() : '';
+    if (!path) {
+      setMediaFolder('');
+      toast('Папка медиа сброшена', 'ok');
+      return;
     }
+    el.mediaFolderSaveBtn.disabled = true;
+    try {
+      const data = await api('POST', '/api/settings/check-media-folder', { path: path });
+      setMediaFolder(data.path || path);
+      toast('Папка медиа: ' + (data.path || path), 'ok');
+    } catch (err) {
+      toast('Папка медиа: ' + err.message, 'err');
+    } finally {
+      el.mediaFolderSaveBtn.disabled = false;
+    }
+  });
+}
+
+applyTheme(localStorage.getItem(THEME_KEY) === 'dark' ? 'dark' : 'light');
+if (el.themeToggleBtn) {
+  el.themeToggleBtn.addEventListener('click', function () {
+    applyTheme(currentTheme() === 'dark' ? 'light' : 'dark');
   });
 }
 
