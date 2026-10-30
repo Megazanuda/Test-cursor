@@ -165,6 +165,28 @@
 
   <div class="toast" id="toast" hidden role="status"></div>
 
+  <div id="loadingOverlay" class="loading-overlay" hidden aria-live="polite" aria-busy="true">
+    <div class="loading-card">
+      <div class="loading-spinner" aria-hidden="true"></div>
+      <p class="loading-title" id="loadingTitle">Загрузка…</p>
+      <p class="loading-sub" id="loadingSub" hidden></p>
+    </div>
+  </div>
+
+  <dialog id="feedbackDialog">
+    <form method="dialog" class="feedback-box" id="feedbackForm">
+      <h3 id="feedbackTitle">Сообщение</h3>
+      <p class="feedback-message" id="feedbackMessage"></p>
+      <details class="feedback-detail" id="feedbackDetailWrap" hidden>
+        <summary>Подробности</summary>
+        <pre id="feedbackDetail"></pre>
+      </details>
+      <div class="confirm-actions">
+        <button value="ok" class="btn primary" id="feedbackOkBtn">Понятно</button>
+      </div>
+    </form>
+  </dialog>
+
   <dialog id="confirmDialog">
     <form method="dialog" class="confirm-box">
       <h3>Удалить выбранные Ивенты?</h3>

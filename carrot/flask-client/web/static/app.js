@@ -159,11 +159,22 @@ const el = {
   editorCollapseAll: document.getElementById('editorCollapseAll'),
   varFilter: document.getElementById('varFilter'),
   toast: document.getElementById('toast'),
+  loadingOverlay: document.getElementById('loadingOverlay'),
+  loadingTitle: document.getElementById('loadingTitle'),
+  loadingSub: document.getElementById('loadingSub'),
+  feedbackDialog: document.getElementById('feedbackDialog'),
+  feedbackForm: document.getElementById('feedbackForm'),
+  feedbackTitle: document.getElementById('feedbackTitle'),
+  feedbackMessage: document.getElementById('feedbackMessage'),
+  feedbackDetailWrap: document.getElementById('feedbackDetailWrap'),
+  feedbackDetail: document.getElementById('feedbackDetail'),
+  feedbackOkBtn: document.getElementById('feedbackOkBtn'),
   confirmDialog: document.getElementById('confirmDialog'),
   confirmText: document.getElementById('confirmText')
 };
 
 let toastTimer = null;
+let loadingDepth = 0;
 
 function setStatus(text, kind) {
   el.statusLine.textContent = text;
@@ -172,12 +183,162 @@ function setStatus(text, kind) {
 }
 
 function toast(message, kind) {
+  // Короткие успехи — toast; ошибки/важное — диалог через showError/showFeedback.
+  if (kind === 'err') {
+    showError(message);
+    return;
+  }
+  if (!el.toast) return;
   el.toast.hidden = false;
   el.toast.textContent = message;
   el.toast.classList.remove('ok', 'err');
   if (kind) el.toast.classList.add(kind);
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(function () { el.toast.hidden = true; }, 5200);
+  toastTimer = setTimeout(function () { el.toast.hidden = true; }, 4200);
+}
+
+function humanizeError(err) {
+  const raw = err && err.message ? String(err.message) : String(err || 'Неизвестная ошибка');
+  const lower = raw.toLowerCase();
+  var title = 'Не удалось выполнить действие';
+  var message = raw;
+  var hint = '';
+
+  if (/econnrefused|connection refused|никто не слушает/.test(lower)) {
+    title = 'Нет связи с Carrot';
+    message = 'Сервер по указанному адресу не отвечает.';
+    hint = 'Проверь Base URL в форме или .env (обычно порт REST, не 8088 и не WebSocket).';
+  } else if (/timed?\s*out|timeout|etagain|etimedout/.test(lower)) {
+    title = 'Превышено время ожидания';
+    message = 'Carrot слишком долго не отвечает.';
+    hint = 'Проверь сеть и доступность сервера, затем повтори.';
+  } else if (/401|неавториз|unauthorized|login|password|парол|логин/.test(lower) && /auth|token|jwt|подключ/.test(lower)) {
+    title = 'Ошибка входа';
+    message = 'Не удалось получить доступ к API.';
+    hint = 'Проверь логин и пароль.';
+  } else if (/cors|failed to fetch|networkerror|сеть:/.test(lower)) {
+    title = 'Сетевая ошибка';
+    message = 'Браузер не смог связаться с локальным сервером UI или с Carrot.';
+    hint = 'Убедись, что Flask/web.cmd запущен и адрес страницы верный.';
+  } else if (/не json|html — веб-интерфейс|не rest/.test(lower)) {
+    title = 'Неверный адрес REST API';
+    message = 'По этому URL отвечает не REST Carrot (часто веб-плейлист).';
+    hint = 'Укажи адрес REST (часто :5001), а не порт 8088.';
+  } else if (/404|не найден|not found/.test(lower)) {
+    title = 'Не найдено';
+    message = 'Запрошенный объект или путь API не найден.';
+  } else if (/папк|media folder|файл не найден/.test(lower)) {
+    title = 'Проблема с медиа';
+    message = raw;
+    hint = 'Проверь папку медиа в Настройках и имена файлов в Excel.';
+  } else if (/excel|openpyxl|xlsx/.test(lower)) {
+    title = 'Ошибка Excel';
+    message = raw;
+    hint = 'Нужен файл .xlsx/.xlsm с колонками: имя | переменные | External id.';
+  }
+
+  return { title: title, message: message, detail: raw === message ? '' : raw, hint: hint };
+}
+
+function showFeedback(opts) {
+  opts = opts || {};
+  const kind = opts.kind || 'info';
+  const title = opts.title || (kind === 'err' ? 'Ошибка' : kind === 'ok' ? 'Готово' : 'Сообщение');
+  var message = opts.message || '';
+  if (opts.hint) {
+    message = message + (message ? '\n\n' : '') + opts.hint;
+  }
+  const detail = opts.detail || '';
+
+  if (!el.feedbackDialog) {
+    window.alert(title + '\n\n' + message + (detail ? '\n\n' + detail : ''));
+    return;
+  }
+
+  el.feedbackForm.classList.remove('kind-err', 'kind-ok', 'kind-warn', 'kind-info');
+  el.feedbackForm.classList.add('kind-' + kind);
+  el.feedbackTitle.textContent = title;
+  el.feedbackMessage.textContent = message;
+  if (detail && detail !== message) {
+    el.feedbackDetailWrap.hidden = false;
+    el.feedbackDetail.textContent = detail;
+  } else {
+    el.feedbackDetailWrap.hidden = true;
+    el.feedbackDetail.textContent = '';
+  }
+  if (el.feedbackOkBtn) {
+    el.feedbackOkBtn.textContent = opts.okLabel || 'Понятно';
+    el.feedbackOkBtn.className = 'btn ' + (kind === 'err' ? 'danger' : 'primary');
+  }
+  if (typeof el.feedbackDialog.showModal === 'function') {
+    if (!el.feedbackDialog.open) el.feedbackDialog.showModal();
+  }
+}
+
+function showError(titleOrErr, errOrMessage) {
+  var title = 'Ошибка';
+  var message = '';
+  var detail = '';
+  var hint = '';
+
+  if (errOrMessage === undefined) {
+    const h = humanizeError(titleOrErr);
+    title = h.title;
+    message = h.message;
+    detail = h.detail;
+    hint = h.hint;
+  } else if (errOrMessage && typeof errOrMessage === 'object') {
+    const h = humanizeError(errOrMessage);
+    title = String(titleOrErr || h.title);
+    message = h.message;
+    detail = h.detail || String(errOrMessage.message || errOrMessage);
+    hint = h.hint;
+  } else {
+    title = String(titleOrErr || 'Ошибка');
+    message = String(errOrMessage || '');
+  }
+
+  showFeedback({ kind: 'err', title: title, message: message, detail: detail, hint: hint });
+}
+
+function showSuccess(title, message, detail) {
+  showFeedback({ kind: 'ok', title: title || 'Готово', message: message || '', detail: detail || '' });
+}
+
+function showWarning(title, message, detail) {
+  showFeedback({ kind: 'warn', title: title || 'Внимание', message: message || '', detail: detail || '' });
+}
+
+function showLoading(title, sub) {
+  loadingDepth += 1;
+  if (el.loadingTitle) el.loadingTitle.textContent = title || 'Загрузка…';
+  if (el.loadingSub) {
+    if (sub) {
+      el.loadingSub.hidden = false;
+      el.loadingSub.textContent = sub;
+    } else {
+      el.loadingSub.hidden = true;
+      el.loadingSub.textContent = '';
+    }
+  }
+  if (el.loadingOverlay) el.loadingOverlay.hidden = false;
+  document.body.classList.add('is-loading');
+}
+
+function hideLoading() {
+  loadingDepth = Math.max(0, loadingDepth - 1);
+  if (loadingDepth > 0) return;
+  if (el.loadingOverlay) el.loadingOverlay.hidden = true;
+  document.body.classList.remove('is-loading');
+}
+
+async function withLoading(title, fn, sub) {
+  showLoading(title, sub);
+  try {
+    return await fn();
+  } finally {
+    hideLoading();
+  }
 }
 
 async function api(method, path, body) {
@@ -395,7 +556,7 @@ function setSection(section) {
     }).then(function () {
       renderCreateForms();
     }).catch(function (err) {
-      toast(err.message, 'err');
+      showError('Не удалось подготовить создание', err);
     });
   }
 }
@@ -639,14 +800,18 @@ function makeVarInput(v, onChange) {
       if (!file) return;
       upBtn.disabled = true;
       try {
-        const result = await uploadMediaFile(file);
+        const result = await withLoading(
+          'Загрузка медиа в Carrot…',
+          function () { return uploadMediaFile(file); },
+          file.name
+        );
         if (result && result.mediaValue) {
           fillMediaSelect(select, result.mediaValue);
           onChange(result.mediaValue);
           toast('Медиа загружено: ' + (result.asset.name || file.name), 'ok');
         }
       } catch (err) {
-        toast('Загрузка медиа: ' + err.message, 'err');
+        showError('Не удалось загрузить медиа', err);
       } finally {
         upBtn.disabled = false;
       }
@@ -784,7 +949,9 @@ function buildVarEditor(eventId, variables, opts) {
     });
     saveBtn.disabled = true;
     try {
-      await api('PATCH', '/api/events/' + encodeURIComponent(eventId) + '/variables', full);
+      await withLoading('Сохранение переменных…', function () {
+        return api('PATCH', '/api/events/' + encodeURIComponent(eventId) + '/variables', full);
+      });
       if (state.eventDetails[eventId]) {
         state.eventDetails[eventId].variables = full.map(function (p) {
           const prev = all.find(function (v) { return v.name === p.name; });
@@ -798,7 +965,7 @@ function buildVarEditor(eventId, variables, opts) {
       }
       toast('Переменные сохранены', 'ok');
     } catch (err) {
-      toast(err.message, 'err');
+      showError('Не удалось сохранить переменные', err);
     } finally {
       saveBtn.disabled = false;
     }
@@ -1155,16 +1322,20 @@ async function selectAllEvents(opts) {
   state.rows = [];
   el.eventsHint.textContent = 'Загрузка…';
   renderTable();
+  const quiet = !!(opts && opts.quiet);
+  if (!quiet) showLoading('Загрузка ивентов…', 'Вся база');
   try {
     state.allEventsLoading = true;
     const flat = await fetchAllEvents(force);
     applyEventRows(flat, 'Все ивенты');
   } catch (err) {
     el.eventsHint.textContent = 'Ошибка загрузки';
-    toast(err.message, 'err');
-    setStatus(err.message, 'err');
+    setStatus('ошибка загрузки', 'err');
+    if (!quiet) showError('Не удалось загрузить ивенты', err);
+    else throw err;
   } finally {
     state.allEventsLoading = false;
+    if (!quiet) hideLoading();
   }
 }
 
@@ -1184,7 +1355,13 @@ async function selectPlaylist(pl) {
   updateScopeButtons();
   renderTable();
   try {
-    const data = await api('GET', '/api/playlists/' + encodeURIComponent(pl.id) + '/events');
+    const data = await withLoading(
+      'Загрузка ивентов…',
+      function () {
+        return api('GET', '/api/playlists/' + encodeURIComponent(pl.id) + '/events');
+      },
+      state.playlistName
+    );
     applyEventRows(
       (data.events || []).map(flattenRow),
       state.playlistName,
@@ -1192,8 +1369,8 @@ async function selectPlaylist(pl) {
     );
   } catch (err) {
     el.eventsHint.textContent = 'Ошибка загрузки';
-    toast(err.message, 'err');
-    setStatus(err.message, 'err');
+    setStatus('ошибка загрузки', 'err');
+    showError('Не удалось загрузить плейлист', err);
   }
 }
 
@@ -1240,20 +1417,27 @@ async function connect(creds) {
   el.connectBtn.disabled = true;
   setStatus('подключение…');
   try {
-    const data = await api('POST', '/api/connect', creds);
-    state.connected = true;
-    el.connectPanel.hidden = true;
-    el.workspace.hidden = false;
-    el.sectionTabs.hidden = false;
-    setStatus('онлайн · ' + data.baseUrl, 'ok');
-    toast('Подключено к ' + data.baseUrl, 'ok');
-    updateSidePaneUi();
-    await loadPlaylists();
-    state.allEventsScope = 'recent';
-    await selectAllEvents();
+    await withLoading('Подключение к Carrot…', async function () {
+      const data = await api('POST', '/api/connect', creds);
+      state.connected = true;
+      el.connectPanel.hidden = true;
+      el.workspace.hidden = false;
+      el.sectionTabs.hidden = false;
+      setStatus('онлайн · ' + data.baseUrl, 'ok');
+      updateSidePaneUi();
+      if (el.loadingTitle) el.loadingTitle.textContent = 'Загрузка плейлистов и ивентов…';
+      if (el.loadingSub) {
+        el.loadingSub.hidden = false;
+        el.loadingSub.textContent = data.baseUrl || '';
+      }
+      await loadPlaylists();
+      state.allEventsScope = 'recent';
+      await selectAllEvents({ quiet: true });
+      toast('Подключено к ' + data.baseUrl, 'ok');
+    }, 'Проверяем доступ к REST API');
   } catch (err) {
-    setStatus(err.message, 'err');
-    toast(err.message, 'err');
+    setStatus('не подключено', 'err');
+    showError('Не удалось подключиться', err);
     throw err;
   } finally {
     el.connectBtn.disabled = false;
@@ -1281,11 +1465,22 @@ async function deleteSelected() {
 
   el.deleteBtn.disabled = true;
   try {
-    const data = await api('POST', '/api/events/delete', { ids: ids });
+    const data = await withLoading(
+      'Удаление ивентов…',
+      function () { return api('POST', '/api/events/delete', { ids: ids }); },
+      'Удаляется: ' + ids.length
+    );
     const deleted = (data && data.deleted) ? data.deleted : [];
     const failed = (data && data.failed) ? data.failed : [];
-    if (failed.length) toast('Удалено: ' + deleted.length + ', ошибок: ' + failed.length, 'err');
-    else toast('Удалено: ' + deleted.length, 'ok');
+    if (failed.length) {
+      showWarning(
+        'Удаление завершено с ошибками',
+        'Удалено: ' + deleted.length + ', ошибок: ' + failed.length + '.',
+        failed.map(function (f) { return (f.id || '') + ': ' + (f.error || ''); }).join('\n')
+      );
+    } else {
+      toast('Удалено: ' + deleted.length, 'ok');
+    }
     if (deleted.length) {
       const drop = Object.create(null);
       deleted.forEach(function (id) {
@@ -1309,7 +1504,10 @@ async function deleteSelected() {
       );
     } else renderTable();
   } catch (err) {
-    toast(err.message, 'err');
+    showError('Не удалось удалить ивенты', err);
+    updateSelectionUi();
+  } finally {
+    el.deleteBtn.disabled = false;
     updateSelectionUi();
   }
 }
@@ -1709,22 +1907,26 @@ async function submitCreateForms() {
     });
 
   if (!payload.length) {
-    toast('Заполни имя и шаблон хотя бы у одного поля', 'err');
+    showWarning('Нечего создавать', 'Заполни имя и шаблон хотя бы у одного ивента.');
     return;
   }
 
   el.createSubmitBtn.disabled = true;
   try {
-    const data = await api('POST', '/api/events/create', { events: payload });
+    const data = await withLoading(
+      'Создание ивентов…',
+      function () { return api('POST', '/api/events/create', { events: payload }); },
+      'К созданию: ' + payload.length
+    );
     const created = (data && data.created) ? data.created : [];
-    toast('Создано ивентов: ' + created.length, 'ok');
+    showSuccess('Ивенты созданы', 'Создано: ' + created.length + '.');
     state.allEventsCache = null;
     state.createForms = [blankCreateForm()];
     setCreateSelection([], null);
     renderCreateForms();
   } catch (err) {
-    toast(err.message, 'err');
-    setStatus(err.message, 'err');
+    showError('Не удалось создать ивенты', err);
+    setStatus('ошибка создания', 'err');
     updateCreateActions();
   }
 }
@@ -1756,7 +1958,7 @@ el.reloadPlaylists.addEventListener('click', function () {
         return selectPlaylist({ id: state.playlistId, name: state.playlistName });
       }
     })
-    .catch(function (err) { toast(err.message, 'err'); });
+    .catch(function (err) { showError('Не удалось обновить данные', err); });
 });
 
 el.loadAllBtn.addEventListener('click', function () {
@@ -1825,10 +2027,14 @@ if (el.mediaUploadBtn && el.mediaUploadInput) {
     if (!file) return;
     el.mediaUploadBtn.disabled = true;
     try {
-      const result = await uploadMediaFile(file);
+      const result = await withLoading(
+        'Загрузка медиа в Carrot…',
+        function () { return uploadMediaFile(file); },
+        file.name
+      );
       toast('Медиа загружено: ' + ((result && result.asset && result.asset.name) || file.name), 'ok');
     } catch (err) {
-      toast('Загрузка медиа: ' + err.message, 'err');
+      showError('Не удалось загрузить медиа', err);
     } finally {
       el.mediaUploadBtn.disabled = false;
     }
@@ -1870,7 +2076,8 @@ el.sectionEvents.hidden = false;
     if (health.hasEnv) await connect({});
     else setStatus('заполни .env или форму подключения');
   } catch (err) {
-    setStatus(err.message, 'err');
+    setStatus('ошибка запуска', 'err');
+    showError('Не удалось запустить интерфейс', err);
   }
 })();
 
@@ -1998,7 +2205,7 @@ async function importEventsFromExcel(file) {
   if (!file) return;
   const templateId = el.excelTemplateSelect && el.excelTemplateSelect.value;
   if (!templateId) {
-    toast('Сначала выбери шаблон', 'err');
+    showWarning('Нужен шаблон', 'Сначала выбери шаблон в диалоге импорта Excel.');
     return;
   }
   const fd = new FormData();
@@ -2006,30 +2213,53 @@ async function importEventsFromExcel(file) {
   fd.append('templateId', templateId);
   const folder = getMediaFolder();
   if (folder) fd.append('mediaFolder', folder);
-  const res = await fetch('/api/events/import-excel', { method: 'POST', body: fd });
-  const text = await res.text();
-  var json = null;
-  try { json = text ? JSON.parse(text) : null; }
-  catch (e) { throw new Error('Ответ сервера не JSON (HTTP ' + res.status + ')'); }
-  if (!res.ok || (json && json.ok === false)) {
-    throw new Error((json && json.error) || ('HTTP ' + res.status));
-  }
+
+  const json = await withLoading(
+    'Импорт Excel…',
+    async function () {
+      const res = await fetch('/api/events/import-excel', { method: 'POST', body: fd });
+      const text = await res.text();
+      var parsed = null;
+      try { parsed = text ? JSON.parse(text) : null; }
+      catch (e) { throw new Error('Ответ сервера не JSON (HTTP ' + res.status + ')'); }
+      if (!res.ok || (parsed && parsed.ok === false)) {
+        throw new Error((parsed && parsed.error) || ('HTTP ' + res.status));
+      }
+      return parsed;
+    },
+    file.name + (folder ? '\nПапка медиа: ' + folder : '')
+  );
+
   const created = (json && json.created) ? json.created : [];
   const skipped = (json && json.skipped) ? json.skipped : [];
   const media = (json && json.media) ? json.media : {};
   state.allEventsCache = null;
   state.mediaLoaded = false;
-  var msg = 'Из Excel создано ивентов: ' + created.length;
-  if (skipped.length) msg += ' (пропущено строк: ' + skipped.length + ')';
-  if (media.uploaded) msg += ', загружено медиа: ' + media.uploaded;
-  if (media.reused) msg += ', медиа из Carrot: ' + media.reused;
+
+  var lines = ['Создано ивентов: ' + created.length + '.'];
+  if (skipped.length) lines.push('Пропущено строк: ' + skipped.length + '.');
+  if (media.uploaded) lines.push('Загружено медиа в Carrot: ' + media.uploaded + '.');
+  if (media.reused) lines.push('Медиа уже было в Carrot: ' + media.reused + '.');
   const warns = media.warnings || [];
+  var detail = '';
   if (warns.length) {
-    msg += ', предупреждений медиа: ' + warns.length;
-    toast(msg, created.length ? 'ok' : 'err');
-    toast('Медиа: ' + (warns[0].file || '') + ' — ' + (warns[0].reason || ''), 'err');
+    lines.push('Предупреждений по медиа: ' + warns.length + '.');
+    detail = warns.map(function (w) {
+      return 'Строка ' + (w.row || '?') + ': ' + (w.file || '') + ' — ' + (w.reason || '');
+    }).join('\n');
+  }
+  if (skipped.length) {
+    detail = (detail ? detail + '\n\n' : '') + skipped.map(function (s) {
+      return 'Строка ' + (s.row || '?') + ': ' + (s.reason || '');
+    }).join('\n');
+  }
+
+  if (!created.length) {
+    showError('Импорт Excel не создал ивенты', lines.join(' '), detail);
+  } else if (warns.length || skipped.length) {
+    showWarning('Импорт завершён с замечаниями', lines.join('\n'), detail);
   } else {
-    toast(msg, created.length ? 'ok' : 'err');
+    showSuccess('Импорт Excel выполнен', lines.join('\n'));
   }
   return json;
 }
@@ -2038,7 +2268,7 @@ if (el.excelImportBtn) {
   el.excelImportBtn.addEventListener('click', function (ev) {
     ev.preventDefault();
     openExcelImportDialog().catch(function (err) {
-      toast('Импорт Excel: ' + err.message, 'err');
+      showError('Не удалось открыть импорт Excel', err);
     });
   });
 }
@@ -2053,7 +2283,7 @@ if (el.excelPickFileBtn && el.excelImportInput) {
   el.excelPickFileBtn.addEventListener('click', function (ev) {
     ev.preventDefault();
     if (!el.excelTemplateSelect || !el.excelTemplateSelect.value) {
-      toast('Сначала выбери шаблон', 'err');
+      showWarning('Нужен шаблон', 'Сначала выбери шаблон.');
       return;
     }
     el.excelImportInput.click();
@@ -2069,7 +2299,7 @@ if (el.excelPickFileBtn && el.excelImportInput) {
         el.excelImportDialog.close();
       }
     } catch (err) {
-      toast('Импорт Excel: ' + err.message, 'err');
+      showError('Не удалось импортировать Excel', err);
     } finally {
       el.excelPickFileBtn.disabled = !(el.excelTemplateSelect && el.excelTemplateSelect.value);
     }
@@ -2094,11 +2324,15 @@ if (el.mediaFolderSaveBtn) {
     }
     el.mediaFolderSaveBtn.disabled = true;
     try {
-      const data = await api('POST', '/api/settings/check-media-folder', { path: path });
+      const data = await withLoading(
+        'Проверка папки медиа…',
+        function () { return api('POST', '/api/settings/check-media-folder', { path: path }); },
+        path
+      );
       setMediaFolder(data.path || path);
-      toast('Папка медиа: ' + (data.path || path), 'ok');
+      toast('Папка медиа сохранена', 'ok');
     } catch (err) {
-      toast('Папка медиа: ' + err.message, 'err');
+      showError('Папка медиа недоступна', err);
     } finally {
       el.mediaFolderSaveBtn.disabled = false;
     }

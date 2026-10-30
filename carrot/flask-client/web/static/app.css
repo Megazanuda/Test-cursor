@@ -984,35 +984,132 @@ input:focus, .filter:focus, textarea:focus {
   left: 50%;
   bottom: 1rem;
   transform: translateX(-50%);
-  z-index: 20;
+  z-index: 40;
   color: var(--panel);
   padding: 0.7rem 1rem;
   border-radius: 8px;
   max-width: min(90vw, 36rem);
   font-size: 0.95rem;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.18);
 }
 
 .toast.err { background: var(--danger); }
 .toast.ok { background: var(--lineOk); }
 
+.loading-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(15, 23, 42, 0.42);
+  backdrop-filter: blur(2px);
+}
+
+.loading-overlay[hidden] {
+  display: none !important;
+}
+
+body.is-loading {
+  cursor: progress;
+}
+
+.loading-card {
+  min-width: min(18rem, 86vw);
+  max-width: 26rem;
+  padding: 1.25rem 1.4rem;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--text);
+  text-align: center;
+  box-shadow: 0 16px 40px rgba(15, 23, 42, 0.25);
+}
+
+.loading-spinner {
+  width: 2.1rem;
+  height: 2.1rem;
+  margin: 0 auto 0.85rem;
+  border-radius: 50%;
+  border: 3px solid var(--line);
+  border-top-color: var(--accent);
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.loading-title {
+  margin: 0;
+  font-weight: 650;
+  font-size: 1.05rem;
+}
+
+.loading-sub {
+  margin: 0.45rem 0 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+  line-height: 1.4;
+}
+
 dialog {
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: 10px;
   padding: 0;
-  background: var(--bg);
+  background: var(--panel);
   color: var(--text);
-  max-width: 26rem;
+  max-width: 28rem;
   width: calc(100% - 2rem);
 }
 
-dialog::backdrop { background: rgba(15, 23, 42, 0.35); }
+dialog::backdrop { background: rgba(15, 23, 42, 0.4); }
 
-.confirm-box { padding: 1.1rem; }
-.confirm-box p {
+.confirm-box,
+.feedback-box { padding: 1.15rem 1.2rem; }
+
+.confirm-box p,
+.feedback-message {
   color: var(--muted);
   margin: 0.55rem 0 1rem;
   line-height: 1.45;
   font-size: 0.95rem;
+  white-space: pre-wrap;
+}
+
+.feedback-box h3 {
+  margin: 0;
+  font-size: 1.15rem;
+}
+
+.feedback-box.kind-err h3 { color: var(--danger); }
+.feedback-box.kind-ok h3 { color: var(--lineOk); }
+.feedback-box.kind-warn h3 { color: #b45309; }
+
+.feedback-detail {
+  margin: 0 0 1rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.35rem 0.55rem;
+  background: var(--head);
+}
+
+.feedback-detail summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 0.88rem;
+  font-weight: 600;
+}
+
+.feedback-detail pre {
+  margin: 0.45rem 0 0.2rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 0.8rem;
+  color: var(--text);
+  max-height: 10rem;
+  overflow: auto;
 }
 
 .confirm-actions {
