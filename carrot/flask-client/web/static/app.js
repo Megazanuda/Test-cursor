@@ -291,7 +291,7 @@ function showError(titleOrErr, errOrMessage) {
     const h = humanizeError(errOrMessage);
     title = String(titleOrErr || h.title);
     message = h.message;
-    detail = h.detail || String(errOrMessage.message || errOrMessage);
+    detail = errOrMessage.detail || h.detail || String(errOrMessage.message || errOrMessage);
     hint = h.hint;
   } else {
     title = String(titleOrErr || 'Ошибка');
@@ -2223,7 +2223,17 @@ async function importEventsFromExcel(file) {
       try { parsed = text ? JSON.parse(text) : null; }
       catch (e) { throw new Error('Ответ сервера не JSON (HTTP ' + res.status + ')'); }
       if (!res.ok || (parsed && parsed.ok === false)) {
-        throw new Error((parsed && parsed.error) || ('HTTP ' + res.status));
+        const err = new Error((parsed && parsed.error) || ('HTTP ' + res.status));
+        const missing = (parsed && parsed.media &&
+          (parsed.media.missing || parsed.media.warnings)) || [];
+        if (missing.length) {
+          err.detail = missing.map(function (w) {
+            return 'Строка ' + (w.row || '?') +
+              (w.variable ? ' [' + w.variable + ']' : '') +
+              ': ' + (w.file || '') + ' — ' + (w.reason || '');
+          }).join('\n');
+        }
+        throw err;
       }
       return parsed;
     },
@@ -2240,23 +2250,16 @@ async function importEventsFromExcel(file) {
   if (skipped.length) lines.push('Пропущено строк: ' + skipped.length + '.');
   if (media.uploaded) lines.push('Загружено медиа в Carrot: ' + media.uploaded + '.');
   if (media.reused) lines.push('Медиа уже было в Carrot: ' + media.reused + '.');
-  const warns = media.warnings || [];
   var detail = '';
-  if (warns.length) {
-    lines.push('Предупреждений по медиа: ' + warns.length + '.');
-    detail = warns.map(function (w) {
-      return 'Строка ' + (w.row || '?') + ': ' + (w.file || '') + ' — ' + (w.reason || '');
-    }).join('\n');
-  }
   if (skipped.length) {
-    detail = (detail ? detail + '\n\n' : '') + skipped.map(function (s) {
+    detail = skipped.map(function (s) {
       return 'Строка ' + (s.row || '?') + ': ' + (s.reason || '');
     }).join('\n');
   }
 
   if (!created.length) {
     showError('Импорт Excel не создал ивенты', lines.join(' '), detail);
-  } else if (warns.length || skipped.length) {
+  } else if (skipped.length) {
     showWarning('Импорт завершён с замечаниями', lines.join('\n'), detail);
   } else {
     showSuccess('Импорт Excel выполнен', lines.join('\n'));

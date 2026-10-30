@@ -399,6 +399,42 @@ def api_events_import_excel():
             media_folder=media_folder,
             upload_file=_upload,
         )
+        missing = media_report.get("missing") or []
+        if missing:
+            # Без найденных медиа импорт не выполняем — ивенты не создаём.
+            names = sorted(
+                {
+                    str(m.get("file") or "").strip()
+                    for m in missing
+                    if str(m.get("file") or "").strip()
+                }
+            )
+            preview = ", ".join(names[:5])
+            more = f" и ещё {len(names) - 5}" if len(names) > 5 else ""
+            log.warning(
+                "[excel] импорт отменён: не найдено медиа=%s (%s%s)",
+                len(missing),
+                preview,
+                more,
+            )
+            return jsonify(
+                {
+                    "ok": False,
+                    "error": (
+                        "Импорт отменён: не найдены медиафайлы"
+                        + (f" ({preview}{more})" if preview else "")
+                        + ". Проверь имена в Excel, медиа в Carrot "
+                        "или папку в Настройках."
+                    ),
+                    "created": [],
+                    "skipped": parsed["skipped"],
+                    "headerSkipped": parsed["headerSkipped"],
+                    "variableNames": parsed["variableNames"],
+                    "templateId": template_id,
+                    "templateName": template.get("name") or "",
+                    "media": media_report,
+                }
+            ), 400
 
     # служебное поле _excelRow не уходит в Carrot
     events = []
@@ -409,13 +445,12 @@ def api_events_import_excel():
     result = client.create_events(events)
     created = result.get("created") or []
     log.info(
-        "[excel] шаблон %s: строк=%s создано=%s media upload=%s reuse=%s warn=%s",
+        "[excel] шаблон %s: строк=%s создано=%s media upload=%s reuse=%s",
         template.get("name") or template_id,
         len(drafts),
         len(created),
         media_report.get("uploaded"),
         media_report.get("reused"),
-        len(media_report.get("warnings") or []),
     )
     return jsonify(
         {

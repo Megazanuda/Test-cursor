@@ -256,7 +256,7 @@ def resolve_media_in_drafts(
     resolved = 0
     uploaded = 0
     reused = 0
-    warnings: list[dict[str, Any]] = []
+    missing: list[dict[str, Any]] = []
     folder = (media_folder or "").strip() or None
 
     for draft in drafts:
@@ -288,7 +288,7 @@ def resolve_media_in_drafts(
                 continue
 
             if not folder:
-                warnings.append(
+                missing.append(
                     {
                         "row": excel_row,
                         "variable": var.get("name"),
@@ -299,7 +299,7 @@ def resolve_media_in_drafts(
                 continue
 
             if upload_file is None:
-                warnings.append(
+                missing.append(
                     {
                         "row": excel_row,
                         "variable": var.get("name"),
@@ -312,7 +312,7 @@ def resolve_media_in_drafts(
             try:
                 local = find_local_media_file(folder, filename)
             except ValueError as err:
-                warnings.append(
+                missing.append(
                     {
                         "row": excel_row,
                         "variable": var.get("name"),
@@ -323,7 +323,7 @@ def resolve_media_in_drafts(
                 continue
 
             if local is None:
-                warnings.append(
+                missing.append(
                     {
                         "row": excel_row,
                         "variable": var.get("name"),
@@ -346,5 +346,8 @@ def resolve_media_in_drafts(
         "resolved": resolved,
         "uploaded": uploaded,
         "reused": reused,
-        "warnings": warnings,
+        "missing": missing,
+        # совместимость со старым UI
+        "warnings": missing,
+        "ok": not missing,
     }
