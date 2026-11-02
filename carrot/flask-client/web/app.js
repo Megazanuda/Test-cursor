@@ -208,10 +208,12 @@ function humanizeError(err) {
   var message = raw;
   var hint = '';
 
-  if (/econnrefused|connection refused|никто не слушает/.test(lower)) {
+  if (/econnrefused|connection refused|никто не слушает|10061|actively refused/.test(lower)) {
     title = 'Нет связи с Carrot';
-    message = 'Сервер по указанному адресу не отвечает.';
-    hint = 'Проверь Base URL в форме или .env (обычно порт REST, не 8088 и не WebSocket).';
+    message = 'По этому Base URL TCP-соединение отклонено — REST не слушает адрес.';
+    hint = 'На машине Carrot проверь, что Server запущен и какой порт у REST '
+      + '(часто 5001, swagger /auth/generate). Не 8088 и не WS 24710/24712. '
+      + 'С Windows должен быть сетевой доступ к этому IP.';
   } else if (/timed?\s*out|timeout|etagain|etimedout/.test(lower)) {
     title = 'Превышено время ожидания';
     message = 'Carrot слишком долго не отвечает.';

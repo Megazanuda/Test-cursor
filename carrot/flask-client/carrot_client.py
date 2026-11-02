@@ -705,11 +705,37 @@ def _wrap_net_error(err: BaseException, url: str) -> CarrotError:
         code = code or "CERT_UNTRUSTED"
 
     hint = ""
-    if code == "ECONNREFUSED" or "Connection refused" in detail:
-        hint = (
-            " На этом адресе никто не слушает. В .env порт 8080 — заглушка, "
-            "поставь реальный URL REST API Carrot (не порты 24710/24712)."
-        )
+    refused = (
+        code == "ECONNREFUSED"
+        or "Connection refused" in detail
+        or "10061" in detail  # WinError: target machine actively refused
+        or "actively refused" in detail.lower()
+    )
+    if refused:
+        port = ""
+        try:
+            from urllib.parse import urlparse
+
+            port = str(urlparse(url).port or "")
+        except Exception:
+            port = ""
+        if port in ("24710", "24712"):
+            hint = (
+                f" Порт {port} — это WebSocket Carrot, не REST. "
+                "В Base URL нужен REST (часто :5001), не 24710/24712."
+            )
+        elif port in ("8088", "8080"):
+            hint = (
+                f" Порт {port} обычно не REST API Carrot "
+                "(8088 — веб-плейлист). Укажи URL REST, часто :5001."
+            )
+        else:
+            where = f" (порт {port})" if port else ""
+            hint = (
+                f" На этом адресе{where} никто не принимает TCP-соединения. "
+                "Проверь, что Carrot Server запущен и REST слушает этот host:port "
+                "(swagger /auth/generate). Не путай с WS 24710/24712 и с 8088."
+            )
         code = code or "ECONNREFUSED"
     elif code in ("ENOTFOUND", "EAI_AGAIN") or "Name or service not known" in detail:
         hint = " Имя хоста не резолвится. Проверь CARROT_BASE_URL."
