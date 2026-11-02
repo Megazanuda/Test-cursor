@@ -140,6 +140,25 @@ function readBody(req) {
     });
 }
 
+function readRawBody(req, maxBytes) {
+    maxBytes = maxBytes || (200 * 1024 * 1024);
+    return new Promise(function (resolve, reject) {
+        const chunks = [];
+        let size = 0;
+        req.on('data', function (c) {
+            size += c.length;
+            if (size > maxBytes) {
+                reject(new Error('Файл слишком большой'));
+                req.destroy();
+                return;
+            }
+            chunks.push(c);
+        });
+        req.on('end', function () { resolve(Buffer.concat(chunks)); });
+        req.on('error', reject);
+    });
+}
+
 function errPayload(err) {
     return {
         ok: false,
@@ -208,6 +227,34 @@ async function handleApi(req, res, url) {
         const list = assets || [];
         console.log('[media] загружено активов: ' + list.length);
         return sendJson(res, 200, { ok: true, media: list });
+    }
+
+    // Загрузка медиа: сырое тело + заголовок X-Filename (без multipart-зависимостей).
+    if (req.method === 'POST' && pathname === '/api/media/upload') {
+        const filename = String(
+            req.headers['x-filename'] ||
+            req.headers['x-file-name'] ||
+            ''
+        ).trim();
+        if (!filename) {
+            return sendJson(res, 400, {
+                ok: false,
+                error: 'Нужен заголовок X-Filename с именем файла'
+            });
+        }
+        const raw = await readRawBody(req);
+        if (!raw || !raw.length) {
+            return sendJson(res, 400, { ok: false, error: 'Пустой файл' });
+        }
+        const folderId = String(
+            (url.searchParams && url.searchParams.get('folderId')) || ''
+        ).trim() || undefined;
+        const c = ensureClient();
+        const asset = await c.uploadAsset(raw, filename, folderId);
+        const mediaValue = asset.id + ';' + (asset.name || filename);
+        console.log('[media] загружен ассет ' + (asset.name || filename) +
+            ' (' + raw.length + ' байт) → ' + asset.id);
+        return sendJson(res, 200, { ok: true, asset: asset, mediaValue: mediaValue });
     }
 
     if (req.method === 'GET' && pathname === '/api/templates') {

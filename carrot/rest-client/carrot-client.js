@@ -967,6 +967,149 @@ class CarrotClient {
         });
     }
 
+    // Загрузка файла в медиабиблиотеку (TUS 1.0.0, REST Guide V.3 §6).
+    async uploadAsset(fileBytes, filename, folderId) {
+        const data = Buffer.isBuffer(fileBytes)
+            ? fileBytes
+            : Buffer.from(fileBytes || []);
+        const name = String(filename || '').trim();
+        if (!name) throw new Error('Нужно имя файла (filename)');
+        if (!data.length) throw new Error('Пустой файл');
+
+        await this._ensureToken();
+        const timeoutMs = Math.max(this.timeoutMs || 10000, 120000);
+        const chunkSize = 1024 * 1024;
+
+        const meta = 'filename ' + Buffer.from(name, 'utf8').toString('base64');
+        const createHeaders = {
+            Authorization: 'Bearer ' + (this.token || ''),
+            'Tus-Resumable': '1.0.0',
+            'Upload-Length': String(data.length),
+            'Upload-Metadata': meta
+        };
+        const createUrl = this.baseUrl + '/assets/upload' + this._envelopeQuery();
+        var res = await this._rawFetch(createUrl, {
+            method: 'POST',
+            headers: createHeaders,
+            body: Buffer.alloc(0)
+        }, timeoutMs);
+        if (res.status === 401) {
+            this.token = null;
+            await this._ensureToken();
+            createHeaders.Authorization = 'Bearer ' + (this.token || '');
+            res = await this._rawFetch(createUrl, {
+                method: 'POST',
+                headers: createHeaders,
+                body: Buffer.alloc(0)
+            }, timeoutMs);
+        }
+        if (res.status !== 200 && res.status !== 201) {
+            throw new CarrotError(
+                'TUS create failed HTTP ' + res.status + ': ' +
+                String(res.text || '').slice(0, 220),
+                { httpStatus: res.status, url: createUrl }
+            );
+        }
+        var location = res.headers.get('location') || '';
+        var fileId = location ? location.replace(/\/+$/, '').split('/').pop() : '';
+        if (!fileId && res.text) {
+            try {
+                const body = JSON.parse(res.text);
+                fileId = (body.data && body.data.fileId) || body.fileId || '';
+            } catch (e) { /* ignore */ }
+        }
+        if (!fileId) {
+            throw new CarrotError('TUS create: нет fileId в Location', {
+                httpStatus: res.status, url: createUrl
+            });
+        }
+
+        var offset = 0;
+        while (offset < data.length) {
+            const chunk = data.subarray(offset, offset + chunkSize);
+            const patchHeaders = {
+                Authorization: 'Bearer ' + (this.token || ''),
+                'Tus-Resumable': '1.0.0',
+                'Upload-Offset': String(offset),
+                'Content-Type': 'application/offset+octet-stream',
+                'Content-Length': String(chunk.length)
+            };
+            const patchUrl = this.baseUrl + '/assets/upload/' +
+                encodeURIComponent(fileId) + this._envelopeQuery();
+            var pres = await this._rawFetch(patchUrl, {
+                method: 'PATCH',
+                headers: patchHeaders,
+                body: chunk
+            }, timeoutMs);
+            if (pres.status === 401) {
+                this.token = null;
+                await this._ensureToken();
+                patchHeaders.Authorization = 'Bearer ' + (this.token || '');
+                pres = await this._rawFetch(patchUrl, {
+                    method: 'PATCH',
+                    headers: patchHeaders,
+                    body: chunk
+                }, timeoutMs);
+            }
+            if (pres.status !== 200 && pres.status !== 204) {
+                throw new CarrotError(
+                    'TUS patch failed HTTP ' + pres.status + ' @offset=' + offset +
+                    ': ' + String(pres.text || '').slice(0, 220),
+                    { httpStatus: pres.status, url: patchUrl }
+                );
+            }
+            const offHdr = pres.headers.get('upload-offset');
+            if (offHdr != null && String(offHdr).trim() !== '') {
+                const next = parseInt(offHdr, 10);
+                if (!Number.isNaN(next)) {
+                    offset = next;
+                    continue;
+                }
+            }
+            offset += chunk.length;
+        }
+
+        var folder = String(folderId || '').trim() || MEDIA_ROOT_FOLDER_ID;
+        const assetRaw = await this._request(
+            'POST',
+            '/assets/register/' + encodeURIComponent(fileId),
+            folder
+        );
+        return this._normalizeUploadedAsset(assetRaw, name);
+    }
+
+    async _rawFetch(url, init, timeoutMs) {
+        const ac = new AbortController();
+        const t = setTimeout(function () { ac.abort(); }, timeoutMs || this.timeoutMs);
+        try {
+            const res = await fetch(url, Object.assign({}, init, { signal: ac.signal }));
+            const text = await res.text();
+            return { status: res.status, headers: res.headers, text: text };
+        } finally {
+            clearTimeout(t);
+        }
+    }
+
+    _normalizeUploadedAsset(raw, fallbackName) {
+        if (!raw || typeof raw !== 'object') {
+            throw new CarrotError('Пустой ответ register ассета');
+        }
+        const id = raw.id || raw.ID || raw.assetId || raw.AssetId;
+        const name = raw.name || raw.Name || fallbackName || '';
+        if (!id) throw new CarrotError('Ответ register без id ассета');
+        var typ = raw.type;
+        if (typ == null) typ = raw.assetTypeInt;
+        if (typ == null) typ = raw.AssetTypeInt;
+        return {
+            id: id,
+            name: name,
+            assetTypeInt: typ,
+            type: typ,
+            parentId: raw.parentId || raw.ParentID || raw.ParentId || '',
+            changed: raw.changed || raw.Changed
+        };
+    }
+
     // Список медиа: REST GET /assets/folder/{folderId} (swagger), затем WS 24712.
     async listMediaAssets(opts) {
         opts = opts || {};
