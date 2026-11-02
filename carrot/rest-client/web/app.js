@@ -220,7 +220,7 @@ function humanizeError(err) {
   } else if (/cors|failed to fetch|networkerror|сеть:/.test(lower)) {
     title = 'Сетевая ошибка';
     message = 'Браузер не смог связаться с локальным сервером UI или с Carrot.';
-    hint = 'Убедись, что Flask/web.cmd запущен и адрес страницы верный.';
+    hint = 'Убедись, что web.cmd (Node) запущен и адрес страницы верный.';
   } else if (/не json|html — веб-интерфейс|не rest/.test(lower)) {
     title = 'Неверный адрес REST API';
     message = 'По этому URL отвечает не REST Carrot (часто веб-плейлист).';
@@ -232,7 +232,7 @@ function humanizeError(err) {
     title = 'Проблема с медиа';
     message = raw;
     hint = 'Проверь папку медиа в Настройках и имена файлов в Excel.';
-  } else if (/excel|openpyxl|xlsx/.test(lower)) {
+  } else if (/excel|xlsx|sheetjs/.test(lower)) {
     title = 'Ошибка Excel';
     message = raw;
     hint = 'Нужен файл .xlsx/.xlsm с колонками: имя | переменные | External id.';
