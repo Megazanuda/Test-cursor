@@ -1,28 +1,689 @@
-"""CarrotClient — синхронный REST/WS-клиент Carrot Broadcast."""
+# -*- coding: utf-8 -*-
+"""Синхронный REST/WS-клиент Carrot Broadcast + Excel-импорт (один модуль)."""
 
 from __future__ import annotations
 
 import base64
+import io
+import os
 import re
+import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
-from typing import Any, Optional, Union
-from urllib.parse import quote, urlencode
+from pathlib import Path
+from typing import Any, Callable, Optional, Union
+from urllib.parse import quote, urlencode, urlparse
 
 import requests
+import websocket
+from openpyxl import load_workbook
 
-from .errors import ERROR_NAMES, CarrotError
-from .util import (
-    MEDIA_EMPTY_FOLDER_ID,
-    MEDIA_MAX_FOLDERS,
-    MEDIA_ROOT_FOLDER_ID,
-    default_ws_url_from_base,
-    normalize_base_url,
+
+# ===== errors =====
+ERROR_NAMES: dict[int, str] = {
+    0: "Success",
+    1: "CommonError",
+    2: "FileUploadingError",
+    31: "NoEngines",
+    32: "NoContent",
+    41: "InUse",
+    42: "AlreadyExists",
+    43: "NameError",
+    44: "NotFound",
+    45: "InvalidState",
+    46: "InvalidValue",
+    99: "Unknown",
+}
+
+
+class CarrotError(Exception):
+    """Доменная или транспортная ошибка Carrot API."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        http_status: Optional[int] = None,
+        error_code: Optional[int] = None,
+        description: Optional[str] = None,
+        url: Optional[str] = None,
+        code: Optional[str] = None,
+        **_: Any,
+    ) -> None:
+        super().__init__(message)
+        self.http_status = http_status
+        self.error_code = error_code
+        self.description = description
+        self.url = url
+        self.code = code
+
+# ===== util =====
+# Корневая папка медиабиблиотеки Carrot (типичный GUID инсталляции).
+MEDIA_ROOT_FOLDER_ID = "5535E4A7-94EE-45AD-A27B-9AFC737597B2"
+MEDIA_EMPTY_FOLDER_ID = "00000000-0000-0000-0000-000000000000"
+MEDIA_MAX_FOLDERS = 250
+
+_XML_ESCAPE = (
+    ("&", "&amp;"),
+    ("<", "&lt;"),
+    (">", "&gt;"),
+    ('"', "&quot;"),
+    ("'", "&apos;"),
 )
-from . import ws as ws_mod
 
+_CARROT_HEX = re.compile(r"_x([0-9A-Fa-f]{4})_")
+
+
+def normalize_base_url(url: str) -> str:
+    """Убрать хвостовые слэши; localhost → 127.0.0.1 (IPv4)."""
+    s = re.sub(r"/+$", "", str(url))
+    return re.sub(r"^(https?://)localhost\b", r"\g<1>127.0.0.1", s, flags=re.I)
+
+
+def decode_carrot_text(s: Optional[str]) -> str:
+    """Декодировать _x0020_-последовательности Carrot в обычный текст."""
+    return _CARROT_HEX.sub(
+        lambda m: chr(int(m.group(1), 16)),
+        "" if s is None else str(s),
+    )
+
+
+def xml_escape(s: object) -> str:
+    """Экранировать спецсимволы XML."""
+    out = str(s)
+    for src, dst in _XML_ESCAPE:
+        out = out.replace(src, dst)
+    return out
+
+
+def xml_field(block: str, name: str) -> Optional[str]:
+    """Извлечь значение XML-поля по имени тега или атрибута."""
+    tag = re.escape(str(name))
+    el = re.search(rf"<{tag}[^>]*>([^<]*)</{tag}>", block, re.I)
+    if el:
+        return el.group(1)
+    attr = re.search(rf'\b{tag}\s*=\s*"([^"]*)"', block, re.I)
+    return attr.group(1) if attr else None
+
+
+def default_ws_url_from_base(base_url: str, port: int = 24710) -> Optional[str]:
+    """Построить ws(s)://host:port из REST baseUrl."""
+    try:
+        u = urlparse(base_url)
+        if not u.hostname:
+            return None
+        proto = "wss:" if u.scheme == "https" else "ws:"
+        return f"{proto}//{u.hostname}:{port}"
+    except Exception:
+        return None
+
+# ===== ws =====
+
+def _bool_attr(v: Any) -> str:
+    if v is True or v == "true" or v == "True":
+        return "true"
+    if v is False or v == "false" or v == "False":
+        return "false"
+    return "true" if v else "false"
+
+
+def variable_to_xml(v: dict[str, Any]) -> str:
+    """Сериализовать переменную события в XML-атрибуты Variable."""
+    return (
+        "<Variable"
+        f' Id="{xml_escape(v.get("id") or "")}"'
+        f' Name="{xml_escape(v.get("name") or "")}"'
+        f' Type="{xml_escape(v.get("type") or "Text")}"'
+        f' Value="{xml_escape("" if v.get("value") is None else v["value"])}"'
+        f' FieldId="{xml_escape(v.get("fieldId") or "")}"'
+        f' ResetMedia="{_bool_attr(True if v.get("resetMedia") is None else v["resetMedia"])}"'
+        f' UseTimecode="{_bool_attr(False if v.get("useTimecode") is None else v["useTimecode"])}"'
+        f' Loop="{_bool_attr(False if v.get("loop") is None else v["loop"])}"'
+        f' Locked="{_bool_attr(False if v.get("locked") is None else v["locked"])}"'
+        f' DefaultValue="{xml_escape("" if v.get("defaultValue") is None else v["defaultValue"])}"'
+        f' MinValue="{xml_escape("" if v.get("minValue") is None else v["minValue"])}"'
+        f' MaxValue="{xml_escape("" if v.get("maxValue") is None else v["maxValue"])}"'
+        f' UseDataVars="{_bool_attr(False if v.get("useDataVars") is None else v["useDataVars"])}"'
+        " />"
+    )
+
+
+def event_create_to_xml(event: dict[str, Any], message_id: int) -> str:
+    """Собрать команду CreateEventInDB (AppName ticker-web / Playlists)."""
+    vars_xml = "".join(variable_to_xml(v) for v in (event.get("variables") or []))
+    ext = event.get("externalId")
+    if ext is not None and str(ext).strip() != "":
+        external_id = str(ext).strip()
+    else:
+        external_id = event["id"]
+    tti = event.get("templateTypeInt")
+    if tti is None:
+        tti = 1
+    return (
+        f'<Command CmdGroup="Playlists" CmdName="CreateEventInDB" MessageId="{message_id}">'
+        "<Event>"
+        f"<Id>{xml_escape(event['id'])}</Id>"
+        f"<Name>{xml_escape(event.get('name') or '')}</Name>"
+        "<Created>01.01.0001 0:00:00</Created>"
+        "<Changed>01.01.0001 0:00:00</Changed>"
+        f"<ExternalId>{xml_escape(external_id)}</ExternalId>"
+        f"<TemplateId>{xml_escape(event['templateId'])}</TemplateId>"
+        f"<ContentId>{xml_escape(event.get('contentId') or '')}</ContentId>"
+        f"<TemplateTypeInt>{xml_escape(tti)}</TemplateTypeInt>"
+        f"<State>{xml_escape(event.get('state') or 'IN')}</State>"
+        f"<Comment>{xml_escape(event.get('comment') or '')}</Comment>"
+        f"<Variables>{vars_xml}</Variables>"
+        "</Event></Command>"
+    )
+
+
+class _WsSession:
+    """Минимальная обёртка синхронного WebSocket с ожиданием результата."""
+
+    def __init__(self, ws_url: str, timeout_ms: int) -> None:
+        self.ws_url = ws_url
+        self.timeout_s = timeout_ms / 1000.0
+        self.session_id = str(uuid.uuid4())
+        self.msg_id = 1
+        self.stage = "wait-client-id"
+        self._result: Any = None
+        self._error: Optional[BaseException] = None
+        self._done = threading.Event()
+        self._ws: Optional[websocket.WebSocketApp] = None
+
+    def next_id(self) -> int:
+        mid = self.msg_id
+        self.msg_id += 1
+        return mid
+
+    def send(self, xml: str) -> None:
+        assert self._ws is not None
+        self._ws.send(xml)
+
+    def finish_ok(self, value: Any) -> None:
+        if self._done.is_set():
+            return
+        self._result = value
+        self._done.set()
+        try:
+            if self._ws:
+                self._ws.close()
+        except Exception:
+            pass
+
+    def finish_err(self, err: BaseException) -> None:
+        if self._done.is_set():
+            return
+        self._error = err
+        self._done.set()
+        try:
+            if self._ws:
+                self._ws.close()
+        except Exception:
+            pass
+
+    def handle_heartbeat(self, text: str) -> bool:
+        if re.search(r'CmdGroup="HeartBeat"', text) and not re.search(r"MessageId=", text):
+            self.send(
+                '<Command CmdGroup="HeartBeat" MessageId="-1">'
+                f"<SessionId>{self.session_id}</SessionId></Command>"
+            )
+            return True
+        return False
+
+    def send_handshake_login(self, login: str, password: str) -> None:
+        self.stage = "login"
+        self.send(
+            f'<Command CmdGroup="HandShake" MessageId="{self.next_id()}">'
+            f"<AppName>ticker-web</AppName>"
+            f"<SessionID>{self.session_id}</SessionID></Command>"
+        )
+        self.send(
+            f'<Command CmdGroup="Users" CmdName="LoginUnsecure" MessageId="{self.next_id()}">'
+            f"<UserName>{xml_escape(login)}</UserName>"
+            f"<PassWord>{xml_escape(password)}</PassWord></Command>"
+        )
+
+    def run(self, on_message: Callable[[str], None], error_hint: str) -> Any:
+        def _on_message(_ws: Any, message: Any) -> None:
+            text = str(message or "")
+            if self.handle_heartbeat(text):
+                return
+            try:
+                on_message(text)
+            except BaseException as exc:
+                self.finish_err(exc)
+
+        def _on_error(_ws: Any, _err: Any) -> None:
+            self.finish_err(
+                CarrotError(
+                    f"Ошибка WebSocket-соединения [{self.ws_url}]. {error_hint}",
+                    url=self.ws_url,
+                )
+            )
+
+        def _on_close(_ws: Any, *_args: Any) -> None:
+            if not self._done.is_set():
+                self.finish_err(
+                    CarrotError(
+                        f"WebSocket закрыт до завершения (stage={self.stage}, url={self.ws_url})"
+                    )
+                )
+
+        def _on_open(_ws: Any) -> None:
+            pass
+
+        self._ws = websocket.WebSocketApp(
+            self.ws_url,
+            on_message=_on_message,
+            on_error=_on_error,
+            on_close=_on_close,
+            on_open=_on_open,
+        )
+
+        def _run() -> None:
+            try:
+                self._ws.run_forever()
+            except Exception as exc:
+                self.finish_err(
+                    CarrotError(f"Не удалось открыть WebSocket: {exc}", url=self.ws_url)
+                )
+
+        t = threading.Thread(target=_run, daemon=True)
+        t.start()
+        if not self._done.wait(timeout=self.timeout_s):
+            self.finish_err(
+                CarrotError(
+                    f"Таймаут WebSocket (stage={self.stage}, url={self.ws_url})"
+                )
+            )
+            try:
+                if self._ws:
+                    self._ws.close()
+            except Exception:
+                pass
+        t.join(timeout=2.0)
+        if self._error is not None:
+            raise self._error
+        return self._result
+
+
+def delete_event_via_ws(
+    ws_url: str,
+    login: str,
+    password: str,
+    event_id: str,
+    timeout_ms: int = 15000,
+) -> dict[str, Any]:
+    """Удалить событие через WS RemoveEventFromDB (порт 24710)."""
+    if not ws_url:
+        raise CarrotError(
+            "Не задан WebSocket URL (CARROT_WS_URL или хост из CARROT_BASE_URL)"
+        )
+    if not login or not password:
+        raise ValueError("login/password обязательны для WS-удаления")
+
+    sess = _WsSession(ws_url, max(timeout_ms, 15000))
+
+    def on_message(text: str) -> None:
+        if sess.stage == "wait-client-id" and re.search(r'CmdGroup="ClientID"', text):
+            sess.send_handshake_login(login, password)
+            return
+
+        if sess.stage == "login":
+            if re.search(r'CmdName="LoginError"', text):
+                m = re.search(r"<Message>([\s\S]*?)</Message>", text)
+                raise CarrotError(
+                    "WS LoginError: " + (m.group(1) if m else "неверный логин/пароль")
+                )
+            if re.search(r'CmdName="LoginOk"', text):
+                sess.stage = "remove"
+                sess.send(
+                    f'<Command CmdGroup="Playlists" CmdName="RemoveEventFromDB" '
+                    f'MessageId="{sess.next_id()}">'
+                    f"<EventId>{xml_escape(event_id)}</EventId></Command>"
+                )
+                return
+
+        if sess.stage == "remove":
+            if re.search(r'CmdName="EventRemovedFromDB"', text):
+                sess.finish_ok({"deleted": event_id, "via": "websocket"})
+                return
+            if re.search(r'CmdName="[^"]*Error[^"]*"', text) or re.search(
+                r'CmdGroup="Error"', text
+            ):
+                m = re.search(r"<Message>([\s\S]*?)</Message>", text) or re.search(
+                    r"<Description>([\s\S]*?)</Description>", text
+                )
+                raise CarrotError(
+                    "WS ошибка удаления: " + (m.group(1) if m else text[:220])
+                )
+
+    return sess.run(
+        on_message,
+        "Порт 24710 должен быть доступен с этой машины.",
+    )
+
+
+def create_events_via_ws(
+    ws_url: str,
+    login: str,
+    password: str,
+    events: list[dict[str, Any]],
+    timeout_ms: int = 20000,
+) -> list[dict[str, Any]]:
+    """Создать события через WS CreateEventInDB (порт 24710)."""
+    if not events:
+        return []
+    if not ws_url:
+        raise CarrotError(
+            "Не задан WebSocket URL (CARROT_WS_URL или хост из CARROT_BASE_URL)"
+        )
+    if not login or not password:
+        raise ValueError("login/password обязательны для WS-создания")
+
+    timeout = max(timeout_ms, 20000)
+    sess = _WsSession(ws_url, timeout)
+    created: list[dict[str, Any]] = []
+    index = {"i": 0}
+
+    def send_next() -> None:
+        if index["i"] >= len(events):
+            sess.finish_ok(created)
+            return
+        sess.stage = "create"
+        ev = events[index["i"]]
+        sess.send(event_create_to_xml(ev, sess.next_id()))
+
+    def on_message(text: str) -> None:
+        if sess.stage == "wait-client-id" and re.search(r'CmdGroup="ClientID"', text):
+            sess.send_handshake_login(login, password)
+            return
+
+        if sess.stage == "login":
+            if re.search(r'CmdName="LoginError"', text):
+                m = re.search(r"<Message>([\s\S]*?)</Message>", text)
+                raise CarrotError(
+                    "WS LoginError: " + (m.group(1) if m else "неверный логин/пароль")
+                )
+            if re.search(r'CmdName="LoginOk"', text):
+                send_next()
+                return
+
+        if sess.stage == "create":
+            if re.search(r'CmdName="EventAdded"', text):
+                cur = events[index["i"]]
+                created.append(
+                    {"id": cur["id"], "name": cur.get("name"), "via": "websocket"}
+                )
+                index["i"] += 1
+                send_next()
+                return
+            if (
+                re.search(r'CmdName="[^"]*Error[^"]*"', text)
+                or re.search(r'CmdGroup="Error"', text)
+                or re.search(r"already_x0020_exists|already exists", text, re.I)
+            ):
+                m = (
+                    re.search(r"<Message>([\s\S]*?)</Message>", text)
+                    or re.search(r"<Description>([\s\S]*?)</Description>", text)
+                    or re.search(r'CmdName="([^"]+)"', text)
+                )
+                cur = events[index["i"]] if index["i"] < len(events) else {}
+                raw_msg = m.group(1) if m else text[:260]
+                msg = decode_carrot_text(raw_msg)
+                already = bool(re.search(r"already exists", msg, re.I))
+                raise CarrotError(
+                    f"Не удалось создать «{cur.get('name') or cur.get('id') or '?'}»: "
+                    f"{msg}"
+                    + (" — сервер отклонил как уже существующее" if already else ""),
+                    error_code=42 if already else None,
+                )
+
+    return sess.run(
+        on_message,
+        "Порт 24710 должен быть доступен с этой машины.",
+    )
+
+
+def list_media_via_ws(
+    ws_url: str,
+    login: str,
+    password: str,
+    *,
+    folder_id: Optional[str] = None,
+    deep: bool = True,
+    timeout_ms: int = 45000,
+) -> list[dict[str, Any]]:
+    """
+    Список медиа через WS MediaAssetLibrary/GetAssetFolder (порт 24712).
+
+    Только HandShake — без LoginUnsecure (на 24712 даёт Unknown Command Group).
+    login/password проверяются как в JS, но в XML не отправляются.
+    """
+    if not ws_url:
+        raise CarrotError(
+            "Не задан WebSocket URL для медиа (CARROT_WS_FILE_URL, порт 24712)"
+        )
+    if not login or not password:
+        raise ValueError("login/password обязательны для WS-медиа")
+
+    preferred_root = folder_id or MEDIA_ROOT_FOLDER_ID
+    seed_roots: list[str] = []
+    for fid in (preferred_root, MEDIA_EMPTY_FOLDER_ID, MEDIA_ROOT_FOLDER_ID):
+        if fid and fid not in seed_roots:
+            seed_roots.append(fid)
+
+    sess = _WsSession(ws_url, max(timeout_ms, 45000))
+    assets: list[dict[str, Any]] = []
+    seen: dict[str, bool] = {}
+    pending_folders = list(seed_roots)
+    fetched_folders: dict[str, bool] = {}
+    folders_queued = len(seed_roots)
+
+    def finish_ok() -> None:
+        assets.sort(key=lambda a: str(a.get("name") or "").casefold())
+        sess.finish_ok(assets)
+
+    def queue_folder(fid: Optional[str]) -> None:
+        nonlocal folders_queued
+        if (
+            not fid
+            or not deep
+            or fetched_folders.get(fid)
+            or fid in pending_folders
+        ):
+            return
+        if folders_queued >= MEDIA_MAX_FOLDERS:
+            return
+        folders_queued += 1
+        pending_folders.append(fid)
+
+    def request_next_folder() -> None:
+        while pending_folders:
+            fid = pending_folders.pop(0)
+            if not fid or fetched_folders.get(fid):
+                continue
+            fetched_folders[fid] = True
+            sess.stage = "media"
+            sess.send(
+                f'<Command CmdGroup="MediaAssetLibrary" CmdName="GetAssetFolder" '
+                f'MessageId="{sess.next_id()}">'
+                f"<FolderID>{xml_escape(fid)}</FolderID></Command>"
+            )
+            return
+        finish_ok()
+
+    def parse_folder_xml(text: str) -> None:
+        folder_re = re.compile(
+            r"<Folder(\s[^>]*)?/>|<Folder(\s[^>]*)?>([\s\S]*?)</Folder>", re.I
+        )
+        asset_re = re.compile(
+            r"<Asset(\s[^>]*)?/>|<Asset(\s[^>]*)?>([\s\S]*?)</Asset>", re.I
+        )
+        for m in folder_re.finditer(text):
+            block = (m.group(1) or "") + (m.group(2) or "") + (m.group(3) or "")
+            fid = (
+                xml_field(block, "ID")
+                or xml_field(block, "FolderID")
+                or xml_field(block, "FolderId")
+            )
+            if fid:
+                queue_folder(fid)
+        for m in asset_re.finditer(text):
+            block = (m.group(1) or "") + (m.group(2) or "") + (m.group(3) or "")
+            aid = (
+                xml_field(block, "ID")
+                or xml_field(block, "AssetId")
+                or xml_field(block, "AssetID")
+            )
+            if not aid or seen.get(aid):
+                continue
+            name = xml_field(block, "Name")
+            type_raw = xml_field(block, "AssetTypeInt")
+            parent_id = (
+                xml_field(block, "ParentID") or xml_field(block, "ParentId") or ""
+            )
+            seen[aid] = True
+            assets.append(
+                {
+                    "id": aid,
+                    "name": decode_carrot_text(
+                        name if name is not None and name != "" else aid
+                    ),
+                    "assetTypeInt": (
+                        int(type_raw) if type_raw is not None and type_raw != "" else None
+                    ),
+                    "parentId": parent_id or "",
+                }
+            )
+
+    def on_message(text: str) -> None:
+        if sess.stage == "wait-client-id" and re.search(r'CmdGroup="ClientID"', text):
+            # Файловый канал (24712): HandShake без LoginUnsecure.
+            sess.stage = "handshake"
+            sess.send(
+                f'<Command CmdGroup="HandShake" MessageId="{sess.next_id()}">'
+                f"<AppName>ticker-web</AppName>"
+                f"<SessionID>{sess.session_id}</SessionID></Command>"
+            )
+            return
+
+        if sess.stage == "handshake":
+            if re.search(r"Unknown Command Group", text, re.I):
+                raise CarrotError(
+                    f"WS ошибка медиа: Unknown Command Group на {ws_url}. "
+                    "Нужен порт 24712 (CARROT_WS_FILE_URL), не 24710."
+                )
+            sess.stage = "media"
+            if re.search(r'CmdGroup="MediaAssetLibrary"', text) or re.search(
+                r"FolderStructure|<Asset[\s>]|<Folder[\s>]", text, re.I
+            ):
+                parse_folder_xml(text)
+            request_next_folder()
+            return
+
+        if sess.stage == "media":
+            if re.search(r"Unknown Command Group", text, re.I):
+                raise CarrotError(
+                    f"WS ошибка медиа: Unknown Command Group на {ws_url}. "
+                    "Нужен порт 24712 (CARROT_WS_FILE_URL), не 24710."
+                )
+            if re.search(r'CmdGroup="HandShake"', text, re.I) and not re.search(
+                r"MediaAssetLibrary|FolderStructure|<Asset[\s>]", text, re.I
+            ):
+                return
+            if re.search(r'CmdGroup="MediaAssetLibrary"', text) or re.search(
+                r"FolderStructure|<Asset[\s>/]|</Asset>|<Folder[\s>/]", text, re.I
+            ):
+                parse_folder_xml(text)
+                request_next_folder()
+                return
+            if re.search(r'CmdName="[^"]*Error[^"]*"', text) or re.search(
+                r'CmdGroup="Error"', text
+            ):
+                soft = bool(
+                    re.search(r"not\s*found|не\s*найд|invalid|неверн", text, re.I)
+                )
+                if soft:
+                    request_next_folder()
+                    return
+                m = re.search(r"<Message>([\s\S]*?)</Message>", text) or re.search(
+                    r"<Description>([\s\S]*?)</Description>", text
+                )
+                raise CarrotError(
+                    "WS ошибка медиа: "
+                    + decode_carrot_text(m.group(1) if m else text[:220])
+                )
+
+    return sess.run(
+        on_message,
+        "Нужен порт 24712 (обмен файлами).",
+    )
+
+
+def run_playlist_session(
+    ws_url: str,
+    login: str,
+    password: str,
+    after_login_callback: Callable[
+        [Callable[[str], None], Callable[[str], None]], None
+    ],
+    *,
+    timeout_ms: int = 15000,
+) -> Any:
+    """
+    Сессия 24710: ClientID → HandShake → LoginUnsecure → callback.
+
+    after_login_callback(send, on_response_register) вызывается после LoginOk.
+    on_response_register(handler) подписывает обработчик последующих WS-сообщений.
+    Для завершения вызвать send._session.finish_ok / finish_err нельзя —
+    используйте замыкание: callback получает send и должен вернуть результат
+    через исключения/возврат не подходит; передайте finish через атрибуты.
+
+    Практичнее вызывать delete_event_via_ws / create_events_via_ws напрямую.
+    """
+    if not ws_url:
+        raise CarrotError("Не задан WebSocket URL")
+    if not login or not password:
+        raise ValueError("login/password обязательны")
+
+    sess = _WsSession(ws_url, timeout_ms)
+    started = False
+    handlers: list[Callable[[str], None]] = []
+
+    def register(handler: Callable[[str], None]) -> None:
+        handlers.append(handler)
+
+    def on_message(text: str) -> None:
+        nonlocal started
+        if sess.stage == "wait-client-id" and re.search(r'CmdGroup="ClientID"', text):
+            sess.send_handshake_login(login, password)
+            return
+        if sess.stage == "login":
+            if re.search(r'CmdName="LoginError"', text):
+                m = re.search(r"<Message>([\s\S]*?)</Message>", text)
+                raise CarrotError(
+                    "WS LoginError: " + (m.group(1) if m else "неверный логин/пароль")
+                )
+            if re.search(r'CmdName="LoginOk"', text):
+                sess.stage = "callback"
+                if not started:
+                    started = True
+                    # Дать callback доступ к завершению сессии.
+                    setattr(sess.send, "finish_ok", sess.finish_ok)
+                    setattr(sess.send, "finish_err", sess.finish_err)
+                    after_login_callback(sess.send, register)
+                return
+        if sess.stage == "callback":
+            for h in list(handlers):
+                h(text)
+
+    return sess.run(on_message, "Порт 24710 должен быть доступен с этой машины.")
+
+# ===== client =====
 
 _FATAL_NET = re.compile(
     r"^(ECONNREFUSED|ENOTFOUND|EAI_AGAIN|ENETUNREACH|EHOSTUNREACH|"
@@ -426,7 +1087,7 @@ class CarrotClient:
 
     def delete_event_via_websocket(self, event_id: str) -> dict[str, Any]:
         """Удаление через WS API: Playlists / RemoveEventFromDB."""
-        return ws_mod.delete_event_via_ws(
+        return delete_event_via_ws(
             self.ws_url or "",
             self.login or "",
             self.password or "",
@@ -752,7 +1413,7 @@ class CarrotClient:
         self, events: list[dict[str, Any]]
     ) -> list[dict[str, Any]]:
         """Создание через WS API: Playlists / CreateEventInDB."""
-        return ws_mod.create_events_via_ws(
+        return create_events_via_ws(
             self.ws_url or "",
             self.login or "",
             self.password or "",
@@ -1156,7 +1817,7 @@ class CarrotClient:
         preferred_root = opts.get("folderId") or MEDIA_ROOT_FOLDER_ID
         deep = opts.get("deep", True) is not False
         ws_url = opts.get("wsUrl") or self.ws_file_url or self.ws_url
-        return ws_mod.list_media_via_ws(
+        return list_media_via_ws(
             ws_url or "",
             self.login or "",
             self.password or "",
@@ -1493,3 +2154,356 @@ class CarrotClient:
         )
 
     unloadItem = unload_item
+
+# ===== excel_import =====
+HEADER_NAME_ALIASES = {
+    "name",
+    "имя",
+    "название",
+    "event",
+    "event name",
+    "имя ивента",
+    "имя события",
+}
+
+_GUID_RE = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
+
+
+def _cell_str(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value).strip()
+
+
+def is_media_type(type_name: Any) -> bool:
+    return str(type_name or "").strip().lower() == "media"
+
+
+def read_excel_rows(file_bytes: bytes) -> list[list[str]]:
+    """
+    Прочитать первый лист .xlsx/.xlsm как матрицу строк.
+
+    Пустые строки в конце отбрасываются. Ячейки → строки.
+    """
+    if not file_bytes:
+        raise ValueError("Пустой Excel-файл")
+
+    try:
+        wb = load_workbook(
+            filename=io.BytesIO(file_bytes),
+            read_only=True,
+            data_only=True,
+        )
+    except Exception as err:  # noqa: BLE001
+        raise ValueError(
+            "Не удалось открыть Excel. Нужен .xlsx/.xlsm (не старый .xls)."
+        ) from err
+
+    try:
+        ws = wb.active
+        if ws is None:
+            raise ValueError("В книге нет активного листа")
+        rows: list[list[str]] = []
+        for row in ws.iter_rows(values_only=True):
+            cells = [_cell_str(c) for c in (row or ())]
+            while cells and cells[-1] == "":
+                cells.pop()
+            if not any(cells):
+                continue
+            rows.append(cells)
+    finally:
+        wb.close()
+
+    if not rows:
+        raise ValueError("В Excel нет данных")
+    return rows
+
+
+def _looks_like_header(row: list[str]) -> bool:
+    if not row:
+        return False
+    first = (row[0] or "").strip().lower()
+    return first in HEADER_NAME_ALIASES
+
+
+def rows_to_event_drafts(
+    rows: list[list[str]],
+    template: dict[str, Any],
+    *,
+    has_header: Optional[bool] = None,
+) -> dict[str, Any]:
+    """
+    Преобразовать строки Excel в черновики ивентов.
+
+    Колонки:
+      1 — имя ивента
+      2..N-1 — значения переменных шаблона (по порядку template.variables)
+      N — External id
+
+    Для Media-переменных в середине ожидается имя файла (не id;name).
+    """
+    if not rows:
+        raise ValueError("Нет строк для импорта")
+
+    skip_header = has_header
+    if skip_header is None:
+        skip_header = _looks_like_header(rows[0])
+
+    data_rows = rows[1:] if skip_header else rows
+    var_meta = list(template.get("variables") or [])
+    template_id = template.get("id") or ""
+    if not template_id:
+        raise ValueError("У шаблона нет id")
+
+    drafts: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+
+    for idx, row in enumerate(data_rows):
+        excel_row = idx + (2 if skip_header else 1)
+        if len(row) < 2:
+            skipped.append(
+                {
+                    "row": excel_row,
+                    "reason": "нужны минимум 2 столбца (имя и External id)",
+                }
+            )
+            continue
+
+        name = row[0]
+        external_id = row[-1]
+        mid = row[1:-1]
+
+        if not name:
+            skipped.append({"row": excel_row, "reason": "пустое имя"})
+            continue
+
+        variables: list[dict[str, Any]] = []
+        for vi, meta in enumerate(var_meta):
+            nv = dict(meta)
+            if vi < len(mid) and mid[vi] != "":
+                nv["value"] = mid[vi]
+            else:
+                nv["value"] = (
+                    meta.get("value")
+                    if meta.get("value") not in (None, "")
+                    else (meta.get("defaultValue") or "")
+                )
+            variables.append(nv)
+
+        drafts.append(
+            {
+                "name": name,
+                "externalId": external_id,
+                "templateId": template_id,
+                "contentId": template.get("contentId") or "",
+                "templateTypeInt": template.get("templateTypeInt"),
+                "state": template.get("defaultInState") or "IN",
+                "comment": "",
+                "variables": variables,
+                "_excelRow": excel_row,
+            }
+        )
+
+    return {
+        "drafts": drafts,
+        "skipped": skipped,
+        "headerSkipped": bool(skip_header),
+        "variableCount": len(var_meta),
+        "variableNames": [v.get("name") or "" for v in var_meta],
+        "mediaVarIndexes": [
+            i for i, v in enumerate(var_meta) if is_media_type(v.get("type"))
+        ],
+    }
+
+
+def _norm_name(name: str) -> str:
+    return os.path.basename(str(name or "").strip()).lower()
+
+
+def _parse_media_value(raw: str) -> tuple[str, str]:
+    s = str(raw or "").strip()
+    if not s:
+        return "", ""
+    if ";" in s:
+        aid, aname = s.split(";", 1)
+        return aid.strip(), aname.strip()
+    return s, ""
+
+
+def index_assets_by_name(assets: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Индекс ассетов по имени файла (lower) и stem без расширения."""
+    index: dict[str, dict[str, Any]] = {}
+    for asset in assets or []:
+        name = str(asset.get("name") or "").strip()
+        if not name:
+            continue
+        key = _norm_name(name)
+        index.setdefault(key, asset)
+        stem = Path(key).stem
+        if stem and stem not in index:
+            index[stem] = asset
+    return index
+
+
+def find_local_media_file(folder: str, filename: str) -> Optional[Path]:
+    """
+    Найти файл в папке по имени (с расширением или без).
+
+    Только внутри folder (path traversal блокируется).
+    """
+    root = Path(folder).expanduser()
+    if not root.is_dir():
+        raise ValueError(f"Папка медиа не найдена: {folder}")
+
+    root_resolved = root.resolve()
+    wanted = os.path.basename(str(filename or "").strip())
+    if not wanted or wanted in (".", ".."):
+        return None
+
+    candidate = (root / wanted).resolve()
+    try:
+        candidate.relative_to(root_resolved)
+    except ValueError as err:
+        raise ValueError("Имя файла выходит за пределы папки медиа") from err
+
+    if candidate.is_file():
+        return candidate
+
+    # без расширения — первое совпадение по stem
+    stem = Path(wanted).stem.lower()
+    if not stem:
+        return None
+    for path in sorted(root_resolved.iterdir()):
+        if path.is_file() and path.stem.lower() == stem:
+            return path
+    return None
+
+
+def resolve_media_in_drafts(
+    drafts: list[dict[str, Any]],
+    *,
+    assets: list[dict[str, Any]],
+    media_folder: Optional[str] = None,
+    upload_file: Optional[Callable[[bytes, str], dict[str, Any]]] = None,
+) -> dict[str, Any]:
+    """
+    Для Media-переменных: значение из Excel = имя файла.
+
+    1) если уже «guid;name» — оставить
+    2) если ассет с таким именем есть в Carrot — подставить id;name
+    3) иначе искать в media_folder и upload_file(...)
+    """
+    index = index_assets_by_name(assets)
+    resolved = 0
+    uploaded = 0
+    reused = 0
+    missing: list[dict[str, Any]] = []
+    folder = (media_folder or "").strip() or None
+
+    for draft in drafts:
+        excel_row = draft.get("_excelRow")
+        for var in draft.get("variables") or []:
+            if not is_media_type(var.get("type")):
+                continue
+            raw = "" if var.get("value") is None else str(var.get("value")).strip()
+            if not raw:
+                continue
+
+            aid, aname = _parse_media_value(raw)
+            if aid and _GUID_RE.match(aid):
+                # уже готовое значение Carrot
+                if aname:
+                    var["value"] = f"{aid};{aname}"
+                else:
+                    var["value"] = aid
+                resolved += 1
+                continue
+
+            filename = aname or aid or raw
+            key = _norm_name(filename)
+            hit = index.get(key) or index.get(Path(key).stem)
+            if hit and hit.get("id"):
+                var["value"] = f"{hit['id']};{hit.get('name') or filename}"
+                resolved += 1
+                reused += 1
+                continue
+
+            if not folder:
+                missing.append(
+                    {
+                        "row": excel_row,
+                        "variable": var.get("name"),
+                        "file": filename,
+                        "reason": "медиа нет в Carrot; укажи папку в Настройках",
+                    }
+                )
+                continue
+
+            if upload_file is None:
+                missing.append(
+                    {
+                        "row": excel_row,
+                        "variable": var.get("name"),
+                        "file": filename,
+                        "reason": "нет обработчика загрузки",
+                    }
+                )
+                continue
+
+            try:
+                local = find_local_media_file(folder, filename)
+            except ValueError as err:
+                missing.append(
+                    {
+                        "row": excel_row,
+                        "variable": var.get("name"),
+                        "file": filename,
+                        "reason": str(err),
+                    }
+                )
+                continue
+
+            if local is None:
+                missing.append(
+                    {
+                        "row": excel_row,
+                        "variable": var.get("name"),
+                        "file": filename,
+                        "reason": f"файл не найден в папке {folder}",
+                    }
+                )
+                continue
+
+            asset = upload_file(local.read_bytes(), local.name)
+            index[_norm_name(asset.get("name") or local.name)] = asset
+            stem = Path(_norm_name(asset.get("name") or local.name)).stem
+            if stem:
+                index.setdefault(stem, asset)
+            var["value"] = f"{asset['id']};{asset.get('name') or local.name}"
+            resolved += 1
+            uploaded += 1
+
+    return {
+        "resolved": resolved,
+        "uploaded": uploaded,
+        "reused": reused,
+        "missing": missing,
+        # совместимость со старым UI
+        "warnings": missing,
+        "ok": not missing,
+    }
+
+__all__ = [
+    "CarrotClient",
+    "CarrotError",
+    "ERROR_NAMES",
+    "MEDIA_ROOT_FOLDER_ID",
+    "decode_carrot_text",
+    "read_excel_rows",
+    "rows_to_event_drafts",
+    "resolve_media_in_drafts",
+]

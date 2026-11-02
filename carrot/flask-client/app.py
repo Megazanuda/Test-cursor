@@ -17,15 +17,16 @@ from typing import Any, Optional
 from dotenv import load_dotenv
 from flask import Flask, jsonify, request, send_from_directory
 
-from carrot_client import CarrotClient, CarrotError
-from carrot_client.excel_import import (
+from carrot_client import (
+    CarrotClient,
+    CarrotError,
     read_excel_rows,
     resolve_media_in_drafts,
     rows_to_event_drafts,
 )
 
 ROOT = Path(__file__).resolve().parent
-STATIC_DIR = ROOT / "web" / "static"
+STATIC_DIR = ROOT / "web"
 
 # .env рядом с app.py или в cwd
 load_dotenv(ROOT / ".env")
