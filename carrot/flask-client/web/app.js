@@ -15,9 +15,6 @@ const HIDDEN_COLS_KEY = 'carrot-web-hidden-columns';
 const EDITOR_FOLD_KEY = 'carrot-web-editor-folded';
 const SIDE_OPEN_KEY = 'carrot-web-side-open';
 const MEDIA_FOLDER_KEY = 'carrot-media-folder';
-const BASE_URL_KEY = 'carrot-base-url';
-const LOGIN_KEY = 'carrot-login';
-const PASSWORD_KEY = 'carrot-password';
 const THEME_KEY = 'site-theme';
 const TWO_WEEKS_MS = 14 * 24 * 60 * 60 * 1000;
 
@@ -1420,23 +1417,6 @@ async function loadPlaylists() {
   renderPlaylists();
 }
 
-function lsGet(key) {
-  try { return localStorage.getItem(key) || ''; }
-  catch (e) { return ''; }
-}
-
-function lsSet(key, value) {
-  try {
-    const v = String(value || '');
-    if (v) localStorage.setItem(key, v);
-    else localStorage.removeItem(key);
-  } catch (e) { /* ignore */ }
-}
-
-function getSavedBaseUrl() { return lsGet(BASE_URL_KEY); }
-function getSavedLogin() { return lsGet(LOGIN_KEY); }
-function getSavedPassword() { return lsGet(PASSWORD_KEY); }
-
 function syncConnectionFields(opts) {
   opts = opts || {};
   const url = opts.baseUrl != null ? String(opts.baseUrl).trim() : '';
@@ -1457,16 +1437,12 @@ function syncConnectionFields(opts) {
   }
 }
 
-function setSavedConnection(opts) {
-  opts = opts || {};
-  if (opts.baseUrl != null) lsSet(BASE_URL_KEY, String(opts.baseUrl).trim());
-  if (opts.login != null) lsSet(LOGIN_KEY, String(opts.login).trim());
-  if (opts.password != null) lsSet(PASSWORD_KEY, String(opts.password));
-  syncConnectionFields(opts);
-}
-
-function syncBaseUrlFields(url) {
-  syncConnectionFields({ baseUrl: url });
+function clearLegacyCredentialStorage() {
+  try {
+    localStorage.removeItem('carrot-base-url');
+    localStorage.removeItem('carrot-login');
+    localStorage.removeItem('carrot-password');
+  } catch (e) { /* ignore */ }
 }
 
 async function connect(creds) {
@@ -1479,11 +1455,14 @@ async function connect(creds) {
       el.connectPanel.hidden = true;
       el.workspace.hidden = false;
       el.sectionTabs.hidden = false;
-      setSavedConnection({
+      syncConnectionFields({
         baseUrl: data.baseUrl || (creds && creds.baseUrl) || '',
         login: data.login || (creds && creds.login) || '',
-        password: (creds && creds.password) || getSavedPassword() || undefined
+        password: (creds && creds.password) != null
+          ? creds.password
+          : (el.settingsPassword && el.settingsPassword.value) || ''
       });
+      clearLegacyCredentialStorage();
       setStatus('онлайн · ' + data.baseUrl, 'ok');
       updateSidePaneUi();
       if (el.loadingTitle) el.loadingTitle.textContent = 'Загрузка плейлистов и ивентов…';
@@ -1494,7 +1473,7 @@ async function connect(creds) {
       await loadPlaylists();
       state.allEventsScope = 'recent';
       await selectAllEvents({ quiet: true });
-      toast('Подключено к ' + data.baseUrl, 'ok');
+      toast('Подключено к ' + data.baseUrl + ' (.env обновлён)', 'ok');
     }, 'Проверяем доступ к REST API');
   } catch (err) {
     setStatus('не подключено', 'err');
@@ -1523,14 +1502,15 @@ async function applyConnectionFromSettings() {
   }
   if (el.settingsConnectionSaveBtn) el.settingsConnectionSaveBtn.disabled = true;
   try {
-    await withLoading('Сохранение подключения…', async function () {
+    await withLoading('Сохранение в .env…', async function () {
       const payload = { baseUrl: url, login: login, password: password };
       const data = await api('POST', '/api/settings/connection', payload);
-      setSavedConnection({
+      syncConnectionFields({
         baseUrl: data.baseUrl || url,
         login: data.login || login,
         password: password
       });
+      clearLegacyCredentialStorage();
       state.connected = true;
       el.connectPanel.hidden = true;
       el.workspace.hidden = false;
@@ -1544,7 +1524,7 @@ async function applyConnectionFromSettings() {
       await loadPlaylists();
       state.allEventsScope = 'recent';
       await selectAllEvents({ force: true, quiet: true });
-      toast('Подключено: ' + (data.login || login) + ' @ ' + data.baseUrl, 'ok');
+      toast('Сохранено в .env · ' + (data.login || login) + ' @ ' + data.baseUrl, 'ok');
     }, url);
   } catch (err) {
     showError('Не удалось сохранить подключение', err);
@@ -2177,31 +2157,16 @@ el.sectionEvents.hidden = false;
 
 (async function boot() {
   try {
+    clearLegacyCredentialStorage();
     const health = await api('GET', '/api/health');
-    const savedUrl = getSavedBaseUrl();
-    const savedLogin = getSavedLogin();
-    const savedPassword = getSavedPassword();
-    const bootUrl = savedUrl || (health.defaults && health.defaults.baseUrl) || '';
-    const bootLogin = savedLogin || (health.defaults && health.defaults.login) || '';
+    const d = health.defaults || {};
     syncConnectionFields({
-      baseUrl: bootUrl,
-      login: bootLogin,
-      password: savedPassword || ''
+      baseUrl: d.baseUrl || '',
+      login: d.login || '',
+      password: d.password || ''
     });
 
-    if (savedUrl && savedLogin && savedPassword) {
-      await connect({
-        baseUrl: savedUrl,
-        login: savedLogin,
-        password: savedPassword
-      });
-    } else if (savedUrl) {
-      await connect({
-        baseUrl: savedUrl,
-        login: savedLogin || undefined,
-        password: savedPassword || undefined
-      });
-    } else if (health.hasEnv) {
+    if (health.hasEnv) {
       await connect({});
     } else {
       setStatus('заполни .env или форму подключения');
@@ -2445,13 +2410,6 @@ if (el.excelImportForm) {
   });
 }
 
-if (el.settingsBaseUrl || el.settingsLogin || el.settingsPassword) {
-  syncConnectionFields({
-    baseUrl: getSavedBaseUrl() || (el.baseUrl && el.baseUrl.value) || '',
-    login: getSavedLogin() || (el.login && el.login.value) || '',
-    password: getSavedPassword() || (el.password && el.password.value) || ''
-  });
-}
 if (el.settingsConnectionSaveBtn) {
   el.settingsConnectionSaveBtn.addEventListener('click', function () {
     applyConnectionFromSettings();

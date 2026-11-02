@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import shutil
 import subprocess
 import threading
@@ -31,9 +32,10 @@ from carrot_client import (
 
 ROOT = Path(__file__).resolve().parent
 STATIC_DIR = ROOT / "web"
+ENV_PATH = ROOT / ".env"
 
 # .env рядом с app.py или в cwd
-load_dotenv(ROOT / ".env")
+load_dotenv(ENV_PATH)
 load_dotenv()
 
 HOST = os.environ.get("CARROT_WEB_HOST", "127.0.0.1")
@@ -69,6 +71,78 @@ def _pick_cred(creds: dict[str, Any], *keys: str) -> Optional[str]:
         if v is not None and str(v).strip() != "":
             return str(v).strip()
     return None
+
+
+def _env_quote(value: str) -> str:
+    """Записать значение в .env; кавычки — если есть пробелы/спецсимволы."""
+    if value == "":
+        return '""'
+    if re.search(r'[\s#\'"\\]', value):
+        esc = value.replace("\\", "\\\\").replace('"', '\\"')
+        return f'"{esc}"'
+    return value
+
+
+def update_env_file(
+    updates: dict[str, str], path: Optional[Path] = None
+) -> Path:
+    """Создать/обновить ключи в .env, сохранив остальные строки и комментарии."""
+    path = path or ENV_PATH
+    keys = {str(k): "" if v is None else str(v) for k, v in updates.items()}
+    lines: list[str] = []
+    if path.exists():
+        raw = path.read_text(encoding="utf-8")
+        if raw.startswith("\ufeff"):
+            raw = raw[1:]
+        lines = raw.splitlines()
+
+    seen: set[str] = set()
+    out: list[str] = []
+    key_re = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=")
+    for line in lines:
+        m = key_re.match(line)
+        if m and m.group(1) in keys:
+            name = m.group(1)
+            out.append(f"{name}={_env_quote(keys[name])}")
+            seen.add(name)
+        else:
+            out.append(line)
+
+    missing = [k for k in keys if k not in seen]
+    if missing:
+        if out and out[-1].strip() != "":
+            out.append("")
+        out.append("# Обновлено из Настроек UI")
+        for name in missing:
+            out.append(f"{name}={_env_quote(keys[name])}")
+
+    text = "\n".join(out).rstrip() + "\n"
+    path.write_text(text, encoding="utf-8")
+    for name, value in keys.items():
+        os.environ[name] = value
+    return path
+
+
+def persist_connection_to_env(
+    *,
+    base_url: Optional[str] = None,
+    login: Optional[str] = None,
+    password: Optional[str] = None,
+) -> Path:
+    """Записать креды подключения в .env и os.environ."""
+    updates: dict[str, str] = {}
+    if base_url is not None and str(base_url).strip() != "":
+        updates["CARROT_BASE_URL"] = str(base_url).strip()
+    if login is not None and str(login).strip() != "":
+        updates["CARROT_LOGIN"] = str(login).strip()
+    if password is not None and str(password) != "":
+        updates["CARROT_PASSWORD"] = str(password)
+    if not updates:
+        return ENV_PATH
+    path = update_env_file(updates)
+    log.info("Сохранено в %s: %s", path, ", ".join(updates.keys()))
+    return path
+
 
 
 def ensure_client(creds: Optional[dict[str, Any]] = None) -> CarrotClient:
@@ -167,24 +241,22 @@ def index():
 
 @app.get("/api/health")
 def api_health():
+    base = _session.get("baseUrl") or env("CARROT_BASE_URL", "") or ""
+    login = _session.get("login") or env("CARROT_LOGIN", "") or ""
+    password = _session.get("password") or env("CARROT_PASSWORD", "") or ""
     return jsonify(
         {
             "ok": True,
-            "hasEnv": bool(
-                env("CARROT_BASE_URL") and env("CARROT_LOGIN") and env("CARROT_PASSWORD")
-            ),
+            "hasEnv": bool(base and login and password),
             "defaults": {
-                "baseUrl": (
-                    _session.get("baseUrl")
-                    or env("CARROT_BASE_URL", "")
-                    or ""
-                ),
-                "login": (
-                    _session.get("login")
-                    or env("CARROT_LOGIN", "")
-                    or ""
-                ),
+                "baseUrl": base,
+                "login": login,
+                # Пароль отдаём только для локального UI, чтобы форма Настроек
+                # показывала текущее значение из .env (хост обычно 127.0.0.1).
+                "password": password,
+                "hasPassword": bool(password),
             },
+            "envPath": str(ENV_PATH),
             "connected": bool(_session.get("baseUrl") and _client is not None),
             "backend": "flask",
         }
@@ -196,18 +268,24 @@ def api_connect():
     body = request.get_json(silent=True) or {}
     client = ensure_client(body)
     client.authenticate()
+    persist_connection_to_env(
+        base_url=_session.get("baseUrl"),
+        login=_session.get("login"),
+        password=_session.get("password"),
+    )
     return jsonify(
         {
             "ok": True,
             "baseUrl": client.base_url,
             "login": _session.get("login") or "",
+            "envPath": str(ENV_PATH),
         }
     )
 
 
 @app.post("/api/settings/connection")
 def api_settings_connection():
-    """Сменить Base URL / login / password и переподключиться."""
+    """Сменить Base URL / login / password, записать в .env и переподключиться."""
     body = request.get_json(silent=True) or {}
     patch: dict[str, Any] = {}
     base_url = _pick_cred(body, "baseUrl", "base_url")
@@ -221,7 +299,6 @@ def api_settings_connection():
         patch["password"] = password
     if not patch:
         raise ValueError("Укажи baseUrl, login или password")
-    # Без session/env некуда подключаться
     if not (
         patch.get("baseUrl")
         or _session.get("baseUrl")
@@ -236,11 +313,17 @@ def api_settings_connection():
         raise ValueError("Укажи password")
     client = ensure_client(patch)
     client.authenticate()
+    persist_connection_to_env(
+        base_url=_session.get("baseUrl"),
+        login=_session.get("login"),
+        password=_session.get("password"),
+    )
     return jsonify(
         {
             "ok": True,
             "baseUrl": client.base_url,
             "login": _session.get("login") or "",
+            "envPath": str(ENV_PATH),
         }
     )
 
