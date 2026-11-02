@@ -9,26 +9,23 @@
 
 ```bat
 cd carrot\flask-client
-python -m venv .venv
-.venv\Scripts\activate
-pip install -r requirements.txt
 copy .env.example .env
 notepad .env
 web.cmd
 ```
 
-Открой http://127.0.0.1:3456
+`web.cmd` сам создаст `.venv`, поставит зависимости из `requirements.txt`,
+запустит сервер и откроет Google Chrome на http://127.0.0.1:3456
 
 ## Быстрый старт (Linux/macOS)
 
 ```bash
 cd carrot/flask-client
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
 cp .env.example .env
 ./web.sh
 ```
+
+То же: venv + pip install + Flask + Chrome.
 
 ## Что умеет UI
 

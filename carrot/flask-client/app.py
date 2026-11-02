@@ -10,7 +10,11 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
+import subprocess
+import threading
 import traceback
+import webbrowser
 from pathlib import Path
 from typing import Any, Optional
 
@@ -529,6 +533,40 @@ def _host_port(port: int) -> str:
         return f"хост:{port}"
 
 
+def _open_chrome(url: str) -> None:
+    """Открыть URL в Google Chrome; иначе — браузер по умолчанию."""
+    candidates = [
+        os.environ.get("CHROME_PATH", "").strip(),
+        # Windows
+        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+        # macOS
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        # Linux / PATH
+        "google-chrome-stable",
+        "google-chrome",
+        "chrome",
+        "chromium-browser",
+        "chromium",
+    ]
+    for cand in candidates:
+        if not cand:
+            continue
+        exe = cand if os.path.isabs(cand) and os.path.isfile(cand) else shutil.which(cand)
+        if not exe:
+            continue
+        try:
+            subprocess.Popen(
+                [exe, "--new-window", url],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            return
+        except OSError:
+            continue
+    webbrowser.open(url)
+
+
 def main() -> None:
     ws_hint = env("CARROT_WS_URL") or (
         f"(по умолчанию ws://{_host_port(24710)})" if env("CARROT_BASE_URL") else "(не задан)"
@@ -536,13 +574,19 @@ def main() -> None:
     ws_file_hint = env("CARROT_WS_FILE_URL") or (
         f"(по умолчанию ws://{_host_port(24712)})" if env("CARROT_BASE_URL") else "(не задан)"
     )
-    print(f"Carrot playlist browser (Flask): http://{HOST}:{PORT}")
+    url = f"http://{HOST}:{PORT}"
+    print(f"Carrot playlist browser (Flask): {url}")
     print(
         f"Конфиг: CARROT_BASE_URL={env('CARROT_BASE_URL') or '(не задан)'}, "
         f"login={env('CARROT_LOGIN') or '(не задан)'}"
     )
     print(f"Удаление/создание событий: REST + WebSocket {ws_hint}")
     print(f"Медиа: REST /assets/folder/{{id}}, fallback WS {ws_file_hint}")
+
+    # CARROT_WEB_OPEN=0 — не открывать браузер
+    if env("CARROT_WEB_OPEN", "1") not in ("0", "false", "False", "no", "NO"):
+        threading.Timer(1.0, lambda: _open_chrome(url)).start()
+
     app.run(host=HOST, port=PORT, debug=False, threaded=True)
 
 
