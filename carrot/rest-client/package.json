@@ -1,15 +1,11 @@
 {
-  "name": "carrot-ticker-client",
+  "name": "carrot-rest-web",
   "version": "1.0.0",
-  "description": "REST-клиент Carrot Broadcast для управления строками бегущей строки на лету",
-  "main": "carrot-client.js",
+  "description": "Веб-клиент Carrot Broadcast: плейлисты, события, Excel-импорт, медиа",
+  "main": "web-server.js",
   "type": "commonjs",
-  "bin": {
-    "carrot-ticker": "cli.js"
-  },
   "scripts": {
-    "start": "node cli.js",
-    "help": "node cli.js help",
+    "start": "node web-server.js",
     "web": "node web-server.js"
   },
   "engines": {
