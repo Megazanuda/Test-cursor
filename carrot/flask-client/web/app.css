@@ -463,6 +463,13 @@ input:focus, .filter:focus, textarea:focus {
   font-weight: 600;
 }
 
+.settings-sublabel {
+  font-size: 0.78rem;
+  color: var(--muted);
+  font-weight: 500;
+  margin-top: 0.15rem;
+}
+
 .settings-input {
   width: 100%;
   box-sizing: border-box;

@@ -205,14 +205,36 @@ def api_connect():
     )
 
 
-@app.post("/api/settings/base-url")
-def api_settings_base_url():
-    """Сменить Carrot Base URL в текущей сессии и переподключиться."""
+@app.post("/api/settings/connection")
+def api_settings_connection():
+    """Сменить Base URL / login / password и переподключиться."""
     body = request.get_json(silent=True) or {}
+    patch: dict[str, Any] = {}
     base_url = _pick_cred(body, "baseUrl", "base_url")
-    if not base_url:
+    login = _pick_cred(body, "login")
+    password = _pick_cred(body, "password")
+    if base_url:
+        patch["baseUrl"] = base_url
+    if login:
+        patch["login"] = login
+    if password:
+        patch["password"] = password
+    if not patch:
+        raise ValueError("Укажи baseUrl, login или password")
+    # Без session/env некуда подключаться
+    if not (
+        patch.get("baseUrl")
+        or _session.get("baseUrl")
+        or env("CARROT_BASE_URL")
+    ):
         raise ValueError("Укажи baseUrl")
-    client = ensure_client({"baseUrl": base_url})
+    if not (patch.get("login") or _session.get("login") or env("CARROT_LOGIN")):
+        raise ValueError("Укажи login")
+    if not (
+        patch.get("password") or _session.get("password") or env("CARROT_PASSWORD")
+    ):
+        raise ValueError("Укажи password")
+    client = ensure_client(patch)
     client.authenticate()
     return jsonify(
         {
@@ -221,6 +243,12 @@ def api_settings_base_url():
             "login": _session.get("login") or "",
         }
     )
+
+
+@app.post("/api/settings/base-url")
+def api_settings_base_url():
+    """Совместимость: то же, что /api/settings/connection."""
+    return api_settings_connection()
 
 
 @app.get("/api/playlists")

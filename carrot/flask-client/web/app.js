@@ -16,6 +16,8 @@ const EDITOR_FOLD_KEY = 'carrot-web-editor-folded';
 const SIDE_OPEN_KEY = 'carrot-web-side-open';
 const MEDIA_FOLDER_KEY = 'carrot-media-folder';
 const BASE_URL_KEY = 'carrot-base-url';
+const LOGIN_KEY = 'carrot-login';
+const PASSWORD_KEY = 'carrot-password';
 const THEME_KEY = 'site-theme';
 const TWO_WEEKS_MS = 14 * 24 * 60 * 60 * 1000;
 
@@ -148,7 +150,9 @@ const el = {
   excelImportInput: document.getElementById('excelImportInput'),
   themeToggleBtn: document.getElementById('themeToggleBtn'),
   settingsBaseUrl: document.getElementById('settingsBaseUrl'),
-  settingsBaseUrlSaveBtn: document.getElementById('settingsBaseUrlSaveBtn'),
+  settingsLogin: document.getElementById('settingsLogin'),
+  settingsPassword: document.getElementById('settingsPassword'),
+  settingsConnectionSaveBtn: document.getElementById('settingsConnectionSaveBtn'),
   mediaFolderInput: document.getElementById('mediaFolderInput'),
   mediaFolderSaveBtn: document.getElementById('mediaFolderSaveBtn'),
   playlistsGroup: document.getElementById('playlistsGroup'),
@@ -1416,26 +1420,53 @@ async function loadPlaylists() {
   renderPlaylists();
 }
 
-function getSavedBaseUrl() {
-  try { return localStorage.getItem(BASE_URL_KEY) || ''; }
+function lsGet(key) {
+  try { return localStorage.getItem(key) || ''; }
   catch (e) { return ''; }
 }
 
-function setSavedBaseUrl(url) {
-  const v = String(url || '').trim();
+function lsSet(key, value) {
   try {
-    if (v) localStorage.setItem(BASE_URL_KEY, v);
-    else localStorage.removeItem(BASE_URL_KEY);
+    const v = String(value || '');
+    if (v) localStorage.setItem(key, v);
+    else localStorage.removeItem(key);
   } catch (e) { /* ignore */ }
-  if (el.baseUrl) el.baseUrl.value = v;
-  if (el.settingsBaseUrl) el.settingsBaseUrl.value = v;
-  return v;
+}
+
+function getSavedBaseUrl() { return lsGet(BASE_URL_KEY); }
+function getSavedLogin() { return lsGet(LOGIN_KEY); }
+function getSavedPassword() { return lsGet(PASSWORD_KEY); }
+
+function syncConnectionFields(opts) {
+  opts = opts || {};
+  const url = opts.baseUrl != null ? String(opts.baseUrl).trim() : '';
+  const login = opts.login != null ? String(opts.login).trim() : '';
+  const password = opts.password != null ? String(opts.password) : null;
+
+  if (opts.baseUrl != null) {
+    if (el.baseUrl) el.baseUrl.value = url;
+    if (el.settingsBaseUrl) el.settingsBaseUrl.value = url;
+  }
+  if (opts.login != null) {
+    if (el.login) el.login.value = login;
+    if (el.settingsLogin) el.settingsLogin.value = login;
+  }
+  if (password != null) {
+    if (el.password) el.password.value = password;
+    if (el.settingsPassword) el.settingsPassword.value = password;
+  }
+}
+
+function setSavedConnection(opts) {
+  opts = opts || {};
+  if (opts.baseUrl != null) lsSet(BASE_URL_KEY, String(opts.baseUrl).trim());
+  if (opts.login != null) lsSet(LOGIN_KEY, String(opts.login).trim());
+  if (opts.password != null) lsSet(PASSWORD_KEY, String(opts.password));
+  syncConnectionFields(opts);
 }
 
 function syncBaseUrlFields(url) {
-  const v = String(url || '').trim();
-  if (el.baseUrl && v) el.baseUrl.value = v;
-  if (el.settingsBaseUrl) el.settingsBaseUrl.value = v || (el.baseUrl && el.baseUrl.value) || '';
+  syncConnectionFields({ baseUrl: url });
 }
 
 async function connect(creds) {
@@ -1448,7 +1479,11 @@ async function connect(creds) {
       el.connectPanel.hidden = true;
       el.workspace.hidden = false;
       el.sectionTabs.hidden = false;
-      setSavedBaseUrl(data.baseUrl || (creds && creds.baseUrl) || '');
+      setSavedConnection({
+        baseUrl: data.baseUrl || (creds && creds.baseUrl) || '',
+        login: data.login || (creds && creds.login) || '',
+        password: (creds && creds.password) || getSavedPassword() || undefined
+      });
       setStatus('онлайн · ' + data.baseUrl, 'ok');
       updateSidePaneUi();
       if (el.loadingTitle) el.loadingTitle.textContent = 'Загрузка плейлистов и ивентов…';
@@ -1470,17 +1505,32 @@ async function connect(creds) {
   }
 }
 
-async function applyBaseUrlFromSettings() {
+async function applyConnectionFromSettings() {
   const url = el.settingsBaseUrl ? el.settingsBaseUrl.value.trim() : '';
+  const login = el.settingsLogin ? el.settingsLogin.value.trim() : '';
+  const password = el.settingsPassword ? el.settingsPassword.value : '';
   if (!url) {
     showWarning('Нет адреса', 'Укажи Carrot Base URL (например http://host:5001).');
     return;
   }
-  if (el.settingsBaseUrlSaveBtn) el.settingsBaseUrlSaveBtn.disabled = true;
+  if (!login) {
+    showWarning('Нет логина', 'Укажи login для Carrot REST.');
+    return;
+  }
+  if (!password) {
+    showWarning('Нет пароля', 'Укажи password для Carrot REST.');
+    return;
+  }
+  if (el.settingsConnectionSaveBtn) el.settingsConnectionSaveBtn.disabled = true;
   try {
-    await withLoading('Смена Base URL…', async function () {
-      const data = await api('POST', '/api/settings/base-url', { baseUrl: url });
-      setSavedBaseUrl(data.baseUrl || url);
+    await withLoading('Сохранение подключения…', async function () {
+      const payload = { baseUrl: url, login: login, password: password };
+      const data = await api('POST', '/api/settings/connection', payload);
+      setSavedConnection({
+        baseUrl: data.baseUrl || url,
+        login: data.login || login,
+        password: password
+      });
       state.connected = true;
       el.connectPanel.hidden = true;
       el.workspace.hidden = false;
@@ -1494,12 +1544,12 @@ async function applyBaseUrlFromSettings() {
       await loadPlaylists();
       state.allEventsScope = 'recent';
       await selectAllEvents({ force: true, quiet: true });
-      toast('Base URL: ' + data.baseUrl, 'ok');
+      toast('Подключено: ' + (data.login || login) + ' @ ' + data.baseUrl, 'ok');
     }, url);
   } catch (err) {
-    showError('Не удалось сменить Base URL', err);
+    showError('Не удалось сохранить подключение', err);
   } finally {
-    if (el.settingsBaseUrlSaveBtn) el.settingsBaseUrlSaveBtn.disabled = false;
+    if (el.settingsConnectionSaveBtn) el.settingsConnectionSaveBtn.disabled = false;
   }
 }
 
@@ -2129,15 +2179,28 @@ el.sectionEvents.hidden = false;
   try {
     const health = await api('GET', '/api/health');
     const savedUrl = getSavedBaseUrl();
-    if (health.defaults) {
-      if (health.defaults.login) el.login.value = health.defaults.login;
-      const bootUrl = savedUrl || health.defaults.baseUrl || '';
-      if (bootUrl) syncBaseUrlFields(bootUrl);
+    const savedLogin = getSavedLogin();
+    const savedPassword = getSavedPassword();
+    const bootUrl = savedUrl || (health.defaults && health.defaults.baseUrl) || '';
+    const bootLogin = savedLogin || (health.defaults && health.defaults.login) || '';
+    syncConnectionFields({
+      baseUrl: bootUrl,
+      login: bootLogin,
+      password: savedPassword || ''
+    });
+
+    if (savedUrl && savedLogin && savedPassword) {
+      await connect({
+        baseUrl: savedUrl,
+        login: savedLogin,
+        password: savedPassword
+      });
     } else if (savedUrl) {
-      syncBaseUrlFields(savedUrl);
-    }
-    if (savedUrl) {
-      await connect({ baseUrl: savedUrl });
+      await connect({
+        baseUrl: savedUrl,
+        login: savedLogin || undefined,
+        password: savedPassword || undefined
+      });
     } else if (health.hasEnv) {
       await connect({});
     } else {
@@ -2382,22 +2445,28 @@ if (el.excelImportForm) {
   });
 }
 
-if (el.settingsBaseUrl && !el.settingsBaseUrl.value) {
-  syncBaseUrlFields(getSavedBaseUrl() || (el.baseUrl && el.baseUrl.value) || '');
-}
-if (el.settingsBaseUrlSaveBtn) {
-  el.settingsBaseUrlSaveBtn.addEventListener('click', function () {
-    applyBaseUrlFromSettings();
+if (el.settingsBaseUrl || el.settingsLogin || el.settingsPassword) {
+  syncConnectionFields({
+    baseUrl: getSavedBaseUrl() || (el.baseUrl && el.baseUrl.value) || '',
+    login: getSavedLogin() || (el.login && el.login.value) || '',
+    password: getSavedPassword() || (el.password && el.password.value) || ''
   });
 }
-if (el.settingsBaseUrl) {
-  el.settingsBaseUrl.addEventListener('keydown', function (e) {
+if (el.settingsConnectionSaveBtn) {
+  el.settingsConnectionSaveBtn.addEventListener('click', function () {
+    applyConnectionFromSettings();
+  });
+}
+['settingsBaseUrl', 'settingsLogin', 'settingsPassword'].forEach(function (key) {
+  const node = el[key];
+  if (!node) return;
+  node.addEventListener('keydown', function (e) {
     if (e.key === 'Enter') {
       e.preventDefault();
-      applyBaseUrlFromSettings();
+      applyConnectionFromSettings();
     }
   });
-}
+});
 
 if (el.mediaFolderInput) {
   el.mediaFolderInput.value = getMediaFolder();
