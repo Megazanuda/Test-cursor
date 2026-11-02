@@ -69,6 +69,19 @@
                   title="Переключить светлую/тёмную тему">Тема: светлая</button>
               </div>
               <div class="settings-row">
+                <label class="settings-label" for="settingsBaseUrl">Carrot Base URL</label>
+                <input type="url" id="settingsBaseUrl" class="settings-input"
+                  placeholder="http://172.17.97.71:5001" spellcheck="false"
+                  autocomplete="off" />
+                <p class="settings-hint">
+                  Адрес REST API Carrot (часто порт 5001, не 8088).
+                  После сохранения UI переподключается к новому адресу.
+                </p>
+                <button type="button" class="btn ghost sm" id="settingsBaseUrlSaveBtn">
+                  Сохранить адрес
+                </button>
+              </div>
+              <div class="settings-row">
                 <label class="settings-label" for="mediaFolderInput">Папка медиа для Excel</label>
                 <input type="text" id="mediaFolderInput" class="settings-input"
                   placeholder="C:\Media\Carrot" spellcheck="false" />

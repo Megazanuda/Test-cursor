@@ -54,27 +54,57 @@ log = logging.getLogger("carrot-flask")
 
 _client: Optional[CarrotClient] = None
 _client_key: str = ""
+# Последние успешные креды сессии (чтобы смена baseUrl в Настройках
+# и последующие /api/* без тела не откатывались к .env).
+_session: dict[str, Any] = {}
 
 
 def env(name: str, default: Optional[str] = None) -> Optional[str]:
     return os.environ[name] if name in os.environ else default
 
 
+def _pick_cred(creds: dict[str, Any], *keys: str) -> Optional[str]:
+    for k in keys:
+        v = creds.get(k)
+        if v is not None and str(v).strip() != "":
+            return str(v).strip()
+    return None
+
+
 def ensure_client(creds: Optional[dict[str, Any]] = None) -> CarrotClient:
-    """Вернуть (или создать) singleton CarrotClient по кредам/env."""
-    global _client, _client_key
+    """Вернуть (или создать) singleton CarrotClient: body → session → env."""
+    global _client, _client_key, _session
     creds = creds or {}
-    base_url = creds.get("baseUrl") or creds.get("base_url") or env("CARROT_BASE_URL")
-    login = creds.get("login") or env("CARROT_LOGIN")
-    password = creds.get("password") or env("CARROT_PASSWORD")
+
+    base_url = (
+        _pick_cred(creds, "baseUrl", "base_url")
+        or _session.get("baseUrl")
+        or env("CARROT_BASE_URL")
+    )
+    login = (
+        _pick_cred(creds, "login")
+        or _session.get("login")
+        or env("CARROT_LOGIN")
+    )
+    password = (
+        _pick_cred(creds, "password")
+        or _session.get("password")
+        or env("CARROT_PASSWORD")
+    )
     if not base_url:
-        raise ValueError("Нужен CARROT_BASE_URL или baseUrl в форме")
+        raise ValueError("Нужен CARROT_BASE_URL или baseUrl в форме / Настройках")
     if not login or not password:
         raise ValueError("Нужны login/password (из .env или формы)")
 
-    ws_url = creds.get("wsUrl") or creds.get("ws_url") or env("CARROT_WS_URL")
+    ws_url = (
+        _pick_cred(creds, "wsUrl", "ws_url")
+        or _session.get("wsUrl")
+        or env("CARROT_WS_URL")
+    )
     ws_file_url = (
-        creds.get("wsFileUrl") or creds.get("ws_file_url") or env("CARROT_WS_FILE_URL")
+        _pick_cred(creds, "wsFileUrl", "ws_file_url")
+        or _session.get("wsFileUrl")
+        or env("CARROT_WS_FILE_URL")
     )
     key = f"{base_url}\0{login}\0{password}\0{ws_url or ''}\0{ws_file_url or ''}"
     if _client is None or _client_key != key:
@@ -90,6 +120,13 @@ def ensure_client(creds: Optional[dict[str, Any]] = None) -> CarrotClient:
             }
         )
         _client_key = key
+    _session = {
+        "baseUrl": base_url,
+        "login": login,
+        "password": password,
+        "wsUrl": ws_url,
+        "wsFileUrl": ws_file_url,
+    }
     return _client
 
 
@@ -137,9 +174,18 @@ def api_health():
                 env("CARROT_BASE_URL") and env("CARROT_LOGIN") and env("CARROT_PASSWORD")
             ),
             "defaults": {
-                "baseUrl": env("CARROT_BASE_URL", "") or "",
-                "login": env("CARROT_LOGIN", "") or "",
+                "baseUrl": (
+                    _session.get("baseUrl")
+                    or env("CARROT_BASE_URL", "")
+                    or ""
+                ),
+                "login": (
+                    _session.get("login")
+                    or env("CARROT_LOGIN", "")
+                    or ""
+                ),
             },
+            "connected": bool(_session.get("baseUrl") and _client is not None),
             "backend": "flask",
         }
     )
@@ -154,7 +200,25 @@ def api_connect():
         {
             "ok": True,
             "baseUrl": client.base_url,
-            "login": body.get("login") or env("CARROT_LOGIN", "") or "",
+            "login": _session.get("login") or "",
+        }
+    )
+
+
+@app.post("/api/settings/base-url")
+def api_settings_base_url():
+    """Сменить Carrot Base URL в текущей сессии и переподключиться."""
+    body = request.get_json(silent=True) or {}
+    base_url = _pick_cred(body, "baseUrl", "base_url")
+    if not base_url:
+        raise ValueError("Укажи baseUrl")
+    client = ensure_client({"baseUrl": base_url})
+    client.authenticate()
+    return jsonify(
+        {
+            "ok": True,
+            "baseUrl": client.base_url,
+            "login": _session.get("login") or "",
         }
     )
 

@@ -15,6 +15,7 @@ const HIDDEN_COLS_KEY = 'carrot-web-hidden-columns';
 const EDITOR_FOLD_KEY = 'carrot-web-editor-folded';
 const SIDE_OPEN_KEY = 'carrot-web-side-open';
 const MEDIA_FOLDER_KEY = 'carrot-media-folder';
+const BASE_URL_KEY = 'carrot-base-url';
 const THEME_KEY = 'site-theme';
 const TWO_WEEKS_MS = 14 * 24 * 60 * 60 * 1000;
 
@@ -146,6 +147,8 @@ const el = {
   excelPickFileBtn: document.getElementById('excelPickFileBtn'),
   excelImportInput: document.getElementById('excelImportInput'),
   themeToggleBtn: document.getElementById('themeToggleBtn'),
+  settingsBaseUrl: document.getElementById('settingsBaseUrl'),
+  settingsBaseUrlSaveBtn: document.getElementById('settingsBaseUrlSaveBtn'),
   mediaFolderInput: document.getElementById('mediaFolderInput'),
   mediaFolderSaveBtn: document.getElementById('mediaFolderSaveBtn'),
   playlistsGroup: document.getElementById('playlistsGroup'),
@@ -1413,6 +1416,28 @@ async function loadPlaylists() {
   renderPlaylists();
 }
 
+function getSavedBaseUrl() {
+  try { return localStorage.getItem(BASE_URL_KEY) || ''; }
+  catch (e) { return ''; }
+}
+
+function setSavedBaseUrl(url) {
+  const v = String(url || '').trim();
+  try {
+    if (v) localStorage.setItem(BASE_URL_KEY, v);
+    else localStorage.removeItem(BASE_URL_KEY);
+  } catch (e) { /* ignore */ }
+  if (el.baseUrl) el.baseUrl.value = v;
+  if (el.settingsBaseUrl) el.settingsBaseUrl.value = v;
+  return v;
+}
+
+function syncBaseUrlFields(url) {
+  const v = String(url || '').trim();
+  if (el.baseUrl && v) el.baseUrl.value = v;
+  if (el.settingsBaseUrl) el.settingsBaseUrl.value = v || (el.baseUrl && el.baseUrl.value) || '';
+}
+
 async function connect(creds) {
   el.connectBtn.disabled = true;
   setStatus('подключение…');
@@ -1423,6 +1448,7 @@ async function connect(creds) {
       el.connectPanel.hidden = true;
       el.workspace.hidden = false;
       el.sectionTabs.hidden = false;
+      setSavedBaseUrl(data.baseUrl || (creds && creds.baseUrl) || '');
       setStatus('онлайн · ' + data.baseUrl, 'ok');
       updateSidePaneUi();
       if (el.loadingTitle) el.loadingTitle.textContent = 'Загрузка плейлистов и ивентов…';
@@ -1441,6 +1467,39 @@ async function connect(creds) {
     throw err;
   } finally {
     el.connectBtn.disabled = false;
+  }
+}
+
+async function applyBaseUrlFromSettings() {
+  const url = el.settingsBaseUrl ? el.settingsBaseUrl.value.trim() : '';
+  if (!url) {
+    showWarning('Нет адреса', 'Укажи Carrot Base URL (например http://host:5001).');
+    return;
+  }
+  if (el.settingsBaseUrlSaveBtn) el.settingsBaseUrlSaveBtn.disabled = true;
+  try {
+    await withLoading('Смена Base URL…', async function () {
+      const data = await api('POST', '/api/settings/base-url', { baseUrl: url });
+      setSavedBaseUrl(data.baseUrl || url);
+      state.connected = true;
+      el.connectPanel.hidden = true;
+      el.workspace.hidden = false;
+      el.sectionTabs.hidden = false;
+      setStatus('онлайн · ' + data.baseUrl, 'ok');
+      state.allEventsCache = null;
+      state.mediaLoaded = false;
+      state.templatesLoaded = false;
+      state.eventDetails = Object.create(null);
+      clearSelection();
+      await loadPlaylists();
+      state.allEventsScope = 'recent';
+      await selectAllEvents({ force: true, quiet: true });
+      toast('Base URL: ' + data.baseUrl, 'ok');
+    }, url);
+  } catch (err) {
+    showError('Не удалось сменить Base URL', err);
+  } finally {
+    if (el.settingsBaseUrlSaveBtn) el.settingsBaseUrlSaveBtn.disabled = false;
   }
 }
 
@@ -2069,14 +2128,23 @@ el.sectionEvents.hidden = false;
 (async function boot() {
   try {
     const health = await api('GET', '/api/health');
+    const savedUrl = getSavedBaseUrl();
     if (health.defaults) {
-      if (health.defaults.baseUrl) el.baseUrl.value = health.defaults.baseUrl;
       if (health.defaults.login) el.login.value = health.defaults.login;
+      const bootUrl = savedUrl || health.defaults.baseUrl || '';
+      if (bootUrl) syncBaseUrlFields(bootUrl);
+    } else if (savedUrl) {
+      syncBaseUrlFields(savedUrl);
     }
-    if (health.hasEnv) await connect({});
-    else setStatus('заполни .env или форму подключения');
+    if (savedUrl) {
+      await connect({ baseUrl: savedUrl });
+    } else if (health.hasEnv) {
+      await connect({});
+    } else {
+      setStatus('заполни .env или форму подключения');
+    }
   } catch (err) {
-    setStatus('ошибка запуска', 'err');
+    setStatus('не подключено', 'err');
     showError('Не удалось запустить интерфейс', err);
   }
 })();
@@ -2311,6 +2379,23 @@ if (el.excelPickFileBtn && el.excelImportInput) {
 if (el.excelImportForm) {
   el.excelImportForm.addEventListener('submit', function () {
     /* method=dialog cancel */
+  });
+}
+
+if (el.settingsBaseUrl && !el.settingsBaseUrl.value) {
+  syncBaseUrlFields(getSavedBaseUrl() || (el.baseUrl && el.baseUrl.value) || '');
+}
+if (el.settingsBaseUrlSaveBtn) {
+  el.settingsBaseUrlSaveBtn.addEventListener('click', function () {
+    applyBaseUrlFromSettings();
+  });
+}
+if (el.settingsBaseUrl) {
+  el.settingsBaseUrl.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      applyBaseUrlFromSettings();
+    }
   });
 }
 
