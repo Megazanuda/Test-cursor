@@ -225,7 +225,7 @@ function humanizeError(err) {
   } else if (/cors|failed to fetch|networkerror|сеть:/.test(lower)) {
     title = 'Сетевая ошибка';
     message = 'Браузер не смог связаться с локальным сервером UI или с Carrot.';
-    hint = 'Убедись, что Flask/web.cmd запущен и адрес страницы верный.';
+    hint = 'Убедись, что web.cmd (Flask) запущен и адрес страницы верный.';
   } else if (/не json|html — веб-интерфейс|не rest/.test(lower)) {
     title = 'Неверный адрес REST API';
     message = 'По этому URL отвечает не REST Carrot (часто веб-плейлист).';
@@ -2469,3 +2469,185 @@ document.addEventListener('click', function (event) {
     menu.removeAttribute('open');
   }
 });
+
+/* ===== DEV traffic panel ===== */
+(function initDevTrafficPanel() {
+  const panel = document.getElementById('devTrafficPanel');
+  const fab = document.getElementById('devTrafficFab');
+  const listEl = document.getElementById('devTrafficList');
+  const detailEl = document.getElementById('devTrafficDetail');
+  const statsEl = document.getElementById('devTrafficStats');
+  const pauseBtn = document.getElementById('devTrafficPauseBtn');
+  const clearBtn = document.getElementById('devTrafficClearBtn');
+  const closeBtn = document.getElementById('devTrafficCloseBtn');
+  const uiCb = document.getElementById('devTrafficUi');
+  const carrotCb = document.getElementById('devTrafficCarrot');
+  if (!panel || !fab || !listEl || !detailEl) return;
+
+  const OPEN_KEY = 'carrot-dev-traffic-open';
+  var entriesById = Object.create(null);
+  var order = [];
+  var selectedId = null;
+  var paused = false;
+  var timer = null;
+
+  function wantOpen() {
+    try {
+      if (localStorage.getItem(OPEN_KEY) === '1') return true;
+    } catch (e) { /* ignore */ }
+    return /(?:^|[?&])dev=1(?:&|$)/.test(location.search);
+  }
+
+  function setOpen(open) {
+    panel.hidden = !open;
+    fab.hidden = !!open;
+    try { localStorage.setItem(OPEN_KEY, open ? '1' : '0'); } catch (e) { /* ignore */ }
+    if (open) startPoll();
+    else stopPoll();
+  }
+
+  function stopPoll() {
+    if (timer) { clearInterval(timer); timer = null; }
+  }
+
+  function startPoll() {
+    stopPoll();
+    poll();
+    timer = setInterval(poll, 1000);
+  }
+
+  function channelAllowed(ch) {
+    if (ch === 'ui') return !uiCb || uiCb.checked;
+    if (ch === 'carrot') return !carrotCb || carrotCb.checked;
+    return true;
+  }
+
+  function statusClass(st) {
+    if (st == null) return 'dev-st-err';
+    if (st >= 200 && st < 400) return 'dev-st-ok';
+    return 'dev-st-err';
+  }
+
+  function shortUrl(url) {
+    if (!url) return '';
+    try {
+      const u = new URL(url, location.origin);
+      return u.pathname + (u.search ? '?…' : '');
+    } catch (e) {
+      return String(url).slice(0, 80);
+    }
+  }
+
+  function renderList() {
+    listEl.innerHTML = '';
+    order.forEach(function (id) {
+      const e = entriesById[id];
+      if (!e || !channelAllowed(e.channel)) return;
+      const li = document.createElement('li');
+      if (id === selectedId) li.className = 'active';
+      li.dataset.id = id;
+      const ch = document.createElement('span');
+      ch.className = 'dev-ch' + (e.channel === 'ui' ? ' ui' : '');
+      ch.textContent = e.channel || '?';
+      const st = document.createElement('span');
+      st.className = statusClass(e.status);
+      st.textContent = ' ' + (e.status != null ? e.status : 'ERR') + ' ';
+      const meta = document.createElement('span');
+      meta.className = 'dev-meta';
+      meta.textContent = (e.method || '') + ' ' + shortUrl(e.url) +
+        (e.durationMs != null ? ' · ' + e.durationMs + 'ms' : '') +
+        (e.note ? ' · ' + e.note : '') +
+        (e.error ? ' · ' + e.error : '');
+      li.appendChild(ch);
+      li.appendChild(st);
+      li.appendChild(meta);
+      li.addEventListener('click', function () {
+        selectedId = id;
+        renderList();
+        renderDetail(e);
+      });
+      listEl.appendChild(li);
+    });
+  }
+
+  function renderDetail(e) {
+    if (!e) {
+      detailEl.textContent = 'Выбери запрос слева';
+      return;
+    }
+    const payload = {
+      id: e.id,
+      ts: e.ts ? new Date(e.ts * 1000).toISOString() : null,
+      channel: e.channel,
+      method: e.method,
+      url: e.url,
+      status: e.status,
+      durationMs: e.durationMs,
+      note: e.note,
+      error: e.error,
+      requestHeaders: e.requestHeaders,
+      requestBody: e.requestBody,
+      responseHeaders: e.responseHeaders,
+      responseBody: e.responseBody
+    };
+    detailEl.textContent = JSON.stringify(payload, null, 2);
+  }
+
+  function mergeEntries(list) {
+    (list || []).forEach(function (e) {
+      if (!e || !e.id) return;
+      if (!entriesById[e.id]) order.unshift(e.id);
+      entriesById[e.id] = e;
+    });
+    if (order.length > 400) {
+      const drop = order.splice(400);
+      drop.forEach(function (id) { delete entriesById[id]; });
+    }
+  }
+
+  async function poll() {
+    if (paused || panel.hidden) return;
+    try {
+      const data = await api('GET', '/api/dev/traffic?limit=120');
+      mergeEntries(data.entries || []);
+      if (statsEl && data.stats) {
+        statsEl.textContent = 'всего ' + data.stats.total +
+          ' · ui ' + data.stats.ui +
+          ' · carrot ' + data.stats.carrot;
+      }
+      renderList();
+      if (selectedId && entriesById[selectedId]) renderDetail(entriesById[selectedId]);
+    } catch (err) {
+      if (statsEl) statsEl.textContent = 'ошибка опроса: ' + (err.message || err);
+    }
+  }
+
+  fab.addEventListener('click', function () { setOpen(true); });
+  if (closeBtn) closeBtn.addEventListener('click', function () { setOpen(false); });
+  if (pauseBtn) {
+    pauseBtn.addEventListener('click', function () {
+      paused = !paused;
+      pauseBtn.textContent = paused ? 'Продолжить' : 'Пауза';
+      if (!paused) poll();
+    });
+  }
+  if (clearBtn) {
+    clearBtn.addEventListener('click', async function () {
+      try {
+        await api('POST', '/api/dev/traffic/clear', {});
+        entriesById = Object.create(null);
+        order = [];
+        selectedId = null;
+        renderList();
+        renderDetail(null);
+        toast('DEV-лог очищен', 'ok');
+      } catch (err) {
+        showError('Не удалось очистить DEV-лог', err);
+      }
+    });
+  }
+  if (uiCb) uiCb.addEventListener('change', renderList);
+  if (carrotCb) carrotCb.addEventListener('change', renderList);
+
+  setOpen(wantOpen());
+})();

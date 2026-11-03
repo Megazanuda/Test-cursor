@@ -14,6 +14,7 @@ import re
 import shutil
 import subprocess
 import threading
+import time
 import traceback
 import webbrowser
 from pathlib import Path
@@ -29,6 +30,7 @@ from carrot_client import (
     resolve_media_in_drafts,
     rows_to_event_drafts,
 )
+import traffic_log
 
 ROOT = Path(__file__).resolve().parent
 STATIC_DIR = ROOT / "web"
@@ -145,6 +147,23 @@ def persist_connection_to_env(
 
 
 
+def _on_carrot_traffic(entry: dict[str, Any]) -> None:
+    """Пишет Flask↔Carrot вызовы в DEV-лог."""
+    traffic_log.add(
+        channel=str(entry.get("channel") or "carrot"),
+        method=str(entry.get("method") or ""),
+        url=str(entry.get("url") or ""),
+        status=entry.get("status"),
+        duration_ms=entry.get("duration_ms"),
+        request_headers=entry.get("request_headers"),
+        request_body=entry.get("request_body"),
+        response_headers=entry.get("response_headers"),
+        response_body=entry.get("response_body"),
+        error=entry.get("error"),
+        note=entry.get("note"),
+    )
+
+
 def ensure_client(creds: Optional[dict[str, Any]] = None) -> CarrotClient:
     """Вернуть (или создать) singleton CarrotClient: body → session → env."""
     global _client, _client_key, _session
@@ -191,9 +210,12 @@ def ensure_client(creds: Optional[dict[str, Any]] = None) -> CarrotClient:
                 "wsFileUrl": ws_file_url,
                 "senderId": env("CARROT_SENDER_ID", "ticker-web"),
                 "receiverId": env("CARROT_RECEIVER_ID", "carrot-server"),
+                "traffic_hook": _on_carrot_traffic,
             }
         )
         _client_key = key
+    else:
+        _client.traffic_hook = _on_carrot_traffic
     _session = {
         "baseUrl": base_url,
         "login": login,
@@ -233,6 +255,102 @@ def on_error(err: Exception):  # type: ignore[no-untyped-def]
 @app.get("/")
 def index():
     return send_from_directory(STATIC_DIR, "index.html")
+
+
+# ---------------------------------------------------------------------------
+# DEV: лог UI↔Flask и эндпоинты панели трафика
+# ---------------------------------------------------------------------------
+
+@app.before_request
+def _dev_before_request():  # type: ignore[no-untyped-def]
+    if not request.path.startswith("/api/"):
+        return
+    # не логируем сам опрос панели
+    if request.path.startswith("/api/dev/"):
+        return
+    request._dev_t0 = time.time()  # type: ignore[attr-defined]
+    request._dev_body = None  # type: ignore[attr-defined]
+    try:
+        if request.mimetype and "json" in request.mimetype:
+            request._dev_body = request.get_json(silent=True)  # type: ignore[attr-defined]
+        elif request.files:
+            request._dev_body = {  # type: ignore[attr-defined]
+                "form": {k: request.form.get(k) for k in request.form},
+                "files": {
+                    k: {
+                        "filename": f.filename,
+                        "content_type": f.mimetype,
+                        "size": f.content_length,
+                    }
+                    for k, f in request.files.items()
+                },
+            }
+    except Exception:
+        request._dev_body = None  # type: ignore[attr-defined]
+
+
+@app.after_request
+def _dev_after_request(response):  # type: ignore[no-untyped-def]
+    if not request.path.startswith("/api/") or request.path.startswith("/api/dev/"):
+        return response
+    t0 = getattr(request, "_dev_t0", None)
+    duration = ((time.time() - t0) * 1000.0) if t0 else None
+    resp_body: Any = None
+    try:
+        if response.is_json:
+            resp_body = response.get_json(silent=True)
+        else:
+            raw = response.get_data(as_text=True) or ""
+            resp_body = raw[:2000]
+    except Exception:
+        resp_body = None
+    traffic_log.add(
+        channel="ui",
+        method=request.method,
+        url=request.path
+        + (("?" + request.query_string.decode("utf-8", "replace")) if request.query_string else ""),
+        status=response.status_code,
+        duration_ms=duration,
+        request_headers={
+            k: v
+            for k, v in request.headers.items()
+            if k.lower() in ("content-type", "accept", "content-length")
+        },
+        request_body=getattr(request, "_dev_body", None),
+        response_headers={
+            k: v
+            for k, v in response.headers.items()
+            if k.lower() in ("content-type", "content-length")
+        },
+        response_body=resp_body,
+    )
+    return response
+
+
+@app.get("/api/dev/traffic")
+def api_dev_traffic():
+    after_id = request.args.get("after") or None
+    channel = request.args.get("channel") or None
+    try:
+        limit = int(request.args.get("limit") or "120")
+    except ValueError:
+        limit = 120
+    return jsonify(
+        {
+            "ok": True,
+            "dev": True,
+            "stats": traffic_log.stats(),
+            "entries": traffic_log.list_entries(
+                after_id=after_id, limit=limit, channel=channel
+            ),
+        }
+    )
+
+
+@app.post("/api/dev/traffic/clear")
+def api_dev_traffic_clear():
+    traffic_log.clear()
+    return jsonify({"ok": True, "cleared": True, "stats": traffic_log.stats()})
 
 
 # ---------------------------------------------------------------------------
