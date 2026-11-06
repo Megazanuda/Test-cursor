@@ -12,14 +12,19 @@
   --danger-ink: #fff;
   --row-hover: #dee4f8;
   --row-sel: #dbe7ff;
-  --head: #d7e3f4;
-  --head-text: #1e3a5f;
-  --media-field: #e8f2ec;
-  --media-border: #5f8f74;
+  --head: #f2f5ff;
+  --th-bg: #d7e3f4;
+  --th-text: #1e3a5f;
   --editor-bg: #f8fafc;
   --font: Raleway, Helvetica, sans-serif;
   --mono: Raleway, Helvetica, sans-serif;
   --lineOk: #166534;
+  --control-bg: #ffffff;
+  --control-border: #8fa0b5;
+  --control-border-strong: #5f738c;
+  --control-focus: #3b6ea5;
+  --control-focus-ring: rgba(59, 110, 165, 0.22);
+  --col-sep: #b7c2d1;
 }
 
 html.dark-theme {
@@ -36,14 +41,19 @@ html.dark-theme {
   --danger-ink: #fefeff;
   --row-hover: #95b0c8;
   --row-sel: #7a91a6;
-  --head: #2f4258;
-  --head-text: #e8f0f8;
-  --media-field: #243a32;
-  --media-border: #6fa88a;
+  --head: #243244;
+  --th-bg: #3a5168;
+  --th-text: #e8f0f8;
   --editor-bg: #243244;
   --font: Raleway, Helvetica, sans-serif;
   --mono: Raleway, Helvetica, sans-serif;
   --lineOk: #00aa00;
+  --control-bg: #1a2432;
+  --control-border: #6b7f96;
+  --control-border-strong: #9bb0c6;
+  --control-focus: #8eb4d8;
+  --control-focus-ring: rgba(142, 180, 216, 0.28);
+  --col-sep: #4a5a6c;
 }
 
 * {
@@ -715,9 +725,9 @@ input:focus, .filter:focus, textarea:focus {
   position: sticky;
   top: 0;
   z-index: 3;
-  background: var(--head);
-  font-size: 1.05rem;
-  color: var(--head-text);
+  background: var(--th-bg);
+  font-size: 1.18rem;
+  color: var(--th-text);
   cursor: pointer;
   user-select: none;
   font-weight: 700;
@@ -1312,13 +1322,9 @@ dialog::backdrop { background: rgba(15, 23, 42, 0.4); }
 
 .media-input {
   display: flex;
-  gap: 0.4rem;
-  align-items: stretch;
+  gap: 0.35rem;
+  align-items: center;
   min-width: 0;
-  padding: 0.2rem;
-  border-radius: 8px;
-  background: var(--media-field);
-  border: 1.5px solid var(--media-border);
 }
 
 .media-input .media-select,
@@ -1326,7 +1332,7 @@ select.media-select {
   flex: 1;
   min-width: 0;
   width: 100%;
-  border: 1.5px solid var(--media-border);
+  border: 1.5px solid var(--control-border);
   background: var(--control-bg);
   color: var(--text);
   border-radius: 6px;
@@ -1350,13 +1356,9 @@ select.media-select:focus {
 
 .media-input .media-upload-btn {
   flex-shrink: 0;
-  width: 2.2rem;
+  width: 2rem;
   padding-left: 0;
   padding-right: 0;
-  border-color: var(--media-border);
-  background: var(--control-bg);
-  color: var(--text);
-  font-weight: 700;
 }
 
 .excel-template-select {
