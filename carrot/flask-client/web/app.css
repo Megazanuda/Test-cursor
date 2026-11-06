@@ -13,10 +13,18 @@
   --row-hover: #dee4f8;
   --row-sel: #dbe7ff;
   --head: #f2f5ff;
+  --th-bg: #d7e3f4;
+  --th-text: #1e3a5f;
   --editor-bg: #f8fafc;
   --font: Raleway, Helvetica, sans-serif;
   --mono: Raleway, Helvetica, sans-serif;
   --lineOk: #166534;
+  --control-bg: #ffffff;
+  --control-border: #8fa0b5;
+  --control-border-strong: #5f738c;
+  --control-focus: #3b6ea5;
+  --control-focus-ring: rgba(59, 110, 165, 0.22);
+  --col-sep: #b7c2d1;
 }
 
 html.dark-theme {
@@ -34,10 +42,18 @@ html.dark-theme {
   --row-hover: #95b0c8;
   --row-sel: #7a91a6;
   --head: #243244;
+  --th-bg: #3a5168;
+  --th-text: #e8f0f8;
   --editor-bg: #243244;
   --font: Raleway, Helvetica, sans-serif;
   --mono: Raleway, Helvetica, sans-serif;
   --lineOk: #00aa00;
+  --control-bg: #1a2432;
+  --control-border: #6b7f96;
+  --control-border-strong: #9bb0c6;
+  --control-focus: #8eb4d8;
+  --control-focus-ring: rgba(142, 180, 216, 0.28);
+  --col-sep: #4a5a6c;
 }
 
 * {
@@ -166,10 +182,12 @@ code {
   font-weight: 650;
 }
 
-input, .filter, textarea {
+input, .filter, textarea, select.settings-input, .settings-input,
+.excel-template-select, .create-card input, .create-card select,
+.editor-body input, .editor-body select, .editor-body textarea {
   width: 100%;
-  border: 1px solid var(--line);
-  background: var(--panel);
+  border: 1.5px solid var(--control-border);
+  background: var(--control-bg);
   color: var(--text);
   border-radius: 6px;
   padding: 0.55rem 0.7rem;
@@ -186,43 +204,77 @@ textarea {
   line-height: 1.4;
 }
 
-input:focus, .filter:focus, textarea:focus {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 2px rgba(29, 78, 216, 0.16);
+input:hover, .filter:hover, textarea:hover, .settings-input:hover,
+.excel-template-select:hover, select:hover {
+  border-color: var(--control-border-strong);
 }
 
-.filter-sm { width: 12rem; font-size: 0.9rem; }
+input:focus, .filter:focus, textarea:focus, .settings-input:focus,
+.excel-template-select:focus, select:focus {
+  border-color: var(--control-focus);
+  box-shadow: 0 0 0 3px var(--control-focus-ring);
+}
+
+.filter-sm {
+  width: 12rem;
+  font-size: 0.9rem;
   color: var(--text);
-  background: var(--panel);
+  background: var(--control-bg);
+}
 
 .btn {
-  border: 0;
+  border: 1.5px solid var(--control-border);
   border-radius: 6px;
   padding: 0.55rem 0.95rem;
   font: inherit;
   font-size: 0.95rem;
-  font-weight: 550;
+  font-weight: 600;
   cursor: pointer;
   white-space: nowrap;
+  background: var(--control-bg);
+  color: var(--text);
+}
+
+.btn:hover:not(:disabled) {
+  border-color: var(--control-border-strong);
+  color: var(--text);
+}
+
+.btn:focus-visible {
+  outline: none;
+  border-color: var(--control-focus);
+  box-shadow: 0 0 0 3px var(--control-focus-ring);
 }
 
 .btn:disabled { opacity: 0.45; cursor: not-allowed; }
 .btn.ghost {
-  background: var(--panel);
+  background: var(--control-bg);
   color: var(--text);
-  border: 1px solid var(--line);
+  border: 1.5px solid var(--control-border);
 }
-.btn.danger { background: var(--danger); color: var(--danger-ink); }
+.btn.danger {
+  background: var(--danger);
+  color: var(--danger-ink);
+  border-color: var(--danger);
+}
 .btn.sm {
   padding: 0.35rem 0.7rem;
 }
 
-.btn.sm:hover { border-color: var(--accent); color: var(--muted); }
+.btn.sm:hover:not(:disabled) {
+  border-color: var(--control-border-strong);
+  color: var(--text);
+}
 
 .btn.primary {
-	background: var(--bgStyled);
-	color: var(--text);
-	-webkit-text-stroke: 0.2px var(--bg); 
+  background: var(--bgStyled);
+  color: var(--text);
+  border-color: #088008;
+  -webkit-text-stroke: 0.2px var(--bg);
+}
+.btn.primary:hover:not(:disabled) {
+  filter: brightness(1.05);
+  border-color: #066606;
 }
 
 .fold-btn {
@@ -473,8 +525,8 @@ input:focus, .filter:focus, textarea:focus {
 .settings-input {
   width: 100%;
   box-sizing: border-box;
-  border: 1px solid var(--line);
-  background: var(--panel);
+  border: 1.5px solid var(--control-border);
+  background: var(--control-bg);
   color: var(--text);
   border-radius: 6px;
   padding: 0.45rem 0.55rem;
@@ -487,6 +539,23 @@ input:focus, .filter:focus, textarea:focus {
   font-size: 0.8rem;
   color: var(--muted);
   line-height: 1.35;
+}
+
+.settings-path {
+  margin: 0;
+  padding: 0.45rem 0.55rem;
+  border: 1.5px solid var(--control-border);
+  border-radius: 6px;
+  background: var(--control-bg);
+  color: var(--text);
+  font-size: 0.9rem;
+  word-break: break-all;
+}
+
+.settings-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
 }
 
 .excel-import-box {
@@ -679,6 +748,7 @@ input:focus, .filter:focus, textarea:focus {
 .events-table td {
   padding: 0.6rem 0.85rem;
   border-bottom: 1px solid var(--line);
+  border-right: 1px solid var(--col-sep);
   text-align: left;
   vertical-align: middle;
   white-space: nowrap;
@@ -688,22 +758,29 @@ input:focus, .filter:focus, textarea:focus {
   max-width: 18rem;
 }
 
+.events-table th:last-child,
+.events-table td:last-child {
+  border-right: none;
+}
+
 .events-table th {
   position: sticky;
   top: 0;
   z-index: 3;
-  background: var(--head);
-  font-size: 0.82rem;
-  color: var(--muted);
+  background: var(--th-bg);
+  font-size: 1.18rem;
+  color: var(--th-text);
   cursor: pointer;
   user-select: none;
   font-weight: 700;
-  border-bottom: 1px solid var(--line);
-  box-shadow: 0 1px 0 var(--line);
+  letter-spacing: 0.01em;
+  border-bottom: 1.5px solid var(--control-border);
+  border-right: 1.5px solid var(--col-sep);
+  box-shadow: inset 0 -1px 0 rgba(15, 23, 42, 0.06);
 }
 
-.events-table th:hover { color: var(--accent); }
-.events-table th .sort-ind { margin-left: 0.25rem; color: var(--accent); }
+.events-table th:hover { color: var(--control-focus); }
+.events-table th .sort-ind { margin-left: 0.25rem; color: var(--control-focus); }
 
 .events-table th.col-name,
 .events-table td.cell-name,
@@ -1190,8 +1267,8 @@ dialog::backdrop { background: rgba(15, 23, 42, 0.4); }
 .create-card select,
 .var-row select {
   width: 100%;
-  border: 1px solid var(--line);
-  background: var(--bg);
+  border: 1.5px solid var(--control-border);
+  background: var(--control-bg);
   color: var(--text);
   border-radius: 6px;
   padding: 0.5rem 0.65rem;
@@ -1202,8 +1279,8 @@ dialog::backdrop { background: rgba(15, 23, 42, 0.4); }
 
 .create-card select:focus,
 .var-row select:focus {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 2px rgba(29, 78, 216, 0.16);
+  border-color: var(--control-focus);
+  box-shadow: 0 0 0 3px var(--control-focus-ring);
 }
 
 .create-vars {
@@ -1273,10 +1350,6 @@ dialog::backdrop { background: rgba(15, 23, 42, 0.4); }
     border: 1px solid var(--danger);
 }
 
-.create-card select, .var-row select {
-	background: var(--panel);
-}
-
 .main-table-row-selected {
 	background-color: var(--accent2nd) !important;
 }
@@ -1289,8 +1362,6 @@ dialog::backdrop { background: rgba(15, 23, 42, 0.4); }
 	-moz-osx-font-smoothing: grayscale;
 }
 
-
-.create-card select,
 .media-input {
   display: flex;
   gap: 0.35rem;
@@ -1298,9 +1369,31 @@ dialog::backdrop { background: rgba(15, 23, 42, 0.4); }
   min-width: 0;
 }
 
-.media-input .media-select {
+.media-input .media-select,
+select.media-select {
   flex: 1;
   min-width: 0;
+  width: 100%;
+  border: 1.5px solid var(--control-border);
+  background: var(--control-bg);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 0.5rem 0.65rem;
+  font: inherit;
+  font-size: 0.95rem;
+  font-weight: 600;
+  outline: none;
+}
+
+.media-input .media-select:hover,
+select.media-select:hover {
+  border-color: var(--control-border-strong);
+}
+
+.media-input .media-select:focus,
+select.media-select:focus {
+  border-color: var(--control-focus);
+  box-shadow: 0 0 0 3px var(--control-focus-ring);
 }
 
 .media-input .media-upload-btn {
@@ -1313,8 +1406,8 @@ dialog::backdrop { background: rgba(15, 23, 42, 0.4); }
 .excel-template-select {
   max-width: 14rem;
   min-width: 10rem;
-  border: 1px solid var(--line);
-  background: var(--panel);
+  border: 1.5px solid var(--control-border);
+  background: var(--control-bg);
   color: var(--text);
   border-radius: 6px;
   padding: 0.35rem 0.5rem;

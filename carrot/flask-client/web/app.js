@@ -146,12 +146,9 @@ const el = {
   excelPickFileBtn: document.getElementById('excelPickFileBtn'),
   excelImportInput: document.getElementById('excelImportInput'),
   themeToggleBtn: document.getElementById('themeToggleBtn'),
-  settingsBaseUrl: document.getElementById('settingsBaseUrl'),
-  settingsLogin: document.getElementById('settingsLogin'),
-  settingsPassword: document.getElementById('settingsPassword'),
-  settingsConnectionSaveBtn: document.getElementById('settingsConnectionSaveBtn'),
-  mediaFolderInput: document.getElementById('mediaFolderInput'),
-  mediaFolderSaveBtn: document.getElementById('mediaFolderSaveBtn'),
+  mediaFolderPath: document.getElementById('mediaFolderPath'),
+  mediaFolderPickBtn: document.getElementById('mediaFolderPickBtn'),
+  mediaFolderClearBtn: document.getElementById('mediaFolderClearBtn'),
   playlistsGroup: document.getElementById('playlistsGroup'),
   settingsGroup: document.getElementById('settingsGroup'),
   editorPanel: document.getElementById('editorPanel'),
@@ -210,37 +207,35 @@ function humanizeError(err) {
 
   if (/econnrefused|connection refused|никто не слушает|10061|actively refused/.test(lower)) {
     title = 'Нет связи с Carrot';
-    message = 'По этому Base URL TCP-соединение отклонено — REST не слушает адрес.';
-    hint = 'На машине Carrot проверь, что Server запущен и какой порт у REST '
-      + '(часто 5001, swagger /auth/generate). Не 8088 и не WS 24710/24712. '
-      + 'С Windows должен быть сетевой доступ к этому IP.';
+    message = 'По этому адресу REST не отвечает.';
+    hint = 'Проверь IP:порт и что Carrot Server запущен (не 8088 / не WS).';
   } else if (/timed?\s*out|timeout|etagain|etimedout/.test(lower)) {
     title = 'Превышено время ожидания';
     message = 'Carrot слишком долго не отвечает.';
-    hint = 'Проверь сеть и доступность сервера, затем повтори.';
+    hint = 'Проверь сеть и повтори.';
   } else if (/401|неавториз|unauthorized|login|password|парол|логин/.test(lower) && /auth|token|jwt|подключ/.test(lower)) {
     title = 'Ошибка входа';
-    message = 'Не удалось получить доступ к API.';
+    message = 'Не удалось войти в API.';
     hint = 'Проверь логин и пароль.';
   } else if (/cors|failed to fetch|networkerror|сеть:/.test(lower)) {
     title = 'Сетевая ошибка';
-    message = 'Браузер не смог связаться с локальным сервером UI или с Carrot.';
-    hint = 'Убедись, что Flask/web.cmd запущен и адрес страницы верный.';
+    message = 'Нет связи с локальным UI или с Carrot.';
+    hint = 'Запусти web.cmd и открой страницу с него.';
   } else if (/не json|html — веб-интерфейс|не rest/.test(lower)) {
-    title = 'Неверный адрес REST API';
-    message = 'По этому URL отвечает не REST Carrot (часто веб-плейлист).';
-    hint = 'Укажи адрес REST (часто :5001), а не порт 8088.';
+    title = 'Неверный адрес';
+    message = 'Это не REST API Carrot.';
+    hint = 'Нужен порт REST, не 8088.';
   } else if (/404|не найден|not found/.test(lower)) {
     title = 'Не найдено';
-    message = 'Запрошенный объект или путь API не найден.';
+    message = 'Объект или путь API не найден.';
   } else if (/папк|media folder|файл не найден/.test(lower)) {
     title = 'Проблема с медиа';
     message = raw;
-    hint = 'Проверь папку медиа в Настройках и имена файлов в Excel.';
+    hint = 'Папка в Настройках и имена в Excel.';
   } else if (/excel|openpyxl|xlsx/.test(lower)) {
     title = 'Ошибка Excel';
     message = raw;
-    hint = 'Нужен файл .xlsx/.xlsm с колонками: имя | переменные | External id.';
+    hint = 'Нужен .xlsx: имя | переменные | External id.';
   }
 
   return { title: title, message: message, detail: raw === message ? '' : raw, hint: hint };
@@ -1419,24 +1414,40 @@ async function loadPlaylists() {
   renderPlaylists();
 }
 
+/** Показать в полях только host:port (без http://). */
+function hostPortFromBaseUrl(url) {
+  const raw = String(url || '').trim();
+  if (!raw) return '';
+  try {
+    const withScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(raw) ? raw : ('http://' + raw);
+    const u = new URL(withScheme);
+    return u.host || raw.replace(/^https?:\/\//i, '').replace(/\/.*$/, '');
+  } catch (e) {
+    return raw.replace(/^https?:\/\//i, '').replace(/\/.*$/, '');
+  }
+}
+
+/** Собрать Base URL для API: всегда http://IP:порт */
+function baseUrlFromHostPort(hostPort) {
+  var s = String(hostPort || '').trim();
+  if (!s) return '';
+  s = s.replace(/^[a-z][a-z0-9+.-]*:\/\//i, '');
+  s = s.replace(/\/+$/, '');
+  s = s.replace(/\/.*$/, '');
+  if (!s) return '';
+  return 'http://' + s;
+}
+
 function syncConnectionFields(opts) {
   opts = opts || {};
   const url = opts.baseUrl != null ? String(opts.baseUrl).trim() : '';
   const login = opts.login != null ? String(opts.login).trim() : '';
   const password = opts.password != null ? String(opts.password) : null;
+  const hostPort = opts.baseUrl != null ? hostPortFromBaseUrl(url) : null;
 
-  if (opts.baseUrl != null) {
-    if (el.baseUrl) el.baseUrl.value = url;
-    if (el.settingsBaseUrl) el.settingsBaseUrl.value = url;
-  }
-  if (opts.login != null) {
-    if (el.login) el.login.value = login;
-    if (el.settingsLogin) el.settingsLogin.value = login;
-  }
-  if (password != null) {
-    if (el.password) el.password.value = password;
-    if (el.settingsPassword) el.settingsPassword.value = password;
-  }
+  if (hostPort != null && el.baseUrl) el.baseUrl.value = hostPort;
+  if (opts.login != null && el.login) el.login.value = login;
+  if (password != null && el.password) el.password.value = password;
 }
 
 function clearLegacyCredentialStorage() {
@@ -1462,7 +1473,7 @@ async function connect(creds) {
         login: data.login || (creds && creds.login) || '',
         password: (creds && creds.password) != null
           ? creds.password
-          : (el.settingsPassword && el.settingsPassword.value) || ''
+          : (el.password && el.password.value) || ''
       });
       clearLegacyCredentialStorage();
       setStatus('онлайн · ' + data.baseUrl, 'ok');
@@ -1475,7 +1486,7 @@ async function connect(creds) {
       await loadPlaylists();
       state.allEventsScope = 'recent';
       await selectAllEvents({ quiet: true });
-      toast('Подключено к ' + data.baseUrl + ' (.env обновлён)', 'ok');
+      toast('Подключено к ' + data.baseUrl, 'ok');
     }, 'Проверяем доступ к REST API');
   } catch (err) {
     setStatus('не подключено', 'err');
@@ -1483,55 +1494,6 @@ async function connect(creds) {
     throw err;
   } finally {
     el.connectBtn.disabled = false;
-  }
-}
-
-async function applyConnectionFromSettings() {
-  const url = el.settingsBaseUrl ? el.settingsBaseUrl.value.trim() : '';
-  const login = el.settingsLogin ? el.settingsLogin.value.trim() : '';
-  const password = el.settingsPassword ? el.settingsPassword.value : '';
-  if (!url) {
-    showWarning('Нет адреса', 'Укажи Carrot Base URL (например http://host:5001).');
-    return;
-  }
-  if (!login) {
-    showWarning('Нет логина', 'Укажи login для Carrot REST.');
-    return;
-  }
-  if (!password) {
-    showWarning('Нет пароля', 'Укажи password для Carrot REST.');
-    return;
-  }
-  if (el.settingsConnectionSaveBtn) el.settingsConnectionSaveBtn.disabled = true;
-  try {
-    await withLoading('Сохранение в .env…', async function () {
-      const payload = { baseUrl: url, login: login, password: password };
-      const data = await api('POST', '/api/settings/connection', payload);
-      syncConnectionFields({
-        baseUrl: data.baseUrl || url,
-        login: data.login || login,
-        password: password
-      });
-      clearLegacyCredentialStorage();
-      state.connected = true;
-      el.connectPanel.hidden = true;
-      el.workspace.hidden = false;
-      el.sectionTabs.hidden = false;
-      setStatus('онлайн · ' + data.baseUrl, 'ok');
-      state.allEventsCache = null;
-      state.mediaLoaded = false;
-      state.templatesLoaded = false;
-      state.eventDetails = Object.create(null);
-      clearSelection();
-      await loadPlaylists();
-      state.allEventsScope = 'recent';
-      await selectAllEvents({ force: true, quiet: true });
-      toast('Сохранено в .env · ' + (data.login || login) + ' @ ' + data.baseUrl, 'ok');
-    }, url);
-  } catch (err) {
-    showError('Не удалось сохранить подключение', err);
-  } finally {
-    if (el.settingsConnectionSaveBtn) el.settingsConnectionSaveBtn.disabled = false;
   }
 }
 
@@ -1646,8 +1608,8 @@ function updateCreateActions() {
   el.createSubmitBtn.textContent = ready > 1 ? ('Создать (' + ready + ')') : 'Создать';
   el.createHint.style.whiteSpace = 'pre-line';
   el.createHint.textContent = n > 1
-    ? ('Выбрано полей: ' + n + ' — имя, External id, шаблон и переменные применяются ко всем выбранным.')
-    : 'Добавь + ивент или «Импорт Excel» (шаблон выбирается в диалоге).\nExcel: 1-й столбец = имя, последний = External id, середина = переменные (Media = имя файла).\nПапка медиа — в боковом меню → Настройки.';
+    ? ('Выбрано: ' + n + '. Правки имени и шаблона — сразу у всех.')
+    : 'Вручную (+ ивент) или Excel: имя | переменные | External id. Media — имя файла.';
 }
 
 async function ensureTemplatesLoaded(force) {
@@ -2027,7 +1989,7 @@ async function submitCreateForms() {
 el.connectForm.addEventListener('submit', function (e) {
   e.preventDefault();
   connect({
-    baseUrl: el.baseUrl.value.trim() || undefined,
+    baseUrl: baseUrlFromHostPort(el.baseUrl.value) || undefined,
     login: el.login.value.trim() || undefined,
     password: el.password.value || undefined
   }).catch(function () { /* toasted */ });
@@ -2231,19 +2193,65 @@ document.addEventListener('DOMContentLoaded', function () {
 });
 
 
-function getMediaFolder() {
+var mediaDirHandle = null;
+
+function getMediaFolderLabel() {
   try { return localStorage.getItem(MEDIA_FOLDER_KEY) || ''; }
   catch (e) { return ''; }
 }
 
-function setMediaFolder(path) {
-  const v = String(path || '').trim();
+function setMediaFolderLabel(name) {
+  const v = String(name || '').trim();
   try {
     if (v) localStorage.setItem(MEDIA_FOLDER_KEY, v);
     else localStorage.removeItem(MEDIA_FOLDER_KEY);
   } catch (e) { /* ignore */ }
-  if (el.mediaFolderInput) el.mediaFolderInput.value = v;
+  if (el.mediaFolderPath) {
+    el.mediaFolderPath.textContent = v ? v : 'папка не выбрана';
+  }
   return v;
+}
+
+async function pickMediaFolder() {
+  if (typeof window.showDirectoryPicker !== 'function') {
+    showWarning(
+      'Выбор папки недоступен',
+      'Нужен Chrome или Edge. Открой страницу через web.cmd.'
+    );
+    return;
+  }
+  try {
+    const handle = await window.showDirectoryPicker({ mode: 'read' });
+    mediaDirHandle = handle;
+    setMediaFolderLabel(handle.name || 'выбранная папка');
+    toast('Папка медиа: ' + (handle.name || 'выбрана'), 'ok');
+  } catch (err) {
+    if (err && err.name === 'AbortError') return;
+    showError('Не удалось выбрать папку', err);
+  }
+}
+
+function clearMediaFolder() {
+  mediaDirHandle = null;
+  setMediaFolderLabel('');
+  toast('Папка медиа сброшена', 'ok');
+}
+
+async function collectMediaFilesFromDir(dirHandle) {
+  const out = [];
+  if (!dirHandle) return out;
+  async function walk(handle) {
+    for await (const entry of handle.values()) {
+      if (entry.kind === 'file') {
+        const file = await entry.getFile();
+        out.push(file);
+      } else if (entry.kind === 'directory') {
+        await walk(entry);
+      }
+    }
+  }
+  await walk(dirHandle);
+  return out;
 }
 
 function applyTheme(theme) {
@@ -2306,11 +2314,17 @@ async function importEventsFromExcel(file) {
     showWarning('Нужен шаблон', 'Сначала выбери шаблон в диалоге импорта Excel.');
     return;
   }
+  const folderLabel = getMediaFolderLabel();
   const fd = new FormData();
   fd.append('file', file, file.name);
   fd.append('templateId', templateId);
-  const folder = getMediaFolder();
-  if (folder) fd.append('mediaFolder', folder);
+
+  if (mediaDirHandle) {
+    const mediaFiles = await collectMediaFilesFromDir(mediaDirHandle);
+    mediaFiles.forEach(function (mf) {
+      fd.append('mediaFiles', mf, mf.name);
+    });
+  }
 
   const json = await withLoading(
     'Импорт Excel…',
@@ -2335,7 +2349,7 @@ async function importEventsFromExcel(file) {
       }
       return parsed;
     },
-    file.name + (folder ? '\nПапка медиа: ' + folder : '')
+    file.name + (folderLabel ? '\nПапка медиа: ' + folderLabel : '')
   );
 
   const created = (json && json.created) ? json.created : [];
@@ -2412,47 +2426,15 @@ if (el.excelImportForm) {
   });
 }
 
-if (el.settingsConnectionSaveBtn) {
-  el.settingsConnectionSaveBtn.addEventListener('click', function () {
-    applyConnectionFromSettings();
+setMediaFolderLabel(getMediaFolderLabel());
+if (el.mediaFolderPickBtn) {
+  el.mediaFolderPickBtn.addEventListener('click', function () {
+    pickMediaFolder();
   });
 }
-['settingsBaseUrl', 'settingsLogin', 'settingsPassword'].forEach(function (key) {
-  const node = el[key];
-  if (!node) return;
-  node.addEventListener('keydown', function (e) {
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      applyConnectionFromSettings();
-    }
-  });
-});
-
-if (el.mediaFolderInput) {
-  el.mediaFolderInput.value = getMediaFolder();
-}
-if (el.mediaFolderSaveBtn) {
-  el.mediaFolderSaveBtn.addEventListener('click', async function () {
-    const path = el.mediaFolderInput ? el.mediaFolderInput.value.trim() : '';
-    if (!path) {
-      setMediaFolder('');
-      toast('Папка медиа сброшена', 'ok');
-      return;
-    }
-    el.mediaFolderSaveBtn.disabled = true;
-    try {
-      const data = await withLoading(
-        'Проверка папки медиа…',
-        function () { return api('POST', '/api/settings/check-media-folder', { path: path }); },
-        path
-      );
-      setMediaFolder(data.path || path);
-      toast('Папка медиа сохранена', 'ok');
-    } catch (err) {
-      showError('Папка медиа недоступна', err);
-    } finally {
-      el.mediaFolderSaveBtn.disabled = false;
-    }
+if (el.mediaFolderClearBtn) {
+  el.mediaFolderClearBtn.addEventListener('click', function () {
+    clearMediaFolder();
   });
 }
 

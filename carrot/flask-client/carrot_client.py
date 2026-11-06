@@ -866,6 +866,8 @@ class CarrotClient:
         *,
         auth: bool = True,
         _retried_auth: bool = False,
+        timeout_ms: Optional[int] = None,
+        max_retries: Optional[int] = None,
     ) -> Any:
         if auth:
             self._ensure_token()
@@ -875,10 +877,16 @@ class CarrotClient:
         if auth and self.token:
             headers["Authorization"] = "Bearer " + self.token
 
-        timeout_s = self.timeout_ms / 1000.0
+        effective_timeout = (
+            self.timeout_ms if timeout_ms is None else int(timeout_ms)
+        )
+        effective_retries = (
+            self.max_retries if max_retries is None else int(max_retries)
+        )
+        timeout_s = max(effective_timeout, 1) / 1000.0
         last_err: Optional[CarrotError] = None
 
-        for attempt in range(self.max_retries + 1):
+        for attempt in range(effective_retries + 1):
             try:
                 kwargs: dict[str, Any] = {
                     "method": method,
@@ -894,7 +902,13 @@ class CarrotClient:
                     self.token = None
                     self._ensure_token()
                     return self._request(
-                        method, path, body, auth=auth, _retried_auth=True
+                        method,
+                        path,
+                        body,
+                        auth=auth,
+                        _retried_auth=True,
+                        timeout_ms=timeout_ms,
+                        max_retries=max_retries,
                     )
 
                 text = res.text or ""
@@ -957,7 +971,11 @@ class CarrotClient:
             except Exception as err:
                 wrapped = _wrap_net_error(err, url)
                 last_err = wrapped
-                if _FATAL_NET.match(wrapped.code or "") or attempt >= self.max_retries:
+                if _FATAL_NET.match(wrapped.code or "") or attempt >= effective_retries:
+                    raise wrapped from err
+                # Таймаут чтения: для неидемпотентных POST повтор опасен —
+                # не ретраим ETIMEDOUT (сервер мог уже выполнить операцию).
+                if (wrapped.code or "") == "ETIMEDOUT":
                     raise wrapped from err
                 time.sleep(1.0 * (2**attempt))
 
@@ -1590,6 +1608,8 @@ class CarrotClient:
                 http_status=res.status_code,
                 url=create_url,
             )
+        if "?" in str(file_id):
+            file_id = str(file_id).split("?", 1)[0]
 
         # --- 2. PATCH chunks ---
         offset = 0
@@ -1652,14 +1672,66 @@ class CarrotClient:
         if not folder:
             folder = MEDIA_ROOT_FOLDER_ID
 
-        asset_raw = self._request(
-            "POST",
-            "/assets/register/" + quote(str(file_id), safe=""),
-            folder,  # requests json=str → "guid"
-        )
-        return self._normalize_asset(asset_raw, fallback_name=name)
+        # Register на больших файлах может идти долго. Не ретраим: повтор
+        # того же fileId после успеха на сервере даёт «File not found in temporary».
+        # Таймаут: минимум 120 с + ~1 с на каждый МБ сверх 10 МБ.
+        size_mb = max(0, len(data) - 10 * 1024 * 1024) / (1024 * 1024)
+        register_timeout_ms = int(max(120_000, 120_000 + size_mb * 1000))
+        try:
+            asset_raw = self._request(
+                "POST",
+                "/assets/register/" + quote(str(file_id), safe=""),
+                folder,  # requests json=str → "guid"
+                timeout_ms=register_timeout_ms,
+                max_retries=0,
+            )
+            return self._normalize_asset(asset_raw, fallback_name=name)
+        except CarrotError as err:
+            if self._register_may_have_succeeded(err):
+                found = self._find_asset_by_name(name, folder)
+                if found:
+                    return self._normalize_asset(found, fallback_name=name)
+            raise
 
     uploadAsset = upload_asset
+
+    def _register_may_have_succeeded(self, err: CarrotError) -> bool:
+        """Таймаут или «нет во temporary» — возможен уже успешный register на сервере."""
+        if (err.code or "") == "ETIMEDOUT":
+            return True
+        msg = (str(err) or "").lower()
+        if err.error_code == 2 and (
+            "temporary storage" in msg or "file not found" in msg
+        ):
+            return True
+        if "temporary storage" in msg:
+            return True
+        return False
+
+    def _find_asset_by_name(
+        self, filename: str, folder_id: str
+    ) -> Optional[dict[str, Any]]:
+        """Искать ассет по имени в папке (после неоднозначного register)."""
+        want = (filename or "").strip().lower()
+        if not want:
+            return None
+        try:
+            via = self.list_media_assets_via_rest_folder(
+                {"folderId": folder_id or MEDIA_ROOT_FOLDER_ID, "deep": False}
+            )
+        except Exception:
+            return None
+        for raw in via.get("assets") or []:
+            if not isinstance(raw, dict):
+                continue
+            n = (
+                raw.get("name")
+                or raw.get("Name")
+                or ""
+            )
+            if str(n).strip().lower() == want:
+                return raw
+        return None
 
     def _normalize_asset(
         self, raw: Any, fallback_name: str = ""
@@ -2414,6 +2486,7 @@ def resolve_media_in_drafts(
     *,
     assets: list[dict[str, Any]],
     media_folder: Optional[str] = None,
+    media_files: Optional[dict[str, bytes]] = None,
     upload_file: Optional[Callable[[bytes, str], dict[str, Any]]] = None,
 ) -> dict[str, Any]:
     """
@@ -2421,7 +2494,7 @@ def resolve_media_in_drafts(
 
     1) если уже «guid;name» — оставить
     2) если ассет с таким именем есть в Carrot — подставить id;name
-    3) иначе искать в media_folder и upload_file(...)
+    3) иначе взять из media_files (имя → bytes) или media_folder и upload_file(...)
     """
     index = index_assets_by_name(assets)
     resolved = 0
@@ -2429,6 +2502,14 @@ def resolve_media_in_drafts(
     reused = 0
     missing: list[dict[str, Any]] = []
     folder = (media_folder or "").strip() or None
+    files_by_name: dict[str, bytes] = {}
+    if media_files:
+        for fname, blob in media_files.items():
+            if not fname or blob is None:
+                continue
+            files_by_name[_norm_name(Path(str(fname)).name)] = bytes(blob)
+            stem = _norm_name(Path(str(fname)).stem)
+            files_by_name.setdefault(stem, bytes(blob))
 
     for draft in drafts:
         excel_row = draft.get("_excelRow")
@@ -2458,17 +2539,6 @@ def resolve_media_in_drafts(
                 reused += 1
                 continue
 
-            if not folder:
-                missing.append(
-                    {
-                        "row": excel_row,
-                        "variable": var.get("name"),
-                        "file": filename,
-                        "reason": "медиа нет в Carrot; укажи папку в Настройках",
-                    }
-                )
-                continue
-
             if upload_file is None:
                 missing.append(
                     {
@@ -2476,6 +2546,27 @@ def resolve_media_in_drafts(
                         "variable": var.get("name"),
                         "file": filename,
                         "reason": "нет обработчика загрузки",
+                    }
+                )
+                continue
+
+            blob = files_by_name.get(key) or files_by_name.get(_norm_name(Path(key).stem))
+            upload_name = Path(filename).name
+            if blob is not None:
+                asset = upload_file(blob, upload_name)
+                var["value"] = f"{asset['id']};{asset.get('name') or upload_name}"
+                index[_norm_name(asset.get("name") or upload_name)] = asset
+                resolved += 1
+                uploaded += 1
+                continue
+
+            if not folder:
+                missing.append(
+                    {
+                        "row": excel_row,
+                        "variable": var.get("name"),
+                        "file": filename,
+                        "reason": "медиа нет в Carrot; выбери папку в Настройках",
                     }
                 )
                 continue
