@@ -69,29 +69,13 @@
                   title="Переключить светлую/тёмную тему">Тема: светлая</button>
               </div>
               <div class="settings-row">
-                <span class="settings-label">Подключение к Carrot</span>
-                <label class="settings-sublabel" for="settingsBaseUrl">Адрес (IP:порт)</label>
-                <input type="text" id="settingsBaseUrl" class="settings-input"
-                  placeholder="172.17.97.71:5001" spellcheck="false"
-                  autocomplete="off" inputmode="url" />
-                <label class="settings-sublabel" for="settingsLogin">Логин</label>
-                <input type="text" id="settingsLogin" class="settings-input"
-                  placeholder="admin" spellcheck="false"
-                  autocomplete="username" />
-                <label class="settings-sublabel" for="settingsPassword">Пароль</label>
-                <input type="password" id="settingsPassword" class="settings-input"
-                  placeholder="••••••••" autocomplete="current-password" />
-                <p class="settings-hint">Сохраняется в .env и сразу применяется.</p>
-                <button type="button" class="btn ghost sm" id="settingsConnectionSaveBtn">
-                  Сохранить
-                </button>
-              </div>
-              <div class="settings-row">
-                <label class="settings-label" for="mediaFolderInput">Папка медиа для Excel</label>
-                <input type="text" id="mediaFolderInput" class="settings-input"
-                  placeholder="C:\Media\Carrot" spellcheck="false" />
-                <p class="settings-hint">Файлы из Excel, которых ещё нет в Carrot.</p>
-                <button type="button" class="btn ghost sm" id="mediaFolderSaveBtn">Сохранить папку</button>
+                <span class="settings-label">Папка медиа для Excel</span>
+                <p class="settings-path" id="mediaFolderPath">папка не выбрана</p>
+                <p class="settings-hint">Через менеджер файлов. Нужны имена из Excel, которых ещё нет в Carrot.</p>
+                <div class="settings-actions">
+                  <button type="button" class="btn ghost sm" id="mediaFolderPickBtn">Выбрать папку…</button>
+                  <button type="button" class="btn ghost sm" id="mediaFolderClearBtn">Сбросить</button>
+                </div>
               </div>
             </div>
           </details>
