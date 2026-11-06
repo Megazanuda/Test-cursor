@@ -210,37 +210,35 @@ function humanizeError(err) {
 
   if (/econnrefused|connection refused|никто не слушает|10061|actively refused/.test(lower)) {
     title = 'Нет связи с Carrot';
-    message = 'По этому Base URL TCP-соединение отклонено — REST не слушает адрес.';
-    hint = 'На машине Carrot проверь, что Server запущен и какой порт у REST '
-      + '(часто 5001, swagger /auth/generate). Не 8088 и не WS 24710/24712. '
-      + 'С Windows должен быть сетевой доступ к этому IP.';
+    message = 'По этому адресу REST не отвечает.';
+    hint = 'Проверь IP:порт и что Carrot Server запущен (не 8088 / не WS).';
   } else if (/timed?\s*out|timeout|etagain|etimedout/.test(lower)) {
     title = 'Превышено время ожидания';
     message = 'Carrot слишком долго не отвечает.';
-    hint = 'Проверь сеть и доступность сервера, затем повтори.';
+    hint = 'Проверь сеть и повтори.';
   } else if (/401|неавториз|unauthorized|login|password|парол|логин/.test(lower) && /auth|token|jwt|подключ/.test(lower)) {
     title = 'Ошибка входа';
-    message = 'Не удалось получить доступ к API.';
+    message = 'Не удалось войти в API.';
     hint = 'Проверь логин и пароль.';
   } else if (/cors|failed to fetch|networkerror|сеть:/.test(lower)) {
     title = 'Сетевая ошибка';
-    message = 'Браузер не смог связаться с локальным сервером UI или с Carrot.';
-    hint = 'Убедись, что Flask/web.cmd запущен и адрес страницы верный.';
+    message = 'Нет связи с локальным UI или с Carrot.';
+    hint = 'Запусти web.cmd и открой страницу с него.';
   } else if (/не json|html — веб-интерфейс|не rest/.test(lower)) {
-    title = 'Неверный адрес REST API';
-    message = 'По этому URL отвечает не REST Carrot (часто веб-плейлист).';
-    hint = 'Укажи адрес REST (часто :5001), а не порт 8088.';
+    title = 'Неверный адрес';
+    message = 'Это не REST API Carrot.';
+    hint = 'Нужен порт REST, не 8088.';
   } else if (/404|не найден|not found/.test(lower)) {
     title = 'Не найдено';
-    message = 'Запрошенный объект или путь API не найден.';
+    message = 'Объект или путь API не найден.';
   } else if (/папк|media folder|файл не найден/.test(lower)) {
     title = 'Проблема с медиа';
     message = raw;
-    hint = 'Проверь папку медиа в Настройках и имена файлов в Excel.';
+    hint = 'Папка в Настройках и имена в Excel.';
   } else if (/excel|openpyxl|xlsx/.test(lower)) {
     title = 'Ошибка Excel';
     message = raw;
-    hint = 'Нужен файл .xlsx/.xlsm с колонками: имя | переменные | External id.';
+    hint = 'Нужен .xlsx: имя | переменные | External id.';
   }
 
   return { title: title, message: message, detail: raw === message ? '' : raw, hint: hint };
@@ -1419,15 +1417,40 @@ async function loadPlaylists() {
   renderPlaylists();
 }
 
+/** Показать в полях только host:port (без http://). */
+function hostPortFromBaseUrl(url) {
+  const raw = String(url || '').trim();
+  if (!raw) return '';
+  try {
+    const withScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(raw) ? raw : ('http://' + raw);
+    const u = new URL(withScheme);
+    return u.host || raw.replace(/^https?:\/\//i, '').replace(/\/.*$/, '');
+  } catch (e) {
+    return raw.replace(/^https?:\/\//i, '').replace(/\/.*$/, '');
+  }
+}
+
+/** Собрать Base URL для API: всегда http://IP:порт */
+function baseUrlFromHostPort(hostPort) {
+  var s = String(hostPort || '').trim();
+  if (!s) return '';
+  s = s.replace(/^[a-z][a-z0-9+.-]*:\/\//i, '');
+  s = s.replace(/\/+$/, '');
+  s = s.replace(/\/.*$/, '');
+  if (!s) return '';
+  return 'http://' + s;
+}
+
 function syncConnectionFields(opts) {
   opts = opts || {};
   const url = opts.baseUrl != null ? String(opts.baseUrl).trim() : '';
   const login = opts.login != null ? String(opts.login).trim() : '';
   const password = opts.password != null ? String(opts.password) : null;
+  const hostPort = opts.baseUrl != null ? hostPortFromBaseUrl(url) : null;
 
-  if (opts.baseUrl != null) {
-    if (el.baseUrl) el.baseUrl.value = url;
-    if (el.settingsBaseUrl) el.settingsBaseUrl.value = url;
+  if (hostPort != null) {
+    if (el.baseUrl) el.baseUrl.value = hostPort;
+    if (el.settingsBaseUrl) el.settingsBaseUrl.value = hostPort;
   }
   if (opts.login != null) {
     if (el.login) el.login.value = login;
@@ -1487,19 +1510,20 @@ async function connect(creds) {
 }
 
 async function applyConnectionFromSettings() {
-  const url = el.settingsBaseUrl ? el.settingsBaseUrl.value.trim() : '';
+  const hostPort = el.settingsBaseUrl ? el.settingsBaseUrl.value.trim() : '';
+  const url = baseUrlFromHostPort(hostPort);
   const login = el.settingsLogin ? el.settingsLogin.value.trim() : '';
   const password = el.settingsPassword ? el.settingsPassword.value : '';
   if (!url) {
-    showWarning('Нет адреса', 'Укажи Carrot Base URL (например http://host:5001).');
+    showWarning('Нет адреса', 'Укажи IP:порт, например 172.17.97.71:5001');
     return;
   }
   if (!login) {
-    showWarning('Нет логина', 'Укажи login для Carrot REST.');
+    showWarning('Нет логина', 'Укажи логин Carrot.');
     return;
   }
   if (!password) {
-    showWarning('Нет пароля', 'Укажи password для Carrot REST.');
+    showWarning('Нет пароля', 'Укажи пароль Carrot.');
     return;
   }
   if (el.settingsConnectionSaveBtn) el.settingsConnectionSaveBtn.disabled = true;
@@ -1646,8 +1670,8 @@ function updateCreateActions() {
   el.createSubmitBtn.textContent = ready > 1 ? ('Создать (' + ready + ')') : 'Создать';
   el.createHint.style.whiteSpace = 'pre-line';
   el.createHint.textContent = n > 1
-    ? ('Выбрано полей: ' + n + ' — имя, External id, шаблон и переменные применяются ко всем выбранным.')
-    : 'Добавь + ивент или «Импорт Excel» (шаблон выбирается в диалоге).\nExcel: 1-й столбец = имя, последний = External id, середина = переменные (Media = имя файла).\nПапка медиа — в боковом меню → Настройки.';
+    ? ('Выбрано: ' + n + '. Правки имени и шаблона — сразу у всех.')
+    : 'Вручную (+ ивент) или Excel: имя | переменные | External id. Media — имя файла.';
 }
 
 async function ensureTemplatesLoaded(force) {
@@ -2027,7 +2051,7 @@ async function submitCreateForms() {
 el.connectForm.addEventListener('submit', function (e) {
   e.preventDefault();
   connect({
-    baseUrl: el.baseUrl.value.trim() || undefined,
+    baseUrl: baseUrlFromHostPort(el.baseUrl.value) || undefined,
     login: el.login.value.trim() || undefined,
     password: el.password.value || undefined
   }).catch(function () { /* toasted */ });
