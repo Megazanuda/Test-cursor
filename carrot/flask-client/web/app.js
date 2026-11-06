@@ -150,8 +150,9 @@ const el = {
   settingsLogin: document.getElementById('settingsLogin'),
   settingsPassword: document.getElementById('settingsPassword'),
   settingsConnectionSaveBtn: document.getElementById('settingsConnectionSaveBtn'),
-  mediaFolderInput: document.getElementById('mediaFolderInput'),
-  mediaFolderSaveBtn: document.getElementById('mediaFolderSaveBtn'),
+  mediaFolderPath: document.getElementById('mediaFolderPath'),
+  mediaFolderPickBtn: document.getElementById('mediaFolderPickBtn'),
+  mediaFolderClearBtn: document.getElementById('mediaFolderClearBtn'),
   playlistsGroup: document.getElementById('playlistsGroup'),
   settingsGroup: document.getElementById('settingsGroup'),
   editorPanel: document.getElementById('editorPanel'),
@@ -1419,15 +1420,40 @@ async function loadPlaylists() {
   renderPlaylists();
 }
 
+function hostPortFromBaseUrl(url) {
+  const raw = String(url || '').trim();
+  if (!raw) return '';
+  try {
+    const withScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(raw) ? raw : ('http://' + raw);
+    const u = new URL(withScheme);
+    if (!u.hostname) return raw.replace(/^https?:\/\//i, '').replace(/\/+$/, '');
+    return u.host;
+  } catch (e) {
+    return raw.replace(/^https?:\/\//i, '').replace(/\/+$/, '');
+  }
+}
+
+/** Собрать Base URL для API: всегда http://IP:порт */
+function baseUrlFromHostPort(hostPort) {
+  let s = String(hostPort || '').trim();
+  if (!s) return '';
+  s = s.replace(/^https?:\/\//i, '');
+  s = s.replace(/\/+$/, '');
+  s = s.replace(/\/.*$/, '');
+  if (!s) return '';
+  return 'http://' + s;
+}
+
 function syncConnectionFields(opts) {
   opts = opts || {};
   const url = opts.baseUrl != null ? String(opts.baseUrl).trim() : '';
   const login = opts.login != null ? String(opts.login).trim() : '';
   const password = opts.password != null ? String(opts.password) : null;
+  const hostPort = opts.baseUrl != null ? hostPortFromBaseUrl(url) : null;
 
-  if (opts.baseUrl != null) {
-    if (el.baseUrl) el.baseUrl.value = url;
-    if (el.settingsBaseUrl) el.settingsBaseUrl.value = url;
+  if (hostPort != null) {
+    if (el.baseUrl) el.baseUrl.value = hostPort;
+    if (el.settingsBaseUrl) el.settingsBaseUrl.value = hostPort;
   }
   if (opts.login != null) {
     if (el.login) el.login.value = login;
@@ -1462,7 +1488,7 @@ async function connect(creds) {
         login: data.login || (creds && creds.login) || '',
         password: (creds && creds.password) != null
           ? creds.password
-          : (el.settingsPassword && el.settingsPassword.value) || ''
+          : (el.password && el.password.value) || ''
       });
       clearLegacyCredentialStorage();
       setStatus('онлайн · ' + data.baseUrl, 'ok');
@@ -1475,7 +1501,7 @@ async function connect(creds) {
       await loadPlaylists();
       state.allEventsScope = 'recent';
       await selectAllEvents({ quiet: true });
-      toast('Подключено к ' + data.baseUrl + ' (.env обновлён)', 'ok');
+      toast('Подключено к ' + data.baseUrl, 'ok');
     }, 'Проверяем доступ к REST API');
   } catch (err) {
     setStatus('не подключено', 'err');
@@ -1487,19 +1513,20 @@ async function connect(creds) {
 }
 
 async function applyConnectionFromSettings() {
-  const url = el.settingsBaseUrl ? el.settingsBaseUrl.value.trim() : '';
+  const hostPort = el.settingsBaseUrl ? el.settingsBaseUrl.value.trim() : '';
+  const url = baseUrlFromHostPort(hostPort);
   const login = el.settingsLogin ? el.settingsLogin.value.trim() : '';
   const password = el.settingsPassword ? el.settingsPassword.value : '';
   if (!url) {
-    showWarning('Нет адреса', 'Укажи Carrot Base URL (например http://host:5001).');
+    showWarning('Нет адреса', 'Укажи IP:порт, например 172.17.97.71:5001');
     return;
   }
   if (!login) {
-    showWarning('Нет логина', 'Укажи login для Carrot REST.');
+    showWarning('Нет логина', 'Укажи логин Carrot.');
     return;
   }
   if (!password) {
-    showWarning('Нет пароля', 'Укажи password для Carrot REST.');
+    showWarning('Нет пароля', 'Укажи пароль Carrot.');
     return;
   }
   if (el.settingsConnectionSaveBtn) el.settingsConnectionSaveBtn.disabled = true;
@@ -2027,7 +2054,7 @@ async function submitCreateForms() {
 el.connectForm.addEventListener('submit', function (e) {
   e.preventDefault();
   connect({
-    baseUrl: el.baseUrl.value.trim() || undefined,
+    baseUrl: baseUrlFromHostPort(el.baseUrl.value) || undefined,
     login: el.login.value.trim() || undefined,
     password: el.password.value || undefined
   }).catch(function () { /* toasted */ });
@@ -2231,19 +2258,65 @@ document.addEventListener('DOMContentLoaded', function () {
 });
 
 
-function getMediaFolder() {
+var mediaDirHandle = null;
+
+function getMediaFolderLabel() {
   try { return localStorage.getItem(MEDIA_FOLDER_KEY) || ''; }
   catch (e) { return ''; }
 }
 
-function setMediaFolder(path) {
-  const v = String(path || '').trim();
+function setMediaFolderLabel(name) {
+  const v = String(name || '').trim();
   try {
     if (v) localStorage.setItem(MEDIA_FOLDER_KEY, v);
     else localStorage.removeItem(MEDIA_FOLDER_KEY);
   } catch (e) { /* ignore */ }
-  if (el.mediaFolderInput) el.mediaFolderInput.value = v;
+  if (el.mediaFolderPath) {
+    el.mediaFolderPath.textContent = v ? v : 'папка не выбрана';
+  }
   return v;
+}
+
+async function pickMediaFolder() {
+  if (typeof window.showDirectoryPicker !== 'function') {
+    showWarning(
+      'Выбор папки недоступен',
+      'Нужен Chrome или Edge. Открой страницу через web.cmd.'
+    );
+    return;
+  }
+  try {
+    const handle = await window.showDirectoryPicker({ mode: 'read' });
+    mediaDirHandle = handle;
+    setMediaFolderLabel(handle.name || 'выбранная папка');
+    toast('Папка медиа: ' + (handle.name || 'выбрана'), 'ok');
+  } catch (err) {
+    if (err && err.name === 'AbortError') return;
+    showError('Не удалось выбрать папку', err);
+  }
+}
+
+function clearMediaFolder() {
+  mediaDirHandle = null;
+  setMediaFolderLabel('');
+  toast('Папка медиа сброшена', 'ok');
+}
+
+async function collectMediaFilesFromDir(dirHandle) {
+  const out = [];
+  if (!dirHandle) return out;
+  async function walk(handle) {
+    for await (const entry of handle.values()) {
+      if (entry.kind === 'file') {
+        const file = await entry.getFile();
+        out.push(file);
+      } else if (entry.kind === 'directory') {
+        await walk(entry);
+      }
+    }
+  }
+  await walk(dirHandle);
+  return out;
 }
 
 function applyTheme(theme) {
@@ -2306,11 +2379,17 @@ async function importEventsFromExcel(file) {
     showWarning('Нужен шаблон', 'Сначала выбери шаблон в диалоге импорта Excel.');
     return;
   }
+  const folderLabel = getMediaFolderLabel();
   const fd = new FormData();
   fd.append('file', file, file.name);
   fd.append('templateId', templateId);
-  const folder = getMediaFolder();
-  if (folder) fd.append('mediaFolder', folder);
+
+  if (mediaDirHandle) {
+    const mediaFiles = await collectMediaFilesFromDir(mediaDirHandle);
+    mediaFiles.forEach(function (mf) {
+      fd.append('mediaFiles', mf, mf.name);
+    });
+  }
 
   const json = await withLoading(
     'Импорт Excel…',
@@ -2335,7 +2414,7 @@ async function importEventsFromExcel(file) {
       }
       return parsed;
     },
-    file.name + (folder ? '\nПапка медиа: ' + folder : '')
+    file.name + (folderLabel ? '\nПапка медиа: ' + folderLabel : '')
   );
 
   const created = (json && json.created) ? json.created : [];
@@ -2412,6 +2491,17 @@ if (el.excelImportForm) {
   });
 }
 
+setMediaFolderLabel(getMediaFolderLabel());
+if (el.mediaFolderPickBtn) {
+  el.mediaFolderPickBtn.addEventListener('click', function () {
+    pickMediaFolder();
+  });
+}
+if (el.mediaFolderClearBtn) {
+  el.mediaFolderClearBtn.addEventListener('click', function () {
+    clearMediaFolder();
+  });
+}
 if (el.settingsConnectionSaveBtn) {
   el.settingsConnectionSaveBtn.addEventListener('click', function () {
     applyConnectionFromSettings();
@@ -2427,34 +2517,6 @@ if (el.settingsConnectionSaveBtn) {
     }
   });
 });
-
-if (el.mediaFolderInput) {
-  el.mediaFolderInput.value = getMediaFolder();
-}
-if (el.mediaFolderSaveBtn) {
-  el.mediaFolderSaveBtn.addEventListener('click', async function () {
-    const path = el.mediaFolderInput ? el.mediaFolderInput.value.trim() : '';
-    if (!path) {
-      setMediaFolder('');
-      toast('Папка медиа сброшена', 'ok');
-      return;
-    }
-    el.mediaFolderSaveBtn.disabled = true;
-    try {
-      const data = await withLoading(
-        'Проверка папки медиа…',
-        function () { return api('POST', '/api/settings/check-media-folder', { path: path }); },
-        path
-      );
-      setMediaFolder(data.path || path);
-      toast('Папка медиа сохранена', 'ok');
-    } catch (err) {
-      showError('Папка медиа недоступна', err);
-    } finally {
-      el.mediaFolderSaveBtn.disabled = false;
-    }
-  });
-}
 
 applyTheme(localStorage.getItem(THEME_KEY) === 'dark' ? 'dark' : 'light');
 if (el.themeToggleBtn) {

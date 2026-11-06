@@ -386,17 +386,23 @@ def api_connect():
     body = request.get_json(silent=True) or {}
     client = ensure_client(body)
     client.authenticate()
-    persist_connection_to_env(
-        base_url=_session.get("baseUrl"),
-        login=_session.get("login"),
-        password=_session.get("password"),
-    )
+    # Писать в .env только по явному запросу (DEV UI: persistEnv=true).
+    persist = body.get("persistEnv") or body.get("persist_env")
+    if persist in (True, 1, "1", "true", "True", "yes"):
+        persist_connection_to_env(
+            base_url=_session.get("baseUrl"),
+            login=_session.get("login"),
+            password=_session.get("password"),
+        )
     return jsonify(
         {
             "ok": True,
             "baseUrl": client.base_url,
             "login": _session.get("login") or "",
             "envPath": str(ENV_PATH),
+            "envWritten": bool(
+                persist in (True, 1, "1", "true", "True", "yes")
+            ),
         }
     )
 
@@ -612,7 +618,8 @@ def api_events_import_excel():
     multipart/form-data:
       file — .xlsx/.xlsm
       templateId — GUID шаблона
-      mediaFolder — опц. локальная папка для Media-файлов из Excel
+      mediaFolder — опц. локальная папка сервера для Media-файлов из Excel
+      mediaFiles — опц. файлы из выбранной в браузере папки
       hasHeader — optional 0/1 (авто: если 1-я ячейка похожа на «имя»/name)
 
     Столбцы: 1 = имя, последний = External id, между ними = переменные
@@ -636,6 +643,17 @@ def api_events_import_excel():
         or request.form.get("media_folder")
         or ""
     ).strip() or None
+
+    # Файлы из выбранной в браузере папки: mediaFiles / mediaFiles[] / mediaFile
+    media_files: dict[str, bytes] = {}
+    for key in ("mediaFiles", "mediaFiles[]", "mediaFile"):
+        for f in request.files.getlist(key):
+            if not f or not f.filename:
+                continue
+            name = Path(f.filename).name
+            raw_bytes = f.read()
+            if name and raw_bytes:
+                media_files[name] = raw_bytes
 
     has_header_raw = (
         request.form.get("hasHeader")
@@ -695,6 +713,7 @@ def api_events_import_excel():
             drafts,
             assets=assets,
             media_folder=media_folder,
+            media_files=media_files or None,
             upload_file=_upload,
         )
         missing = media_report.get("missing") or []

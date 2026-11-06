@@ -2579,6 +2579,7 @@ def resolve_media_in_drafts(
     *,
     assets: list[dict[str, Any]],
     media_folder: Optional[str] = None,
+    media_files: Optional[dict[str, bytes]] = None,
     upload_file: Optional[Callable[[bytes, str], dict[str, Any]]] = None,
 ) -> dict[str, Any]:
     """
@@ -2586,7 +2587,7 @@ def resolve_media_in_drafts(
 
     1) если уже «guid;name» — оставить
     2) если ассет с таким именем есть в Carrot — подставить id;name
-    3) иначе искать в media_folder и upload_file(...)
+    3) иначе взять из media_files (имя → bytes) или media_folder и upload_file(...)
     """
     index = index_assets_by_name(assets)
     resolved = 0
@@ -2594,6 +2595,14 @@ def resolve_media_in_drafts(
     reused = 0
     missing: list[dict[str, Any]] = []
     folder = (media_folder or "").strip() or None
+    files_by_name: dict[str, bytes] = {}
+    if media_files:
+        for fname, blob in media_files.items():
+            if not fname or blob is None:
+                continue
+            files_by_name[_norm_name(Path(str(fname)).name)] = bytes(blob)
+            stem = _norm_name(Path(str(fname)).stem)
+            files_by_name.setdefault(stem, bytes(blob))
 
     for draft in drafts:
         excel_row = draft.get("_excelRow")
@@ -2623,17 +2632,6 @@ def resolve_media_in_drafts(
                 reused += 1
                 continue
 
-            if not folder:
-                missing.append(
-                    {
-                        "row": excel_row,
-                        "variable": var.get("name"),
-                        "file": filename,
-                        "reason": "медиа нет в Carrot; укажи папку в Настройках",
-                    }
-                )
-                continue
-
             if upload_file is None:
                 missing.append(
                     {
@@ -2641,6 +2639,27 @@ def resolve_media_in_drafts(
                         "variable": var.get("name"),
                         "file": filename,
                         "reason": "нет обработчика загрузки",
+                    }
+                )
+                continue
+
+            blob = files_by_name.get(key) or files_by_name.get(_norm_name(Path(key).stem))
+            upload_name = Path(filename).name
+            if blob is not None:
+                asset = upload_file(blob, upload_name)
+                var["value"] = f"{asset['id']};{asset.get('name') or upload_name}"
+                index[_norm_name(asset.get("name") or upload_name)] = asset
+                resolved += 1
+                uploaded += 1
+                continue
+
+            if not folder:
+                missing.append(
+                    {
+                        "row": excel_row,
+                        "variable": var.get("name"),
+                        "file": filename,
+                        "reason": "медиа нет в Carrot; выбери папку в Настройках",
                     }
                 )
                 continue

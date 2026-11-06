@@ -21,15 +21,16 @@
       <p class="lede">REST или значения из <code>.env</code>.</p>
       <form id="connectForm" class="connect-form" autocomplete="off">
         <label>
-          <span>Base URL</span>
-          <input id="baseUrl" name="baseUrl" type="url" placeholder="http://172.17.97.71:5001" />
+          <span>Адрес (IP:порт)</span>
+          <input id="baseUrl" name="baseUrl" type="text" inputmode="url"
+            placeholder="172.17.97.71:5001" spellcheck="false" />
         </label>
         <label>
-          <span>Login</span>
+          <span>Логин</span>
           <input id="login" name="login" type="text" autocomplete="username" />
         </label>
         <label>
-          <span>Password</span>
+          <span>Пароль</span>
           <input id="password" name="password" type="password" autocomplete="current-password" />
         </label>
         <button type="submit" class="btn primary" id="connectBtn">Подключить</button>
@@ -70,35 +71,30 @@
               </div>
               <div class="settings-row">
                 <span class="settings-label">Подключение к Carrot</span>
-                <label class="settings-sublabel" for="settingsBaseUrl">Base URL</label>
-                <input type="url" id="settingsBaseUrl" class="settings-input"
-                  placeholder="http://172.17.97.71:5001" spellcheck="false"
-                  autocomplete="off" />
-                <label class="settings-sublabel" for="settingsLogin">Login</label>
+                <label class="settings-sublabel" for="settingsBaseUrl">Адрес (IP:порт)</label>
+                <input type="text" id="settingsBaseUrl" class="settings-input"
+                  placeholder="172.17.97.71:5001" spellcheck="false"
+                  inputmode="url" autocomplete="off" />
+                <label class="settings-sublabel" for="settingsLogin">Логин</label>
                 <input type="text" id="settingsLogin" class="settings-input"
                   placeholder="admin" spellcheck="false"
                   autocomplete="username" />
-                <label class="settings-sublabel" for="settingsPassword">Password</label>
+                <label class="settings-sublabel" for="settingsPassword">Пароль</label>
                 <input type="password" id="settingsPassword" class="settings-input"
                   placeholder="••••••••" autocomplete="current-password" />
-                <p class="settings-hint">
-                  REST API (часто порт 5001, не 8088). Значения пишутся в
-                  файл <code>.env</code> рядом с приложением и сразу
-                  применяются.
-                </p>
+                <p class="settings-hint">Пишется в <code>.env</code> и сразу применяется (только DEV).</p>
                 <button type="button" class="btn ghost sm" id="settingsConnectionSaveBtn">
                   Сохранить в .env
                 </button>
               </div>
               <div class="settings-row">
-                <label class="settings-label" for="mediaFolderInput">Папка медиа для Excel</label>
-                <input type="text" id="mediaFolderInput" class="settings-input"
-                  placeholder="C:\Media\Carrot" spellcheck="false" />
-                <p class="settings-hint">
-                  Если в Excel указано имя файла, которого ещё нет в Carrot —
-                  ищем его здесь и загружаем.
-                </p>
-                <button type="button" class="btn ghost sm" id="mediaFolderSaveBtn">Сохранить папку</button>
+                <span class="settings-label">Папка медиа для Excel</span>
+                <p class="settings-path" id="mediaFolderPath">папка не выбрана</p>
+                <p class="settings-hint">Через менеджер файлов. Нужны имена из Excel, которых ещё нет в Carrot.</p>
+                <div class="settings-actions">
+                  <button type="button" class="btn ghost sm" id="mediaFolderPickBtn">Выбрать папку…</button>
+                  <button type="button" class="btn ghost sm" id="mediaFolderClearBtn">Сбросить</button>
+                </div>
               </div>
             </div>
           </details>
