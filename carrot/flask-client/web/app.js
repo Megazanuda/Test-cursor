@@ -150,8 +150,9 @@ const el = {
   settingsLogin: document.getElementById('settingsLogin'),
   settingsPassword: document.getElementById('settingsPassword'),
   settingsConnectionSaveBtn: document.getElementById('settingsConnectionSaveBtn'),
-  mediaFolderInput: document.getElementById('mediaFolderInput'),
-  mediaFolderSaveBtn: document.getElementById('mediaFolderSaveBtn'),
+  mediaFolderPath: document.getElementById('mediaFolderPath'),
+  mediaFolderPickBtn: document.getElementById('mediaFolderPickBtn'),
+  mediaFolderClearBtn: document.getElementById('mediaFolderClearBtn'),
   playlistsGroup: document.getElementById('playlistsGroup'),
   settingsGroup: document.getElementById('settingsGroup'),
   editorPanel: document.getElementById('editorPanel'),
@@ -225,7 +226,7 @@ function humanizeError(err) {
   } else if (/cors|failed to fetch|networkerror|сеть:/.test(lower)) {
     title = 'Сетевая ошибка';
     message = 'Браузер не смог связаться с локальным сервером UI или с Carrot.';
-    hint = 'Убедись, что Flask/web.cmd запущен и адрес страницы верный.';
+    hint = 'Убедись, что web.cmd (Flask) запущен и адрес страницы верный.';
   } else if (/не json|html — веб-интерфейс|не rest/.test(lower)) {
     title = 'Неверный адрес REST API';
     message = 'По этому URL отвечает не REST Carrot (часто веб-плейлист).';
@@ -1419,15 +1420,40 @@ async function loadPlaylists() {
   renderPlaylists();
 }
 
+function hostPortFromBaseUrl(url) {
+  const raw = String(url || '').trim();
+  if (!raw) return '';
+  try {
+    const withScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(raw) ? raw : ('http://' + raw);
+    const u = new URL(withScheme);
+    if (!u.hostname) return raw.replace(/^https?:\/\//i, '').replace(/\/+$/, '');
+    return u.host;
+  } catch (e) {
+    return raw.replace(/^https?:\/\//i, '').replace(/\/+$/, '');
+  }
+}
+
+/** Собрать Base URL для API: всегда http://IP:порт */
+function baseUrlFromHostPort(hostPort) {
+  let s = String(hostPort || '').trim();
+  if (!s) return '';
+  s = s.replace(/^https?:\/\//i, '');
+  s = s.replace(/\/+$/, '');
+  s = s.replace(/\/.*$/, '');
+  if (!s) return '';
+  return 'http://' + s;
+}
+
 function syncConnectionFields(opts) {
   opts = opts || {};
   const url = opts.baseUrl != null ? String(opts.baseUrl).trim() : '';
   const login = opts.login != null ? String(opts.login).trim() : '';
   const password = opts.password != null ? String(opts.password) : null;
+  const hostPort = opts.baseUrl != null ? hostPortFromBaseUrl(url) : null;
 
-  if (opts.baseUrl != null) {
-    if (el.baseUrl) el.baseUrl.value = url;
-    if (el.settingsBaseUrl) el.settingsBaseUrl.value = url;
+  if (hostPort != null) {
+    if (el.baseUrl) el.baseUrl.value = hostPort;
+    if (el.settingsBaseUrl) el.settingsBaseUrl.value = hostPort;
   }
   if (opts.login != null) {
     if (el.login) el.login.value = login;
@@ -1462,7 +1488,7 @@ async function connect(creds) {
         login: data.login || (creds && creds.login) || '',
         password: (creds && creds.password) != null
           ? creds.password
-          : (el.settingsPassword && el.settingsPassword.value) || ''
+          : (el.password && el.password.value) || ''
       });
       clearLegacyCredentialStorage();
       setStatus('онлайн · ' + data.baseUrl, 'ok');
@@ -1475,7 +1501,7 @@ async function connect(creds) {
       await loadPlaylists();
       state.allEventsScope = 'recent';
       await selectAllEvents({ quiet: true });
-      toast('Подключено к ' + data.baseUrl + ' (.env обновлён)', 'ok');
+      toast('Подключено к ' + data.baseUrl, 'ok');
     }, 'Проверяем доступ к REST API');
   } catch (err) {
     setStatus('не подключено', 'err');
@@ -1487,19 +1513,20 @@ async function connect(creds) {
 }
 
 async function applyConnectionFromSettings() {
-  const url = el.settingsBaseUrl ? el.settingsBaseUrl.value.trim() : '';
+  const hostPort = el.settingsBaseUrl ? el.settingsBaseUrl.value.trim() : '';
+  const url = baseUrlFromHostPort(hostPort);
   const login = el.settingsLogin ? el.settingsLogin.value.trim() : '';
   const password = el.settingsPassword ? el.settingsPassword.value : '';
   if (!url) {
-    showWarning('Нет адреса', 'Укажи Carrot Base URL (например http://host:5001).');
+    showWarning('Нет адреса', 'Укажи IP:порт, например 172.17.97.71:5001');
     return;
   }
   if (!login) {
-    showWarning('Нет логина', 'Укажи login для Carrot REST.');
+    showWarning('Нет логина', 'Укажи логин Carrot.');
     return;
   }
   if (!password) {
-    showWarning('Нет пароля', 'Укажи password для Carrot REST.');
+    showWarning('Нет пароля', 'Укажи пароль Carrot.');
     return;
   }
   if (el.settingsConnectionSaveBtn) el.settingsConnectionSaveBtn.disabled = true;
@@ -2027,7 +2054,7 @@ async function submitCreateForms() {
 el.connectForm.addEventListener('submit', function (e) {
   e.preventDefault();
   connect({
-    baseUrl: el.baseUrl.value.trim() || undefined,
+    baseUrl: baseUrlFromHostPort(el.baseUrl.value) || undefined,
     login: el.login.value.trim() || undefined,
     password: el.password.value || undefined
   }).catch(function () { /* toasted */ });
@@ -2231,19 +2258,65 @@ document.addEventListener('DOMContentLoaded', function () {
 });
 
 
-function getMediaFolder() {
+var mediaDirHandle = null;
+
+function getMediaFolderLabel() {
   try { return localStorage.getItem(MEDIA_FOLDER_KEY) || ''; }
   catch (e) { return ''; }
 }
 
-function setMediaFolder(path) {
-  const v = String(path || '').trim();
+function setMediaFolderLabel(name) {
+  const v = String(name || '').trim();
   try {
     if (v) localStorage.setItem(MEDIA_FOLDER_KEY, v);
     else localStorage.removeItem(MEDIA_FOLDER_KEY);
   } catch (e) { /* ignore */ }
-  if (el.mediaFolderInput) el.mediaFolderInput.value = v;
+  if (el.mediaFolderPath) {
+    el.mediaFolderPath.textContent = v ? v : 'папка не выбрана';
+  }
   return v;
+}
+
+async function pickMediaFolder() {
+  if (typeof window.showDirectoryPicker !== 'function') {
+    showWarning(
+      'Выбор папки недоступен',
+      'Нужен Chrome или Edge. Открой страницу через web.cmd.'
+    );
+    return;
+  }
+  try {
+    const handle = await window.showDirectoryPicker({ mode: 'read' });
+    mediaDirHandle = handle;
+    setMediaFolderLabel(handle.name || 'выбранная папка');
+    toast('Папка медиа: ' + (handle.name || 'выбрана'), 'ok');
+  } catch (err) {
+    if (err && err.name === 'AbortError') return;
+    showError('Не удалось выбрать папку', err);
+  }
+}
+
+function clearMediaFolder() {
+  mediaDirHandle = null;
+  setMediaFolderLabel('');
+  toast('Папка медиа сброшена', 'ok');
+}
+
+async function collectMediaFilesFromDir(dirHandle) {
+  const out = [];
+  if (!dirHandle) return out;
+  async function walk(handle) {
+    for await (const entry of handle.values()) {
+      if (entry.kind === 'file') {
+        const file = await entry.getFile();
+        out.push(file);
+      } else if (entry.kind === 'directory') {
+        await walk(entry);
+      }
+    }
+  }
+  await walk(dirHandle);
+  return out;
 }
 
 function applyTheme(theme) {
@@ -2306,11 +2379,17 @@ async function importEventsFromExcel(file) {
     showWarning('Нужен шаблон', 'Сначала выбери шаблон в диалоге импорта Excel.');
     return;
   }
+  const folderLabel = getMediaFolderLabel();
   const fd = new FormData();
   fd.append('file', file, file.name);
   fd.append('templateId', templateId);
-  const folder = getMediaFolder();
-  if (folder) fd.append('mediaFolder', folder);
+
+  if (mediaDirHandle) {
+    const mediaFiles = await collectMediaFilesFromDir(mediaDirHandle);
+    mediaFiles.forEach(function (mf) {
+      fd.append('mediaFiles', mf, mf.name);
+    });
+  }
 
   const json = await withLoading(
     'Импорт Excel…',
@@ -2335,7 +2414,7 @@ async function importEventsFromExcel(file) {
       }
       return parsed;
     },
-    file.name + (folder ? '\nПапка медиа: ' + folder : '')
+    file.name + (folderLabel ? '\nПапка медиа: ' + folderLabel : '')
   );
 
   const created = (json && json.created) ? json.created : [];
@@ -2412,6 +2491,17 @@ if (el.excelImportForm) {
   });
 }
 
+setMediaFolderLabel(getMediaFolderLabel());
+if (el.mediaFolderPickBtn) {
+  el.mediaFolderPickBtn.addEventListener('click', function () {
+    pickMediaFolder();
+  });
+}
+if (el.mediaFolderClearBtn) {
+  el.mediaFolderClearBtn.addEventListener('click', function () {
+    clearMediaFolder();
+  });
+}
 if (el.settingsConnectionSaveBtn) {
   el.settingsConnectionSaveBtn.addEventListener('click', function () {
     applyConnectionFromSettings();
@@ -2428,34 +2518,6 @@ if (el.settingsConnectionSaveBtn) {
   });
 });
 
-if (el.mediaFolderInput) {
-  el.mediaFolderInput.value = getMediaFolder();
-}
-if (el.mediaFolderSaveBtn) {
-  el.mediaFolderSaveBtn.addEventListener('click', async function () {
-    const path = el.mediaFolderInput ? el.mediaFolderInput.value.trim() : '';
-    if (!path) {
-      setMediaFolder('');
-      toast('Папка медиа сброшена', 'ok');
-      return;
-    }
-    el.mediaFolderSaveBtn.disabled = true;
-    try {
-      const data = await withLoading(
-        'Проверка папки медиа…',
-        function () { return api('POST', '/api/settings/check-media-folder', { path: path }); },
-        path
-      );
-      setMediaFolder(data.path || path);
-      toast('Папка медиа сохранена', 'ok');
-    } catch (err) {
-      showError('Папка медиа недоступна', err);
-    } finally {
-      el.mediaFolderSaveBtn.disabled = false;
-    }
-  });
-}
-
 applyTheme(localStorage.getItem(THEME_KEY) === 'dark' ? 'dark' : 'light');
 if (el.themeToggleBtn) {
   el.themeToggleBtn.addEventListener('click', function () {
@@ -2469,3 +2531,185 @@ document.addEventListener('click', function (event) {
     menu.removeAttribute('open');
   }
 });
+
+/* ===== DEV traffic panel ===== */
+(function initDevTrafficPanel() {
+  const panel = document.getElementById('devTrafficPanel');
+  const fab = document.getElementById('devTrafficFab');
+  const listEl = document.getElementById('devTrafficList');
+  const detailEl = document.getElementById('devTrafficDetail');
+  const statsEl = document.getElementById('devTrafficStats');
+  const pauseBtn = document.getElementById('devTrafficPauseBtn');
+  const clearBtn = document.getElementById('devTrafficClearBtn');
+  const closeBtn = document.getElementById('devTrafficCloseBtn');
+  const uiCb = document.getElementById('devTrafficUi');
+  const carrotCb = document.getElementById('devTrafficCarrot');
+  if (!panel || !fab || !listEl || !detailEl) return;
+
+  const OPEN_KEY = 'carrot-dev-traffic-open';
+  var entriesById = Object.create(null);
+  var order = [];
+  var selectedId = null;
+  var paused = false;
+  var timer = null;
+
+  function wantOpen() {
+    try {
+      if (localStorage.getItem(OPEN_KEY) === '1') return true;
+    } catch (e) { /* ignore */ }
+    return /(?:^|[?&])dev=1(?:&|$)/.test(location.search);
+  }
+
+  function setOpen(open) {
+    panel.hidden = !open;
+    fab.hidden = !!open;
+    try { localStorage.setItem(OPEN_KEY, open ? '1' : '0'); } catch (e) { /* ignore */ }
+    if (open) startPoll();
+    else stopPoll();
+  }
+
+  function stopPoll() {
+    if (timer) { clearInterval(timer); timer = null; }
+  }
+
+  function startPoll() {
+    stopPoll();
+    poll();
+    timer = setInterval(poll, 1000);
+  }
+
+  function channelAllowed(ch) {
+    if (ch === 'ui') return !uiCb || uiCb.checked;
+    if (ch === 'carrot') return !carrotCb || carrotCb.checked;
+    return true;
+  }
+
+  function statusClass(st) {
+    if (st == null) return 'dev-st-err';
+    if (st >= 200 && st < 400) return 'dev-st-ok';
+    return 'dev-st-err';
+  }
+
+  function shortUrl(url) {
+    if (!url) return '';
+    try {
+      const u = new URL(url, location.origin);
+      return u.pathname + (u.search ? '?…' : '');
+    } catch (e) {
+      return String(url).slice(0, 80);
+    }
+  }
+
+  function renderList() {
+    listEl.innerHTML = '';
+    order.forEach(function (id) {
+      const e = entriesById[id];
+      if (!e || !channelAllowed(e.channel)) return;
+      const li = document.createElement('li');
+      if (id === selectedId) li.className = 'active';
+      li.dataset.id = id;
+      const ch = document.createElement('span');
+      ch.className = 'dev-ch' + (e.channel === 'ui' ? ' ui' : '');
+      ch.textContent = e.channel || '?';
+      const st = document.createElement('span');
+      st.className = statusClass(e.status);
+      st.textContent = ' ' + (e.status != null ? e.status : 'ERR') + ' ';
+      const meta = document.createElement('span');
+      meta.className = 'dev-meta';
+      meta.textContent = (e.method || '') + ' ' + shortUrl(e.url) +
+        (e.durationMs != null ? ' · ' + e.durationMs + 'ms' : '') +
+        (e.note ? ' · ' + e.note : '') +
+        (e.error ? ' · ' + e.error : '');
+      li.appendChild(ch);
+      li.appendChild(st);
+      li.appendChild(meta);
+      li.addEventListener('click', function () {
+        selectedId = id;
+        renderList();
+        renderDetail(e);
+      });
+      listEl.appendChild(li);
+    });
+  }
+
+  function renderDetail(e) {
+    if (!e) {
+      detailEl.textContent = 'Выбери запрос слева';
+      return;
+    }
+    const payload = {
+      id: e.id,
+      ts: e.ts ? new Date(e.ts * 1000).toISOString() : null,
+      channel: e.channel,
+      method: e.method,
+      url: e.url,
+      status: e.status,
+      durationMs: e.durationMs,
+      note: e.note,
+      error: e.error,
+      requestHeaders: e.requestHeaders,
+      requestBody: e.requestBody,
+      responseHeaders: e.responseHeaders,
+      responseBody: e.responseBody
+    };
+    detailEl.textContent = JSON.stringify(payload, null, 2);
+  }
+
+  function mergeEntries(list) {
+    (list || []).forEach(function (e) {
+      if (!e || !e.id) return;
+      if (!entriesById[e.id]) order.unshift(e.id);
+      entriesById[e.id] = e;
+    });
+    if (order.length > 400) {
+      const drop = order.splice(400);
+      drop.forEach(function (id) { delete entriesById[id]; });
+    }
+  }
+
+  async function poll() {
+    if (paused || panel.hidden) return;
+    try {
+      const data = await api('GET', '/api/dev/traffic?limit=120');
+      mergeEntries(data.entries || []);
+      if (statsEl && data.stats) {
+        statsEl.textContent = 'всего ' + data.stats.total +
+          ' · ui ' + data.stats.ui +
+          ' · carrot ' + data.stats.carrot;
+      }
+      renderList();
+      if (selectedId && entriesById[selectedId]) renderDetail(entriesById[selectedId]);
+    } catch (err) {
+      if (statsEl) statsEl.textContent = 'ошибка опроса: ' + (err.message || err);
+    }
+  }
+
+  fab.addEventListener('click', function () { setOpen(true); });
+  if (closeBtn) closeBtn.addEventListener('click', function () { setOpen(false); });
+  if (pauseBtn) {
+    pauseBtn.addEventListener('click', function () {
+      paused = !paused;
+      pauseBtn.textContent = paused ? 'Продолжить' : 'Пауза';
+      if (!paused) poll();
+    });
+  }
+  if (clearBtn) {
+    clearBtn.addEventListener('click', async function () {
+      try {
+        await api('POST', '/api/dev/traffic/clear', {});
+        entriesById = Object.create(null);
+        order = [];
+        selectedId = null;
+        renderList();
+        renderDetail(null);
+        toast('DEV-лог очищен', 'ok');
+      } catch (err) {
+        showError('Не удалось очистить DEV-лог', err);
+      }
+    });
+  }
+  if (uiCb) uiCb.addEventListener('change', renderList);
+  if (carrotCb) carrotCb.addEventListener('change', renderList);
+
+  setOpen(wantOpen());
+})();

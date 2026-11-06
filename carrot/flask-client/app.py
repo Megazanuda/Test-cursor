@@ -14,6 +14,7 @@ import re
 import shutil
 import subprocess
 import threading
+import time
 import traceback
 import webbrowser
 from pathlib import Path
@@ -29,6 +30,7 @@ from carrot_client import (
     resolve_media_in_drafts,
     rows_to_event_drafts,
 )
+import traffic_log
 
 ROOT = Path(__file__).resolve().parent
 STATIC_DIR = ROOT / "web"
@@ -145,6 +147,23 @@ def persist_connection_to_env(
 
 
 
+def _on_carrot_traffic(entry: dict[str, Any]) -> None:
+    """Пишет Flask↔Carrot вызовы в DEV-лог."""
+    traffic_log.add(
+        channel=str(entry.get("channel") or "carrot"),
+        method=str(entry.get("method") or ""),
+        url=str(entry.get("url") or ""),
+        status=entry.get("status"),
+        duration_ms=entry.get("duration_ms"),
+        request_headers=entry.get("request_headers"),
+        request_body=entry.get("request_body"),
+        response_headers=entry.get("response_headers"),
+        response_body=entry.get("response_body"),
+        error=entry.get("error"),
+        note=entry.get("note"),
+    )
+
+
 def ensure_client(creds: Optional[dict[str, Any]] = None) -> CarrotClient:
     """Вернуть (или создать) singleton CarrotClient: body → session → env."""
     global _client, _client_key, _session
@@ -191,9 +210,12 @@ def ensure_client(creds: Optional[dict[str, Any]] = None) -> CarrotClient:
                 "wsFileUrl": ws_file_url,
                 "senderId": env("CARROT_SENDER_ID", "ticker-web"),
                 "receiverId": env("CARROT_RECEIVER_ID", "carrot-server"),
+                "traffic_hook": _on_carrot_traffic,
             }
         )
         _client_key = key
+    else:
+        _client.traffic_hook = _on_carrot_traffic
     _session = {
         "baseUrl": base_url,
         "login": login,
@@ -236,6 +258,102 @@ def index():
 
 
 # ---------------------------------------------------------------------------
+# DEV: лог UI↔Flask и эндпоинты панели трафика
+# ---------------------------------------------------------------------------
+
+@app.before_request
+def _dev_before_request():  # type: ignore[no-untyped-def]
+    if not request.path.startswith("/api/"):
+        return
+    # не логируем сам опрос панели
+    if request.path.startswith("/api/dev/"):
+        return
+    request._dev_t0 = time.time()  # type: ignore[attr-defined]
+    request._dev_body = None  # type: ignore[attr-defined]
+    try:
+        if request.mimetype and "json" in request.mimetype:
+            request._dev_body = request.get_json(silent=True)  # type: ignore[attr-defined]
+        elif request.files:
+            request._dev_body = {  # type: ignore[attr-defined]
+                "form": {k: request.form.get(k) for k in request.form},
+                "files": {
+                    k: {
+                        "filename": f.filename,
+                        "content_type": f.mimetype,
+                        "size": f.content_length,
+                    }
+                    for k, f in request.files.items()
+                },
+            }
+    except Exception:
+        request._dev_body = None  # type: ignore[attr-defined]
+
+
+@app.after_request
+def _dev_after_request(response):  # type: ignore[no-untyped-def]
+    if not request.path.startswith("/api/") or request.path.startswith("/api/dev/"):
+        return response
+    t0 = getattr(request, "_dev_t0", None)
+    duration = ((time.time() - t0) * 1000.0) if t0 else None
+    resp_body: Any = None
+    try:
+        if response.is_json:
+            resp_body = response.get_json(silent=True)
+        else:
+            raw = response.get_data(as_text=True) or ""
+            resp_body = raw[:2000]
+    except Exception:
+        resp_body = None
+    traffic_log.add(
+        channel="ui",
+        method=request.method,
+        url=request.path
+        + (("?" + request.query_string.decode("utf-8", "replace")) if request.query_string else ""),
+        status=response.status_code,
+        duration_ms=duration,
+        request_headers={
+            k: v
+            for k, v in request.headers.items()
+            if k.lower() in ("content-type", "accept", "content-length")
+        },
+        request_body=getattr(request, "_dev_body", None),
+        response_headers={
+            k: v
+            for k, v in response.headers.items()
+            if k.lower() in ("content-type", "content-length")
+        },
+        response_body=resp_body,
+    )
+    return response
+
+
+@app.get("/api/dev/traffic")
+def api_dev_traffic():
+    after_id = request.args.get("after") or None
+    channel = request.args.get("channel") or None
+    try:
+        limit = int(request.args.get("limit") or "120")
+    except ValueError:
+        limit = 120
+    return jsonify(
+        {
+            "ok": True,
+            "dev": True,
+            "stats": traffic_log.stats(),
+            "entries": traffic_log.list_entries(
+                after_id=after_id, limit=limit, channel=channel
+            ),
+        }
+    )
+
+
+@app.post("/api/dev/traffic/clear")
+def api_dev_traffic_clear():
+    traffic_log.clear()
+    return jsonify({"ok": True, "cleared": True, "stats": traffic_log.stats()})
+
+
+# ---------------------------------------------------------------------------
 # API (совместимо с rest-client/web-server.js)
 # ---------------------------------------------------------------------------
 
@@ -268,17 +386,23 @@ def api_connect():
     body = request.get_json(silent=True) or {}
     client = ensure_client(body)
     client.authenticate()
-    persist_connection_to_env(
-        base_url=_session.get("baseUrl"),
-        login=_session.get("login"),
-        password=_session.get("password"),
-    )
+    # Писать в .env только по явному запросу (DEV UI: persistEnv=true).
+    persist = body.get("persistEnv") or body.get("persist_env")
+    if persist in (True, 1, "1", "true", "True", "yes"):
+        persist_connection_to_env(
+            base_url=_session.get("baseUrl"),
+            login=_session.get("login"),
+            password=_session.get("password"),
+        )
     return jsonify(
         {
             "ok": True,
             "baseUrl": client.base_url,
             "login": _session.get("login") or "",
             "envPath": str(ENV_PATH),
+            "envWritten": bool(
+                persist in (True, 1, "1", "true", "True", "yes")
+            ),
         }
     )
 
@@ -494,7 +618,8 @@ def api_events_import_excel():
     multipart/form-data:
       file — .xlsx/.xlsm
       templateId — GUID шаблона
-      mediaFolder — опц. локальная папка для Media-файлов из Excel
+      mediaFolder — опц. локальная папка сервера для Media-файлов из Excel
+      mediaFiles — опц. файлы из выбранной в браузере папки
       hasHeader — optional 0/1 (авто: если 1-я ячейка похожа на «имя»/name)
 
     Столбцы: 1 = имя, последний = External id, между ними = переменные
@@ -518,6 +643,17 @@ def api_events_import_excel():
         or request.form.get("media_folder")
         or ""
     ).strip() or None
+
+    # Файлы из выбранной в браузере папки: mediaFiles / mediaFiles[] / mediaFile
+    media_files: dict[str, bytes] = {}
+    for key in ("mediaFiles", "mediaFiles[]", "mediaFile"):
+        for f in request.files.getlist(key):
+            if not f or not f.filename:
+                continue
+            name = Path(f.filename).name
+            raw_bytes = f.read()
+            if name and raw_bytes:
+                media_files[name] = raw_bytes
 
     has_header_raw = (
         request.form.get("hasHeader")
@@ -577,6 +713,7 @@ def api_events_import_excel():
             drafts,
             assets=assets,
             media_folder=media_folder,
+            media_files=media_files or None,
             upload_file=_upload,
         )
         missing = media_report.get("missing") or []
