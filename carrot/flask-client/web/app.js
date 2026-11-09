@@ -458,6 +458,7 @@ function setAutoNameEnabled(on) {
   } catch (e) { /* ignore */ }
   if (el.autoNameToggle) el.autoNameToggle.checked = !!on;
   updateCreateNamePlaceholders();
+  updateCreateActions();
 }
 
 function updateCreateNamePlaceholders() {
@@ -1670,10 +1671,16 @@ function targetCreateForms(localId) {
   return state.createForms.filter(function (f) { return f.localId === localId; });
 }
 
+function createFormHasName(f) {
+  if (String(f.name || '').trim()) return true;
+  if (!isAutoNameEnabled()) return false;
+  return !!nameFromFirstVariable(f.variables || []);
+}
+
 function updateCreateActions() {
   const n = createSelectedCount();
   const ready = state.createForms.filter(function (f) {
-    return f.templateId && String(f.name || '').trim();
+    return f.templateId && createFormHasName(f);
   }).length;
   el.createRemoveBtn.disabled = n === 0;
   el.createRemoveBtn.textContent = n > 1 ? ('Удалить выбранные (' + n + ')') : 'Удалить выбранные';
