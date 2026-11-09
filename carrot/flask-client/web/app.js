@@ -430,6 +430,52 @@ function isMediaType(type) {
   return String(type || '').toLowerCase() === 'media';
 }
 
+/** Имя ивента из первой переменной; для Media — имя файла. */
+function nameFromFirstVariable(variables) {
+  if (!variables || !variables.length) return '';
+  const v = variables[0] || {};
+  const raw = v.value == null ? '' : String(v.value).trim();
+  if (!raw) return '';
+  if (isMediaType(v.type)) {
+    const parsed = parseMediaValue(raw);
+    const label = (parsed.name || parsed.id || raw).trim();
+    if (!label) return '';
+    const parts = label.split(/[/\\]/);
+    return parts[parts.length - 1] || label;
+  }
+  return raw;
+}
+
+async function refreshEventsView() {
+  state.allEventsCache = null;
+  try {
+    if (state.view === 'playlist' && state.playlistId) {
+      const data = await api(
+        'GET',
+        '/api/playlists/' + encodeURIComponent(state.playlistId) + '/events'
+      );
+      applyEventRows(
+        (data.events || []).map(flattenRow),
+        state.playlistName || 'Плейлист',
+        'плейлист: ' + (state.playlistName || state.playlistId) +
+          ' · ' + (data.events || []).length + ' ивентов'
+      );
+    } else {
+      const flat = await fetchAllEvents(true);
+      state.view = 'all';
+      applyEventRows(flat, 'Все ивенты');
+      if (el.eventsTitle) el.eventsTitle.textContent = 'Все ивенты';
+      updateScopeButtons();
+      renderPlaylists();
+    }
+  } catch (err) {
+    toast(
+      'Не удалось обновить список ивентов: ' + (err && err.message ? err.message : err),
+      'err'
+    );
+  }
+}
+
 // В Carrot Media-значение хранится как «id;имя» без пробелов вокруг ';'.
 function parseMediaValue(raw) {
   const s = raw == null ? '' : String(raw);
@@ -1872,7 +1918,7 @@ function renderCreateForms() {
       const input = document.createElement('input');
       input.type = 'text';
       input.value = form.name || '';
-      input.placeholder = 'Имя';
+      input.placeholder = 'пусто → первая переменная';
       input.addEventListener('input', function () {
         onCreateNameChange(form.localId, nameInput.value);
       });
@@ -1992,40 +2038,46 @@ function clearAllCreateForms() {
 
 async function submitCreateForms() {
   const payload = state.createForms
-    .filter(function (f) { return f.templateId && String(f.name || '').trim(); })
+    .filter(function (f) { return !!f.templateId; })
     .map(function (f) {
+      const variables = (f.variables || []).map(function (v) {
+        var value = v.value == null ? '' : String(v.value);
+        if (isMediaType(v.type)) value = normalizeMediaValue(value);
+        return {
+          id: v.id,
+          name: v.name,
+          type: v.type,
+          value: value,
+          fieldId: v.fieldId,
+          defaultValue: v.defaultValue,
+          resetMedia: v.resetMedia,
+          useTimecode: v.useTimecode,
+          loop: v.loop,
+          locked: v.locked,
+          minValue: v.minValue,
+          maxValue: v.maxValue,
+          useDataVars: v.useDataVars
+        };
+      });
+      const name = String(f.name || '').trim() || nameFromFirstVariable(variables);
       return {
-        name: String(f.name).trim(),
+        name: name,
         externalId: String(f.externalId || '').trim(),
         templateId: f.templateId,
         contentId: f.contentId,
         templateTypeInt: f.templateTypeInt,
         state: f.state || 'IN',
         comment: f.comment || '',
-        variables: (f.variables || []).map(function (v) {
-          var value = v.value == null ? '' : String(v.value);
-          if (isMediaType(v.type)) value = normalizeMediaValue(value);
-          return {
-            id: v.id,
-            name: v.name,
-            type: v.type,
-            value: value,
-            fieldId: v.fieldId,
-            defaultValue: v.defaultValue,
-            resetMedia: v.resetMedia,
-            useTimecode: v.useTimecode,
-            loop: v.loop,
-            locked: v.locked,
-            minValue: v.minValue,
-            maxValue: v.maxValue,
-            useDataVars: v.useDataVars
-          };
-        })
+        variables: variables
       };
-    });
+    })
+    .filter(function (e) { return !!e.name; });
 
   if (!payload.length) {
-    showWarning('Нечего создавать', 'Заполни имя и шаблон хотя бы у одного ивента.');
+    showWarning(
+      'Нечего создавать',
+      'Укажи шаблон и имя (или значение первой переменной) хотя бы у одного ивента.'
+    );
     return;
   }
 
@@ -2038,10 +2090,10 @@ async function submitCreateForms() {
     );
     const created = (data && data.created) ? data.created : [];
     showSuccess('Ивенты созданы', 'Создано: ' + created.length + '.');
-    state.allEventsCache = null;
     state.createForms = [blankCreateForm()];
     setCreateSelection([], null);
     renderCreateForms();
+    await refreshEventsView();
   } catch (err) {
     showError('Не удалось создать ивенты', err);
     setStatus('ошибка создания', 'err');
@@ -2420,7 +2472,6 @@ async function importEventsFromExcel(file) {
   const created = (json && json.created) ? json.created : [];
   const skipped = (json && json.skipped) ? json.skipped : [];
   const media = (json && json.media) ? json.media : {};
-  state.allEventsCache = null;
   state.mediaLoaded = false;
 
   var lines = ['Создано ивентов: ' + created.length + '.'];
@@ -2441,6 +2492,7 @@ async function importEventsFromExcel(file) {
   } else {
     showSuccess('Импорт Excel выполнен', lines.join('\n'));
   }
+  if (created.length) await refreshEventsView();
   return json;
 }
 

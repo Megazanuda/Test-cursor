@@ -1392,13 +1392,12 @@ class CarrotClient:
             e = e or {}
             if not e.get("templateId"):
                 raise ValueError(f"Событие #{i + 1}: нужен templateId")
-            if not e.get("name") or not str(e["name"]).strip():
-                raise ValueError(f"Событие #{i + 1}: нужно имя")
 
             content_id = e.get("contentId") or ""
             template_type_int = e.get("templateTypeInt")
             variables = list(e["variables"]) if isinstance(e.get("variables"), list) else []
             state = e.get("state") or "IN"
+            name = str(e.get("name") or "").strip()
 
             if not content_id or template_type_int is None or not variables:
                 tpl = self.get_normalized_template(e["templateId"])
@@ -1432,9 +1431,16 @@ class CarrotClient:
                         merged.append(nv)
                     variables = merged
 
+            if not name:
+                name = name_from_first_variable(variables)
+            if not name:
+                raise ValueError(
+                    f"Событие #{i + 1}: нужно имя или значение первой переменной"
+                )
+
             if not content_id:
                 raise ValueError(
-                    f"Событие «{str(e['name']).strip()}»: "
+                    f"Событие «{name}»: "
                     "у шаблона нет ContentId — создание невозможно"
                 )
 
@@ -1448,7 +1454,7 @@ class CarrotClient:
             prepared.append(
                 {
                     "id": eid,
-                    "name": str(e["name"]).strip(),
+                    "name": name,
                     "externalId": external_id,
                     "templateId": e["templateId"],
                     "contentId": content_id,
@@ -2421,6 +2427,23 @@ def _looks_like_header(row: list[str]) -> bool:
     return first in HEADER_NAME_ALIASES
 
 
+def name_from_first_variable(variables: Optional[list[Any]]) -> str:
+    """Имя ивента из значения первой переменной (для Media — имя файла)."""
+    if not variables:
+        return ""
+    first = variables[0] if isinstance(variables[0], dict) else None
+    if not first:
+        return ""
+    raw = "" if first.get("value") is None else str(first.get("value")).strip()
+    if not raw:
+        return ""
+    if is_media_type(first.get("type")):
+        _aid, aname = _parse_media_value(raw)
+        label = aname or _aid or raw
+        return Path(str(label)).name
+    return raw
+
+
 def rows_to_event_drafts(
     rows: list[list[str]],
     template: dict[str, Any],
@@ -2436,6 +2459,7 @@ def rows_to_event_drafts(
       N — External id
 
     Для Media-переменных в середине ожидается имя файла (не id;name).
+    Если имя пустое — берётся значение первой переменной (в т.ч. Media).
     """
     if not rows:
         raise ValueError("Нет строк для импорта")
@@ -2464,13 +2488,9 @@ def rows_to_event_drafts(
             )
             continue
 
-        name = row[0]
+        name = (row[0] or "").strip()
         external_id = row[-1]
         mid = row[1:-1]
-
-        if not name:
-            skipped.append({"row": excel_row, "reason": "пустое имя"})
-            continue
 
         variables: list[dict[str, Any]] = []
         for vi, meta in enumerate(var_meta):
@@ -2484,6 +2504,17 @@ def rows_to_event_drafts(
                     else (meta.get("defaultValue") or "")
                 )
             variables.append(nv)
+
+        if not name:
+            name = name_from_first_variable(variables)
+        if not name:
+            skipped.append(
+                {
+                    "row": excel_row,
+                    "reason": "пустое имя и пустая первая переменная",
+                }
+            )
+            continue
 
         drafts.append(
             {
@@ -2716,4 +2747,5 @@ __all__ = [
     "read_excel_rows",
     "rows_to_event_drafts",
     "resolve_media_in_drafts",
+    "name_from_first_variable",
 ]
