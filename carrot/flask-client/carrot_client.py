@@ -1376,12 +1376,18 @@ class CarrotClient:
 
     listNormalizedTemplates = list_normalized_templates
 
-    def create_events(self, entries: list[dict[str, Any]]) -> dict[str, Any]:
+    def create_events(
+        self,
+        entries: list[dict[str, Any]],
+        *,
+        auto_name: bool = True,
+    ) -> dict[str, Any]:
         """
         Создать одно или несколько событий (REST POST /events, затем WS CreateEventInDB).
 
         entries: [{ name, templateId, contentId?, templateTypeInt?, state?, comment?, variables? }]
         Пустой ExternalId подменяется на Id. Проверок уникальности имени/ExternalId нет.
+        Если auto_name и имя пустое — берётся значение первой переменной.
         """
         lst = list(entries) if isinstance(entries, list) else []
         if not lst:
@@ -1431,11 +1437,16 @@ class CarrotClient:
                         merged.append(nv)
                     variables = merged
 
-            if not name:
+            if not name and auto_name:
                 name = name_from_first_variable(variables)
             if not name:
                 raise ValueError(
-                    f"Событие #{i + 1}: нужно имя или значение первой переменной"
+                    f"Событие #{i + 1}: нужно имя"
+                    + (
+                        " или значение первой переменной"
+                        if auto_name
+                        else ""
+                    )
                 )
 
             if not content_id:
@@ -2449,6 +2460,7 @@ def rows_to_event_drafts(
     template: dict[str, Any],
     *,
     has_header: Optional[bool] = None,
+    auto_name: bool = True,
 ) -> dict[str, Any]:
     """
     Преобразовать строки Excel в черновики ивентов.
@@ -2459,7 +2471,7 @@ def rows_to_event_drafts(
       N — External id
 
     Для Media-переменных в середине ожидается имя файла (не id;name).
-    Если имя пустое — берётся значение первой переменной (в т.ч. Media).
+    Если auto_name и имя пустое — берётся значение первой переменной (в т.ч. Media).
     """
     if not rows:
         raise ValueError("Нет строк для импорта")
@@ -2505,13 +2517,17 @@ def rows_to_event_drafts(
                 )
             variables.append(nv)
 
-        if not name:
+        if not name and auto_name:
             name = name_from_first_variable(variables)
         if not name:
             skipped.append(
                 {
                     "row": excel_row,
-                    "reason": "пустое имя и пустая первая переменная",
+                    "reason": (
+                        "пустое имя и пустая первая переменная"
+                        if auto_name
+                        else "пустое имя"
+                    ),
                 }
             )
             continue

@@ -16,6 +16,7 @@ const EDITOR_FOLD_KEY = 'carrot-web-editor-folded';
 const SIDE_OPEN_KEY = 'carrot-web-side-open';
 const MEDIA_FOLDER_KEY = 'carrot-media-folder';
 const THEME_KEY = 'site-theme';
+const AUTO_NAME_KEY = 'carrot-auto-name';
 const TWO_WEEKS_MS = 14 * 24 * 60 * 60 * 1000;
 
 function loadHiddenColumns() {
@@ -146,6 +147,7 @@ const el = {
   excelPickFileBtn: document.getElementById('excelPickFileBtn'),
   excelImportInput: document.getElementById('excelImportInput'),
   themeToggleBtn: document.getElementById('themeToggleBtn'),
+  autoNameToggle: document.getElementById('autoNameToggle'),
   settingsBaseUrl: document.getElementById('settingsBaseUrl'),
   settingsLogin: document.getElementById('settingsLogin'),
   settingsPassword: document.getElementById('settingsPassword'),
@@ -444,6 +446,32 @@ function nameFromFirstVariable(variables) {
     return parts[parts.length - 1] || label;
   }
   return raw;
+}
+
+function isAutoNameEnabled() {
+  try {
+    const raw = localStorage.getItem(AUTO_NAME_KEY);
+    if (raw == null || raw === '') return true;
+    return raw !== '0' && raw !== 'false';
+  } catch (e) {
+    return true;
+  }
+}
+
+function setAutoNameEnabled(on) {
+  try {
+    localStorage.setItem(AUTO_NAME_KEY, on ? '1' : '0');
+  } catch (e) { /* ignore */ }
+  if (el.autoNameToggle) el.autoNameToggle.checked = !!on;
+  updateCreateNamePlaceholders();
+}
+
+function updateCreateNamePlaceholders() {
+  const ph = isAutoNameEnabled() ? 'пусто → первая переменная' : 'Имя';
+  if (!el.createList) return;
+  el.createList.querySelectorAll('[data-field="name"]').forEach(function (input) {
+    input.placeholder = ph;
+  });
 }
 
 async function refreshEventsView() {
@@ -1918,7 +1946,7 @@ function renderCreateForms() {
       const input = document.createElement('input');
       input.type = 'text';
       input.value = form.name || '';
-      input.placeholder = 'пусто → первая переменная';
+      input.placeholder = isAutoNameEnabled() ? 'пусто → первая переменная' : 'Имя';
       input.addEventListener('input', function () {
         onCreateNameChange(form.localId, nameInput.value);
       });
@@ -2059,7 +2087,9 @@ async function submitCreateForms() {
           useDataVars: v.useDataVars
         };
       });
-      const name = String(f.name || '').trim() || nameFromFirstVariable(variables);
+      const autoName = isAutoNameEnabled();
+      const name = String(f.name || '').trim() ||
+        (autoName ? nameFromFirstVariable(variables) : '');
       return {
         name: name,
         externalId: String(f.externalId || '').trim(),
@@ -2076,7 +2106,9 @@ async function submitCreateForms() {
   if (!payload.length) {
     showWarning(
       'Нечего создавать',
-      'Укажи шаблон и имя (или значение первой переменной) хотя бы у одного ивента.'
+      isAutoNameEnabled()
+        ? 'Укажи шаблон и имя (или значение первой переменной) хотя бы у одного ивента.'
+        : 'Укажи шаблон и имя хотя бы у одного ивента.'
     );
     return;
   }
@@ -2085,7 +2117,12 @@ async function submitCreateForms() {
   try {
     const data = await withLoading(
       'Создание ивентов…',
-      function () { return api('POST', '/api/events/create', { events: payload }); },
+      function () {
+        return api('POST', '/api/events/create', {
+          events: payload,
+          autoName: isAutoNameEnabled()
+        });
+      },
       'К созданию: ' + payload.length
     );
     const created = (data && data.created) ? data.created : [];
@@ -2435,6 +2472,7 @@ async function importEventsFromExcel(file) {
   const fd = new FormData();
   fd.append('file', file, file.name);
   fd.append('templateId', templateId);
+  fd.append('autoName', isAutoNameEnabled() ? '1' : '0');
 
   if (mediaDirHandle) {
     const mediaFiles = await collectMediaFilesFromDir(mediaDirHandle);
@@ -2574,6 +2612,12 @@ applyTheme(localStorage.getItem(THEME_KEY) === 'dark' ? 'dark' : 'light');
 if (el.themeToggleBtn) {
   el.themeToggleBtn.addEventListener('click', function () {
     applyTheme(currentTheme() === 'dark' ? 'light' : 'dark');
+  });
+}
+if (el.autoNameToggle) {
+  el.autoNameToggle.checked = isAutoNameEnabled();
+  el.autoNameToggle.addEventListener('change', function () {
+    setAutoNameEnabled(!!el.autoNameToggle.checked);
   });
 }
 
