@@ -155,6 +155,7 @@ const el = {
   mediaFolderPath: document.getElementById('mediaFolderPath'),
   mediaFolderPickBtn: document.getElementById('mediaFolderPickBtn'),
   mediaFolderClearBtn: document.getElementById('mediaFolderClearBtn'),
+  mediaFolderFallbackInput: document.getElementById('mediaFolderFallbackInput'),
   playlistsGroup: document.getElementById('playlistsGroup'),
   settingsGroup: document.getElementById('settingsGroup'),
   editorPanel: document.getElementById('editorPanel'),
@@ -2355,6 +2356,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
 
 var mediaDirHandle = null;
+var mediaPickedFiles = [];
 
 function getMediaFolderLabel() {
   try { return localStorage.getItem(MEDIA_FOLDER_KEY) || ''; }
@@ -2373,27 +2375,64 @@ function setMediaFolderLabel(name) {
   return v;
 }
 
-async function pickMediaFolder() {
-  if (typeof window.showDirectoryPicker !== 'function') {
+function folderLabelFromFiles(files) {
+  if (!files || !files.length) return 'выбранная папка';
+  const rel = files[0].webkitRelativePath || '';
+  if (rel) {
+    const top = String(rel).split(/[/\\]/)[0];
+    if (top) return top;
+  }
+  return 'выбранная папка (' + files.length + ')';
+}
+
+function pickMediaFolderViaInput() {
+  if (!el.mediaFolderFallbackInput) {
     showWarning(
       'Выбор папки недоступен',
-      'Нужен Chrome или Edge. Открой страницу через web.cmd.'
+      'Браузер не даёт выбрать папку. Открой UI на localhost через web.cmd или обнови Chrome/Edge.'
     );
     return;
   }
-  try {
-    const handle = await window.showDirectoryPicker({ mode: 'read' });
-    mediaDirHandle = handle;
-    setMediaFolderLabel(handle.name || 'выбранная папка');
-    toast('Папка медиа: ' + (handle.name || 'выбрана'), 'ok');
-  } catch (err) {
-    if (err && err.name === 'AbortError') return;
-    showError('Не удалось выбрать папку', err);
+  el.mediaFolderFallbackInput.value = '';
+  el.mediaFolderFallbackInput.click();
+}
+
+async function pickMediaFolder() {
+  const secureOk = window.isSecureContext !== false;
+  const hasPicker = typeof window.showDirectoryPicker === 'function';
+  // По http://LAN-IP showDirectoryPicker отсутствует или бесполезен.
+  if (hasPicker && secureOk) {
+    try {
+      const handle = await window.showDirectoryPicker({ mode: 'read' });
+      mediaDirHandle = handle;
+      mediaPickedFiles = [];
+      setMediaFolderLabel(handle.name || 'выбранная папка');
+      toast('Папка медиа: ' + (handle.name || 'выбрана'), 'ok');
+      return;
+    } catch (err) {
+      if (err && err.name === 'AbortError') return;
+      // Если API есть, но упал (редкий случай) — fallback на input.
+      toast('Directory picker недоступен, открываю обычный выбор папки…', 'err');
+    }
   }
+  pickMediaFolderViaInput();
+}
+
+function onMediaFolderFallbackPicked() {
+  const input = el.mediaFolderFallbackInput;
+  const list = input && input.files ? Array.prototype.slice.call(input.files) : [];
+  if (!list.length) return;
+  mediaDirHandle = null;
+  mediaPickedFiles = list;
+  const label = folderLabelFromFiles(list);
+  setMediaFolderLabel(label);
+  toast('Папка медиа: ' + label + ' · файлов: ' + list.length, 'ok');
 }
 
 function clearMediaFolder() {
   mediaDirHandle = null;
+  mediaPickedFiles = [];
+  if (el.mediaFolderFallbackInput) el.mediaFolderFallbackInput.value = '';
   setMediaFolderLabel('');
   toast('Папка медиа сброшена', 'ok');
 }
@@ -2413,6 +2452,12 @@ async function collectMediaFilesFromDir(dirHandle) {
   }
   await walk(dirHandle);
   return out;
+}
+
+async function collectSelectedMediaFiles() {
+  if (mediaDirHandle) return collectMediaFilesFromDir(mediaDirHandle);
+  if (mediaPickedFiles && mediaPickedFiles.length) return mediaPickedFiles.slice();
+  return [];
 }
 
 function applyTheme(theme) {
@@ -2481,12 +2526,10 @@ async function importEventsFromExcel(file) {
   fd.append('templateId', templateId);
   fd.append('autoName', isAutoNameEnabled() ? '1' : '0');
 
-  if (mediaDirHandle) {
-    const mediaFiles = await collectMediaFilesFromDir(mediaDirHandle);
-    mediaFiles.forEach(function (mf) {
-      fd.append('mediaFiles', mf, mf.name);
-    });
-  }
+  const mediaFiles = await collectSelectedMediaFiles();
+  mediaFiles.forEach(function (mf) {
+    fd.append('mediaFiles', mf, mf.name);
+  });
 
   const json = await withLoading(
     'Импорт Excel…',
@@ -2597,6 +2640,11 @@ if (el.mediaFolderPickBtn) {
 if (el.mediaFolderClearBtn) {
   el.mediaFolderClearBtn.addEventListener('click', function () {
     clearMediaFolder();
+  });
+}
+if (el.mediaFolderFallbackInput) {
+  el.mediaFolderFallbackInput.addEventListener('change', function () {
+    onMediaFolderFallbackPicked();
   });
 }
 if (el.settingsConnectionSaveBtn) {
