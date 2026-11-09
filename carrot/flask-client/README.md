@@ -14,8 +14,13 @@ notepad .env
 web.cmd
 ```
 
-`web.cmd` сам создаст `.venv`, поставит зависимости из `requirements.txt`,
-запустит сервер и откроет Google Chrome на http://127.0.0.1:3456
+Нужен **Python 3.10+** в PATH (галочка *Add python.exe to PATH* при установке
+с https://www.python.org/). Затем `web.cmd` сам создаст `.venv`, поставит
+зависимости из `requirements.txt`, запустит сервер и откроет Google Chrome на
+http://127.0.0.1:3456
+
+Если Python не находится: закрой и снова открой `cmd` после установки, либо
+используй лаунчер `py` (Python Launcher for Windows).
 
 ## Быстрый старт (Linux/macOS)
 
