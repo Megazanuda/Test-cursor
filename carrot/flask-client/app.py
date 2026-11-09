@@ -455,8 +455,21 @@ def api_events_create():
                 "error": "Нужен массив events: [{ name, templateId, variables? }, ...]",
             }
         ), 400
+    auto_name_raw = body.get("autoName") if isinstance(body, dict) else None
+    if auto_name_raw is None and isinstance(body, dict):
+        auto_name_raw = body.get("auto_name")
+    auto_name = True
+    if auto_name_raw is not None:
+        auto_name = str(auto_name_raw).strip().lower() not in (
+            "0",
+            "false",
+            "no",
+            "off",
+            "",
+        )
+
     client = ensure_client()
-    result = client.create_events(events)
+    result = client.create_events(events, auto_name=auto_name)
     return jsonify({"ok": True, "created": result.get("created") or []})
 
 
@@ -554,6 +567,22 @@ def api_events_import_excel():
             "on",
         )
 
+    auto_name_raw = (
+        request.form.get("autoName")
+        or request.form.get("auto_name")
+        or request.args.get("autoName")
+    )
+    if auto_name_raw is None or str(auto_name_raw).strip() == "":
+        auto_name = True
+    else:
+        auto_name = str(auto_name_raw).strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "y",
+            "on",
+        )
+
     raw = upload.read()
     try:
         rows = read_excel_rows(raw)
@@ -562,7 +591,9 @@ def api_events_import_excel():
 
     client = ensure_client()
     template = client.get_normalized_template(template_id)
-    parsed = rows_to_event_drafts(rows, template, has_header=has_header)
+    parsed = rows_to_event_drafts(
+        rows, template, has_header=has_header, auto_name=auto_name
+    )
     drafts = parsed["drafts"]
     if not drafts:
         return jsonify(
@@ -641,7 +672,7 @@ def api_events_import_excel():
         ev = {k: v for k, v in d.items() if not k.startswith("_")}
         events.append(ev)
 
-    result = client.create_events(events)
+    result = client.create_events(events, auto_name=auto_name)
     created = result.get("created") or []
     log.info(
         "[excel] шаблон %s: строк=%s создано=%s media upload=%s reuse=%s",
