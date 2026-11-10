@@ -873,7 +873,7 @@ function makeVarInput(v, onChange) {
     const fileInput = document.createElement('input');
     fileInput.type = 'file';
     fileInput.hidden = true;
-    fileInput.accept = 'image/*,video/*,.png,.jpg,.jpeg,.gif,.bmp,.tif,.tiff,.webp,.mp4,.mov,.avi,.mxf,.webm';
+    // Без accept — файловый менеджер показывает файлы любого расширения.
     upBtn.addEventListener('click', function (ev) {
       ev.stopPropagation();
       fileInput.click();
