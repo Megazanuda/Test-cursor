@@ -2589,7 +2589,7 @@ def index_assets_by_name(assets: list[dict[str, Any]]) -> dict[str, dict[str, An
 
 def find_local_media_file(folder: str, filename: str) -> Optional[Path]:
     """
-    Найти файл в папке по имени (с расширением или без).
+    Найти файл в папке (и во всех вложенных) по имени с расширением или без.
 
     Только внутри folder (path traversal блокируется).
     """
@@ -2602,21 +2602,27 @@ def find_local_media_file(folder: str, filename: str) -> Optional[Path]:
     if not wanted or wanted in (".", ".."):
         return None
 
-    candidate = (root / wanted).resolve()
-    try:
-        candidate.relative_to(root_resolved)
-    except ValueError as err:
-        raise ValueError("Имя файла выходит за пределы папки медиа") from err
+    def _inside(path: Path) -> bool:
+        try:
+            path.resolve().relative_to(root_resolved)
+            return True
+        except ValueError:
+            return False
 
-    if candidate.is_file():
-        return candidate
+    # Точное имя: сначала в корне, затем рекурсивно.
+    direct = (root / wanted).resolve()
+    if direct.is_file() and _inside(direct):
+        return direct
+    for path in sorted(root_resolved.rglob(wanted)):
+        if path.is_file() and _inside(path):
+            return path
 
-    # без расширения — первое совпадение по stem
+    # Без расширения — первое совпадение по stem (включая вложенные).
     stem = Path(wanted).stem.lower()
     if not stem:
         return None
-    for path in sorted(root_resolved.iterdir()):
-        if path.is_file() and path.stem.lower() == stem:
+    for path in sorted(root_resolved.rglob("*")):
+        if path.is_file() and path.stem.lower() == stem and _inside(path):
             return path
     return None
 

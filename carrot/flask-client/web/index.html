@@ -97,12 +97,13 @@
               <div class="settings-row">
                 <span class="settings-label">Папка медиа для Excel</span>
                 <p class="settings-path" id="mediaFolderPath">папка не выбрана</p>
-                <p class="settings-hint">Файлы из Excel, которых ещё нет в Carrot. Работает и по open-ui (LAN).</p>
+                <p class="settings-hint">Включая вложенные папки. Файлы из Excel, которых ещё нет в Carrot.</p>
                 <div class="settings-actions">
                   <button type="button" class="btn ghost sm" id="mediaFolderPickBtn">Выбрать папку…</button>
                   <button type="button" class="btn ghost sm" id="mediaFolderClearBtn">Сбросить</button>
                 </div>
-                <input type="file" id="mediaFolderFallbackInput" hidden webkitdirectory multiple />
+                <input type="file" id="mediaFolderFallbackInput" hidden
+                  webkitdirectory directory multiple />
               </div>
             </div>
           </details>
