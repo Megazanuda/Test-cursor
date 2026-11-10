@@ -842,8 +842,15 @@ async function uploadMediaFile(file) {
       assetTypeInt: asset.assetTypeInt != null ? asset.assetTypeInt : asset.type
     });
   }
-  refreshAllMediaSelects(mediaValue);
+  refreshAllMediaSelects();
   return { asset: asset, mediaValue: mediaValue };
+}
+
+/** Обновить опции всех media-select после загрузки/обновления списка медиа. */
+function refreshAllMediaSelects() {
+  document.querySelectorAll('select.media-select').forEach(function (select) {
+    fillMediaSelect(select, select.value || '');
+  });
 }
 
 function makeVarInput(v, onChange) {
@@ -2341,8 +2348,16 @@ async function pickMediaFolder() {
       const handle = await window.showDirectoryPicker({ mode: 'read' });
       mediaDirHandle = handle;
       mediaPickedFiles = [];
-      setMediaFolderLabel(handle.name || 'выбранная папка');
-      toast('Папка медиа: ' + (handle.name || 'выбрана'), 'ok');
+      const label = handle.name || 'выбранная папка';
+      setMediaFolderLabel(label);
+      var scanned = 0;
+      try { scanned = (await collectMediaFilesFromDir(handle)).length; }
+      catch (e) { scanned = 0; }
+      toast(
+        'Папка медиа: ' + label +
+          (scanned ? (' · файлов (с вложенными): ' + scanned) : ''),
+        'ok'
+      );
       return;
     } catch (err) {
       if (err && err.name === 'AbortError') return;
@@ -2358,10 +2373,19 @@ function onMediaFolderFallbackPicked() {
   const list = input && input.files ? Array.prototype.slice.call(input.files) : [];
   if (!list.length) return;
   mediaDirHandle = null;
-  mediaPickedFiles = list;
-  const label = folderLabelFromFiles(list);
+  // Включая файлы из вложенных папок (webkitRelativePath: folder/sub/file).
+  mediaPickedFiles = list.filter(function (f) { return !!f && f.name; });
+  const label = folderLabelFromFiles(mediaPickedFiles);
+  const nested = mediaPickedFiles.filter(function (f) {
+    return String(f.webkitRelativePath || '').split(/[/\\]/).length > 2;
+  }).length;
   setMediaFolderLabel(label);
-  toast('Папка медиа: ' + label + ' · файлов: ' + list.length, 'ok');
+  toast(
+    'Папка медиа: ' + label +
+      ' · файлов: ' + mediaPickedFiles.length +
+      (nested ? (' (вложенных: ' + nested + ')') : ''),
+    'ok'
+  );
 }
 
 function clearMediaFolder() {
@@ -2377,11 +2401,16 @@ async function collectMediaFilesFromDir(dirHandle) {
   if (!dirHandle) return out;
   async function walk(handle) {
     for await (const entry of handle.values()) {
-      if (entry.kind === 'file') {
-        const file = await entry.getFile();
-        out.push(file);
-      } else if (entry.kind === 'directory') {
-        await walk(entry);
+      try {
+        if (entry.kind === 'file') {
+          const file = await entry.getFile();
+          out.push(file);
+        } else if (entry.kind === 'directory') {
+          // Рекурсивно: все вложенные папки.
+          await walk(entry);
+        }
+      } catch (err) {
+        // Пропускаем недоступные файлы/подпапки.
       }
     }
   }
@@ -2391,6 +2420,7 @@ async function collectMediaFilesFromDir(dirHandle) {
 
 async function collectSelectedMediaFiles() {
   if (mediaDirHandle) return collectMediaFilesFromDir(mediaDirHandle);
+  // webkitdirectory уже отдаёт файлы из всех вложенных папок.
   if (mediaPickedFiles && mediaPickedFiles.length) return mediaPickedFiles.slice();
   return [];
 }
