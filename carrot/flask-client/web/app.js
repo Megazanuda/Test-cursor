@@ -2617,151 +2617,6 @@ async function collectSelectedMediaFiles() {
   return [];
 }
 
-function sanitizeMediaBaseName(name) {
-  var base = String(name || '').split(/[/\\]/).pop() || '';
-  base = base.replace(/^[\s"'«»]+|[\s"'«»]+$/g, '');
-  try { base = base.normalize('NFC'); } catch (e) { /* ignore */ }
-  return base.trim().toLowerCase();
-}
-
-function mediaNeededKeySet(neededNames) {
-  // В папке: exact + stem. В Carrot reuse stem запрещён (только exact).
-  const exact = Object.create(null);
-  const stems = Object.create(null);
-  (neededNames || []).forEach(function (n) {
-    const base = sanitizeMediaBaseName(n);
-    if (!base) return;
-    exact[base] = true;
-    const stem = base.replace(/\.[^.]+$/, '');
-    if (stem) stems[stem] = true;
-  });
-  return { exact: exact, stems: stems };
-}
-
-function localFileMatchesNeeded(fileName, pack) {
-  const name = sanitizeMediaBaseName(fileName);
-  if (!name) return false;
-  if (pack.exact[name]) return true;
-  const stem = name.replace(/\.[^.]+$/, '');
-  return !!(stem && pack.stems[stem]);
-}
-
-function filterMediaFilesByNeededNames(files, neededNames) {
-  const pack = mediaNeededKeySet(neededNames);
-  return (files || []).filter(function (f) {
-    return localFileMatchesNeeded(f && f.name, pack);
-  });
-}
-
-function renameFileForUpload(file, uploadName) {
-  const raw = String(uploadName || '').split(/[/\\]/).pop() || '';
-  const name = raw.replace(/^[\s"'«»]+|[\s"'«»]+$/g, '').trim() || (file && file.name) || 'file';
-  try {
-    return new File([file], name, {
-      type: (file && file.type) || '',
-      lastModified: (file && file.lastModified) || Date.now(),
-    });
-  } catch (e) {
-    return file;
-  }
-}
-
-/** Найти локальный файл под имя из Excel: сначала exact, потом stem. */
-function pickLocalFileForNeededName(files, neededName) {
-  const want = sanitizeMediaBaseName(neededName);
-  if (!want || !files || !files.length) return null;
-  const wantStem = want.replace(/\.[^.]+$/, '');
-  var stemHit = null;
-  for (var i = 0; i < files.length; i++) {
-    const f = files[i];
-    const name = sanitizeMediaBaseName(f && f.name);
-    if (!name) continue;
-    if (name === want) return f;
-    const stem = name.replace(/\.[^.]+$/, '');
-    if (!stemHit && stem && stem === wantStem) stemHit = f;
-  }
-  return stemHit;
-}
-
-/**
- * Собрать нужные медиа из папки.
- * В FormData имя файла = как в Excel, чтобы сервер точно сопоставил строку.
- */
-async function collectNeededMediaFiles(neededNames) {
-  const needed = neededNames || [];
-  if (!needed.length) return [];
-  const pack = mediaNeededKeySet(needed);
-
-  var pool = [];
-  if (mediaDirHandle) {
-    const ok = await ensureMediaDirPermission(mediaDirHandle, true);
-    if (!ok) {
-      throw new Error('Нет доступа к папке медиа. Нажми «Выбрать папку…» в Настройках.');
-    }
-    // Точечный обход: getFile только для кандидатов.
-    const seen = Object.create(null);
-    async function walk(handle) {
-      for await (const entry of handle.values()) {
-        try {
-          if (entry.kind === 'file') {
-            const name = sanitizeMediaBaseName(entry.name);
-            if (!name || seen[name] || !localFileMatchesNeeded(name, pack)) continue;
-            const file = await entry.getFile();
-            pool.push(file);
-            seen[name] = true;
-          } else if (entry.kind === 'directory') {
-            await walk(entry);
-          }
-        } catch (err) {
-          // Пропускаем недоступные файлы/подпапки.
-        }
-      }
-    }
-    await walk(mediaDirHandle);
-  } else if (mediaPickedFiles && mediaPickedFiles.length) {
-    pool = mediaPickedFiles.filter(function (f) {
-      return localFileMatchesNeeded(f && f.name, pack);
-    });
-  }
-
-  if (!pool.length && mediaFolderIsReady()) {
-    pool = filterMediaFilesByNeededNames(await collectSelectedMediaFiles(), needed);
-  }
-
-  const out = [];
-  const used = Object.create(null);
-  needed.forEach(function (n) {
-    const hit = pickLocalFileForNeededName(pool, n);
-    if (!hit) return;
-    const id = String(hit.name || '') + '\0' + String(hit.size || '') + '\0' +
-      String(hit.lastModified || '');
-    if (used[id]) return;
-    used[id] = true;
-    out.push(renameFileForUpload(hit, n));
-  });
-  return out;
-}
-
-async function templateNeedsMediaPlan(templateId) {
-  const tpl = (state.templates || []).find(function (t) {
-    return String(t.id) === String(templateId);
-  });
-  if (tpl && tpl.hasMediaVariables === true) return true;
-  const cached = state.templateDetails && state.templateDetails[templateId];
-  if (cached) {
-    return (cached.variables || []).some(function (v) { return isMediaType(v.type); });
-  }
-  if (tpl && tpl.hasMediaVariables === false && !(tpl.variableCount > 0)) {
-    return false;
-  }
-  try {
-    const detail = await loadTemplateDetail(templateId);
-    return (detail.variables || []).some(function (v) { return isMediaType(v.type); });
-  } catch (e) {
-    return true; // неизвестно — безопаснее planOnly
-  }
-}
-
 function applyTheme(theme) {
   const dark = theme === 'dark';
   document.documentElement.classList.toggle('dark-theme', dark);
@@ -2817,64 +2672,6 @@ async function openExcelImportDialog() {
   syncMediaFolderUiPlacement();
 }
 
-function parseImportExcelResponse(status, text) {
-  var parsed = null;
-  try { parsed = text ? JSON.parse(text) : null; }
-  catch (e) { throw new Error('Ответ сервера не JSON (HTTP ' + status + ')'); }
-  if (status < 200 || status >= 300 || (parsed && parsed.ok === false)) {
-    const err = new Error((parsed && parsed.error) || ('HTTP ' + status));
-    const missing = (parsed && parsed.media &&
-      (parsed.media.missing || parsed.media.warnings)) || [];
-    if (missing.length) {
-      err.detail = missing.map(function (w) {
-        return 'Строка ' + (w.row || '?') +
-          (w.variable ? ' [' + w.variable + ']' : '') +
-          ': ' + (w.file || '') + ' — ' + (w.reason || '');
-      }).join('\n');
-    }
-    throw err;
-  }
-  return parsed;
-}
-
-async function postImportExcelForm(fd, opts) {
-  opts = opts || {};
-  const onUploadProgress = opts.onUploadProgress;
-  if (typeof onUploadProgress === 'function' && typeof XMLHttpRequest !== 'undefined') {
-    return new Promise(function (resolve, reject) {
-      const xhr = new XMLHttpRequest();
-      xhr.open('POST', '/api/events/import-excel');
-      if (xhr.upload) {
-        xhr.upload.onprogress = function (ev) {
-          if (!ev.lengthComputable) return;
-          onUploadProgress({ phase: 'upload', loaded: ev.loaded, total: ev.total });
-        };
-        xhr.upload.onload = function () {
-          onUploadProgress({ phase: 'server', loaded: 1, total: 1 });
-        };
-      }
-      xhr.onload = function () {
-        try {
-          resolve(parseImportExcelResponse(xhr.status, xhr.responseText || ''));
-        } catch (err) {
-          reject(err);
-        }
-      };
-      xhr.onerror = function () {
-        reject(new Error('Сеть: не удалось отправить импорт Excel'));
-      };
-      xhr.onabort = function () {
-        reject(new Error('Импорт Excel отменён'));
-      };
-      xhr.send(fd);
-    });
-  }
-
-  const res = await fetch('/api/events/import-excel', { method: 'POST', body: fd });
-  const text = await res.text();
-  return parseImportExcelResponse(res.status, text);
-}
-
 async function importEventsFromExcel(file) {
   if (!file) return;
   const templateId = el.excelTemplateSelect && el.excelTemplateSelect.value;
@@ -2883,124 +2680,55 @@ async function importEventsFromExcel(file) {
     return;
   }
   const folderLabel = getMediaFolderLabel();
-  const autoName = isAutoNameEnabled() ? '1' : '0';
-
   if (el.excelImportDialog && el.excelImportDialog.open) {
     el.excelImportDialog.close();
   }
 
-  const hasMediaVars = await templateNeedsMediaPlan(templateId);
-
   const json = await withLoading(
-    'Импорт Excel',
+    'Импорт Excel…',
     async function () {
-      var planId = '';
-      var needed = [];
-      var inCarrot = [];
-      var toSend = [];
-
-      if (hasMediaVars) {
-        await paintLoading('Импорт Excel', '1/4 · Разбираю Excel и ищу нужные медиа…');
-        const planFd = new FormData();
-        planFd.append('file', file, file.name);
-        planFd.append('templateId', templateId);
-        planFd.append('autoName', autoName);
-        planFd.append('planOnly', '1');
-        const plan = await postImportExcelForm(planFd);
-        planId = (plan && plan.planId) || '';
-        needed = (plan && plan.media && plan.media.needed) || [];
-        inCarrot = (plan && plan.media && plan.media.inCarrot) || [];
-
-        if (needed.length) {
-          await paintLoading(
-            'Импорт Excel',
-            '2/4 · Нужно медиа: ' + needed.length +
-              (inCarrot.length ? (', уже в Carrot: ' + inCarrot.length) : '') +
-              '\nИщу только нужные файлы…'
-          );
-          toSend = await collectNeededMediaFiles(needed);
-          if (!toSend.length) {
-            if (mediaFolderIsReady()) {
-              throw new Error(
-                'В выбранной папке нет нужных файлов: ' + needed.slice(0, 5).join(', ') +
-                  (needed.length > 5 ? '…' : '')
-              );
-            }
-            throw new Error(
-              'Нужны локальные медиа (' + needed.length +
-                '). Выбери папку медиа в окне импорта и повтори.'
-            );
-          }
-          await paintLoading(
-            'Импорт Excel',
-            '3/4 · Готовлю отправку: ' + toSend.length + ' файл(ов)…'
-          );
-        } else {
-          await paintLoading(
-            'Импорт Excel',
-            '2/4 · Локальные медиа не нужны' +
-              (inCarrot.length ? (' (в Carrot уже: ' + inCarrot.length + ')') : '') +
-              '\n3/4 · Создаю ивенты…'
-          );
-        }
-      } else {
-        await paintLoading('Импорт Excel', '1/2 · Медиа в шаблоне нет — создаю ивенты…');
-      }
-
+      updateLoading('Импорт Excel', 'Читаю папку медиа…');
+      const mediaFiles = await collectSelectedMediaFiles();
       const fd = new FormData();
+      fd.append('file', file, file.name);
       fd.append('templateId', templateId);
-      fd.append('autoName', autoName);
-      if (planId) {
-        fd.append('planId', planId);
-      } else {
-        fd.append('file', file, file.name);
-      }
-      toSend.forEach(function (mf) {
+      fd.append('autoName', isAutoNameEnabled() ? '1' : '0');
+      mediaFiles.forEach(function (mf) {
         fd.append('mediaFiles', mf, mf.name);
       });
-
-      var lastProgressAt = 0;
-      const fileCount = toSend.length;
-      const result = await postImportExcelForm(fd, {
-        onUploadProgress: function (info) {
-          if (info.phase === 'server') {
-            updateLoading(
-              'Импорт Excel',
-              (hasMediaVars ? '3/4' : '1/2') +
-                ' · Файлы ушли на сервер' +
-                (fileCount ? (' (' + fileCount + ')') : '') +
-                '\nСоздаю ивенты…'
-            );
-            return;
-          }
-          const now = Date.now();
-          if (now - lastProgressAt < 80 && info.loaded < info.total) return;
-          lastProgressAt = now;
-          const pct = info.total
-            ? Math.min(100, Math.round((100 * info.loaded) / info.total))
-            : 0;
-          updateLoading(
-            'Импорт Excel',
-            (hasMediaVars ? '3/4' : '1/2') +
-              ' · Отправка: ' + pct + '%' +
-              (fileCount ? (' · ' + fileCount + ' файл(ов)') : '') +
-              '\n' + formatByteSize(info.loaded) + ' / ' + formatByteSize(info.total)
-          );
-        },
-      });
-      await paintLoading(
+      updateLoading(
         'Импорт Excel',
-        (hasMediaVars ? '4/4' : '2/2') + ' · Обновляю таблицу ивентов…'
+        'Отправляю Excel' +
+          (mediaFiles.length ? (' и медиа (' + mediaFiles.length + ' файл(ов))') : '') +
+          '…'
       );
-      return result;
+      const res = await fetch('/api/events/import-excel', { method: 'POST', body: fd });
+      const text = await res.text();
+      var parsed = null;
+      try { parsed = text ? JSON.parse(text) : null; }
+      catch (e) { throw new Error('Ответ сервера не JSON (HTTP ' + res.status + ')'); }
+      if (!res.ok || (parsed && parsed.ok === false)) {
+        const err = new Error((parsed && parsed.error) || ('HTTP ' + res.status));
+        const missing = (parsed && parsed.media &&
+          (parsed.media.missing || parsed.media.warnings)) || [];
+        if (missing.length) {
+          err.detail = missing.map(function (w) {
+            return 'Строка ' + (w.row || '?') +
+              (w.variable ? ' [' + w.variable + ']' : '') +
+              ': ' + (w.file || '') + ' — ' + (w.reason || '');
+          }).join('\n');
+        }
+        throw err;
+      }
+      return parsed;
     },
-    'Подготовка…' + (folderLabel ? '\nПапка медиа: ' + folderLabel : '')
+    file.name + (folderLabel ? '\nПапка медиа: ' + folderLabel : '')
   );
 
   const created = (json && json.created) ? json.created : [];
   const skipped = (json && json.skipped) ? json.skipped : [];
   const media = (json && json.media) ? json.media : {};
-  if (media && media.uploaded) state.mediaLoaded = false;
+  state.mediaLoaded = false;
 
   var lines = ['Создано ивентов: ' + created.length + '.'];
   if (skipped.length) lines.push('Пропущено строк: ' + skipped.length + '.');
@@ -3020,12 +2748,7 @@ async function importEventsFromExcel(file) {
   } else {
     showSuccess('Импорт Excel выполнен', lines.join('\n'));
   }
-  if (created.length) {
-    await withLoading('Импорт Excel', async function () {
-      await paintLoading('Импорт Excel', '4/4 · Обновляю таблицу ивентов…');
-      await refreshEventsView();
-    }, 'Обновляю таблицу…');
-  }
+  if (created.length) await refreshEventsView();
   return json;
 }
 
