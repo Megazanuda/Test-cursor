@@ -343,6 +343,31 @@ function updateLoading(title, sub) {
   }
 }
 
+/** Дать браузеру отрисовать оверлей до следующей тяжёлой операции. */
+function yieldForPaint() {
+  return new Promise(function (resolve) {
+    if (typeof requestAnimationFrame !== 'function') {
+      setTimeout(resolve, 16);
+      return;
+    }
+    requestAnimationFrame(function () {
+      requestAnimationFrame(resolve);
+    });
+  });
+}
+
+async function paintLoading(title, sub) {
+  updateLoading(title, sub);
+  await yieldForPaint();
+}
+
+function formatByteSize(n) {
+  const v = Number(n) || 0;
+  if (v < 1024) return Math.round(v) + ' Б';
+  if (v < 1024 * 1024) return (v / 1024).toFixed(1) + ' КБ';
+  return (v / (1024 * 1024)).toFixed(1) + ' МБ';
+}
+
 function hideLoading() {
   loadingDepth = Math.max(0, loadingDepth - 1);
   if (loadingDepth > 0) return;
@@ -2662,14 +2687,12 @@ async function openExcelImportDialog() {
   syncMediaFolderUiPlacement();
 }
 
-async function postImportExcelForm(fd) {
-  const res = await fetch('/api/events/import-excel', { method: 'POST', body: fd });
-  const text = await res.text();
+function parseImportExcelResponse(status, text) {
   var parsed = null;
   try { parsed = text ? JSON.parse(text) : null; }
-  catch (e) { throw new Error('Ответ сервера не JSON (HTTP ' + res.status + ')'); }
-  if (!res.ok || (parsed && parsed.ok === false)) {
-    const err = new Error((parsed && parsed.error) || ('HTTP ' + res.status));
+  catch (e) { throw new Error('Ответ сервера не JSON (HTTP ' + status + ')'); }
+  if (status < 200 || status >= 300 || (parsed && parsed.ok === false)) {
+    const err = new Error((parsed && parsed.error) || ('HTTP ' + status));
     const missing = (parsed && parsed.media &&
       (parsed.media.missing || parsed.media.warnings)) || [];
     if (missing.length) {
@@ -2682,6 +2705,44 @@ async function postImportExcelForm(fd) {
     throw err;
   }
   return parsed;
+}
+
+async function postImportExcelForm(fd, opts) {
+  opts = opts || {};
+  const onUploadProgress = opts.onUploadProgress;
+  if (typeof onUploadProgress === 'function' && typeof XMLHttpRequest !== 'undefined') {
+    return new Promise(function (resolve, reject) {
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', '/api/events/import-excel');
+      if (xhr.upload) {
+        xhr.upload.onprogress = function (ev) {
+          if (!ev.lengthComputable) return;
+          onUploadProgress({ phase: 'upload', loaded: ev.loaded, total: ev.total });
+        };
+        xhr.upload.onload = function () {
+          onUploadProgress({ phase: 'server', loaded: 1, total: 1 });
+        };
+      }
+      xhr.onload = function () {
+        try {
+          resolve(parseImportExcelResponse(xhr.status, xhr.responseText || ''));
+        } catch (err) {
+          reject(err);
+        }
+      };
+      xhr.onerror = function () {
+        reject(new Error('Сеть: не удалось отправить импорт Excel'));
+      };
+      xhr.onabort = function () {
+        reject(new Error('Импорт Excel отменён'));
+      };
+      xhr.send(fd);
+    });
+  }
+
+  const res = await fetch('/api/events/import-excel', { method: 'POST', body: fd });
+  const text = await res.text();
+  return parseImportExcelResponse(res.status, text);
 }
 
 async function importEventsFromExcel(file) {
@@ -2701,7 +2762,7 @@ async function importEventsFromExcel(file) {
   const json = await withLoading(
     'Импорт Excel',
     async function () {
-      updateLoading('Импорт Excel', '1/4 · Разбираю Excel и ищу нужные медиа…');
+      await paintLoading('Импорт Excel', '1/4 · Разбираю Excel и ищу нужные медиа…');
       const planFd = new FormData();
       planFd.append('file', file, file.name);
       planFd.append('templateId', templateId);
@@ -2713,7 +2774,7 @@ async function importEventsFromExcel(file) {
 
       var toSend = [];
       if (needed.length) {
-        updateLoading(
+        await paintLoading(
           'Импорт Excel',
           '2/4 · Нужно медиа: ' + needed.length +
             (inCarrot.length ? (', уже в Carrot: ' + inCarrot.length) : '') +
@@ -2733,13 +2794,12 @@ async function importEventsFromExcel(file) {
               '). Выбери папку медиа в окне импорта и повтори.'
           );
         }
-        updateLoading(
+        await paintLoading(
           'Импорт Excel',
-          '3/4 · Отправляю файлов: ' + toSend.length + ' из ' + needed.length +
-            ' и создаю ивенты…'
+          '3/4 · Готовлю отправку: ' + toSend.length + ' файл(ов)…'
         );
       } else {
-        updateLoading(
+        await paintLoading(
           'Импорт Excel',
           '2/4 · Локальные медиа не нужны' +
             (inCarrot.length ? (' (в Carrot уже: ' + inCarrot.length + ')') : '') +
@@ -2754,11 +2814,39 @@ async function importEventsFromExcel(file) {
       toSend.forEach(function (mf) {
         fd.append('mediaFiles', mf, mf.name);
       });
-      const result = await postImportExcelForm(fd);
-      updateLoading('Импорт Excel', '4/4 · Обновляю таблицу ивентов…');
+
+      var lastProgressAt = 0;
+      const fileCount = toSend.length;
+      const result = await postImportExcelForm(fd, {
+        onUploadProgress: function (info) {
+          if (info.phase === 'server') {
+            updateLoading(
+              'Импорт Excel',
+              '3/4 · Файлы ушли на сервер' +
+                (fileCount ? (' (' + fileCount + ')') : '') +
+                '\nСоздаю ивенты…'
+            );
+            return;
+          }
+          const now = Date.now();
+          // Не дёргать DOM на каждый байт.
+          if (now - lastProgressAt < 80 && info.loaded < info.total) return;
+          lastProgressAt = now;
+          const pct = info.total
+            ? Math.min(100, Math.round((100 * info.loaded) / info.total))
+            : 0;
+          updateLoading(
+            'Импорт Excel',
+            '3/4 · Отправка медиа: ' + pct + '%' +
+              (fileCount ? (' · ' + fileCount + ' файл(ов)') : '') +
+              '\n' + formatByteSize(info.loaded) + ' / ' + formatByteSize(info.total)
+          );
+        },
+      });
+      await paintLoading('Импорт Excel', '4/4 · Обновляю таблицу ивентов…');
       return result;
     },
-    file.name + (folderLabel ? '\nПапка медиа: ' + folderLabel : '')
+    'Подготовка…' + (folderLabel ? '\nПапка медиа: ' + folderLabel : '')
   );
 
   const created = (json && json.created) ? json.created : [];
@@ -2785,8 +2873,10 @@ async function importEventsFromExcel(file) {
     showSuccess('Импорт Excel выполнен', lines.join('\n'));
   }
   if (created.length) {
-    updateLoading('Импорт Excel', '4/4 · Обновляю таблицу ивентов…');
-    await refreshEventsView();
+    await withLoading('Импорт Excel', async function () {
+      await paintLoading('Импорт Excel', '4/4 · Обновляю таблицу ивентов…');
+      await refreshEventsView();
+    }, 'Обновляю таблицу…');
   }
   return json;
 }
