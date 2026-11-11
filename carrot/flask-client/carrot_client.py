@@ -1498,9 +1498,8 @@ class CarrotClient:
 
         created: list[dict[str, Any]] = []
         need_ws: list[dict[str, Any]] = []
-
-        def _rest_body(ev: dict[str, Any]) -> dict[str, Any]:
-            return {
+        for ev in prepared:
+            rest_body = {
                 "id": ev["id"],
                 "name": ev["name"],
                 "externalId": ev["externalId"],
@@ -1528,28 +1527,18 @@ class CarrotClient:
                     for v in ev["variables"]
                 ],
             }
-
-        def _post_one(ev: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
-            return ev, self._try_once("POST", "/events", _rest_body(ev))
-
-        # Параллельный REST: один POST /events на ивент.
-        workers = min(8, max(1, len(prepared)))
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            futs = [pool.submit(_post_one, ev) for ev in prepared]
-            for fut in as_completed(futs):
-                ev, r = fut.result()
-                if r.get("ok"):
-                    created.append({"id": ev["id"], "name": ev["name"], "via": "rest"})
-                    continue
-                err = r.get("error")
-                if isinstance(err, CarrotError) and err.error_code:
-                    raise err
-                if r.get("httpStatus") and r["httpStatus"] not in (404, 405):
-                    raise err or CarrotError(f"HTTP {r['httpStatus']}")
-                need_ws.append(ev)
+            r = self._try_once("POST", "/events", rest_body)
+            if r["ok"]:
+                created.append({"id": ev["id"], "name": ev["name"], "via": "rest"})
+                continue
+            err = r.get("error")
+            if isinstance(err, CarrotError) and err.error_code:
+                raise err
+            if r.get("httpStatus") and r["httpStatus"] not in (404, 405):
+                raise err or CarrotError(f"HTTP {r['httpStatus']}")
+            need_ws.append(ev)
 
         if need_ws:
-            # WS CreateEventInDB — строго по одному на сессию.
             ws_created = self.create_events_via_websocket(need_ws)
             created.extend(ws_created)
 
@@ -2633,12 +2622,6 @@ def _norm_name(name: str) -> str:
     return base.lower()
 
 
-def _has_file_extension(name: str) -> bool:
-    """True if basename looks like name.ext (not a trailing dot)."""
-    base = _norm_name(name)
-    return bool(base) and ("." in base) and bool(Path(base).suffix)
-
-
 def _parse_media_value(raw: str) -> tuple[str, str]:
     s = str(raw or "").strip()
     if not s:
@@ -2650,7 +2633,7 @@ def _parse_media_value(raw: str) -> tuple[str, str]:
 
 
 def index_assets_by_name(assets: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
-    """Индекс ассетов по полному имени (lower) и stem (для имён без расширения)."""
+    """Индекс ассетов по имени файла (lower) и stem без расширения."""
     index: dict[str, dict[str, Any]] = {}
     for asset in assets or []:
         name = str(asset.get("name") or "").strip()
@@ -2659,36 +2642,9 @@ def index_assets_by_name(assets: list[dict[str, Any]]) -> dict[str, dict[str, An
         key = _norm_name(name)
         index.setdefault(key, asset)
         stem = Path(key).stem
-        # Stem-ключ только как fallback для Excel-имён без расширения.
         if stem and stem not in index:
             index[stem] = asset
     return index
-
-
-def lookup_asset_by_filename(
-    index: dict[str, dict[str, Any]], filename: str
-) -> Optional[dict[str, Any]]:
-    """
-    Найти ассет по имени из Excel.
-
-    Если в имени есть расширение — только точное совпадение basename.
-    Stem-fallback — только для имён без расширения (например «intro»).
-    """
-    key = _norm_name(filename)
-    if not key:
-        return None
-    hit = index.get(key)
-    if hit:
-        return hit
-    if _has_file_extension(key):
-        return None
-    return index.get(Path(key).stem) or None
-
-
-def media_value_is_bound(raw: Any) -> bool:
-    """True если значение Media уже в формате guid или guid;name."""
-    aid, _aname = _parse_media_value("" if raw is None else str(raw))
-    return bool(aid and _GUID_RE.match(aid))
 
 
 def find_local_media_file(folder: str, filename: str) -> Optional[Path]:
@@ -2731,61 +2687,6 @@ def find_local_media_file(folder: str, filename: str) -> Optional[Path]:
     return None
 
 
-def list_missing_local_media_names(
-    drafts: list[dict[str, Any]],
-    *,
-    assets: list[dict[str, Any]],
-) -> dict[str, Any]:
-    """
-    Какие Media-имена из Excel ещё нет в Carrot (нужны из локальной папки).
-
-    Не меняет drafts. Возвращает:
-      needed — уникальные имена файлов, которых нет в Carrot
-      inCarrot — имена, которые уже есть
-      referenced — все упомянутые Media-имена (не guid)
-    """
-    index = index_assets_by_name(assets)
-    needed: list[str] = []
-    in_carrot: list[str] = []
-    referenced: list[str] = []
-    seen_needed: set[str] = set()
-    seen_ok: set[str] = set()
-    seen_ref: set[str] = set()
-
-    for draft in drafts:
-        for var in draft.get("variables") or []:
-            if not is_media_type(var.get("type")):
-                continue
-            raw = "" if var.get("value") is None else str(var.get("value")).strip()
-            if not raw:
-                continue
-            aid, aname = _parse_media_value(raw)
-            if aid and _GUID_RE.match(aid):
-                continue
-            filename = Path(aname or aid or raw).name
-            if not filename:
-                continue
-            key = _norm_name(filename)
-            if key not in seen_ref:
-                seen_ref.add(key)
-                referenced.append(filename)
-            hit = lookup_asset_by_filename(index, filename)
-            if hit and hit.get("id"):
-                if key not in seen_ok:
-                    seen_ok.add(key)
-                    in_carrot.append(filename)
-                continue
-            if key not in seen_needed:
-                seen_needed.add(key)
-                needed.append(filename)
-
-    return {
-        "needed": needed,
-        "inCarrot": in_carrot,
-        "referenced": referenced,
-    }
-
-
 def resolve_media_in_drafts(
     drafts: list[dict[str, Any]],
     *,
@@ -2793,7 +2694,6 @@ def resolve_media_in_drafts(
     media_folder: Optional[str] = None,
     media_files: Optional[dict[str, bytes]] = None,
     upload_file: Optional[Callable[[bytes, str], dict[str, Any]]] = None,
-    upload_workers: int = 4,
 ) -> dict[str, Any]:
     """
     Для Media-переменных: значение из Excel = имя файла.
@@ -2801,42 +2701,21 @@ def resolve_media_in_drafts(
     1) если уже «guid;name» — оставить
     2) если ассет с таким именем есть в Carrot — подставить id;name
     3) иначе взять из media_files (имя → bytes) или media_folder и upload_file(...)
-
-    Уникальные файлы заливаются параллельно (upload_workers).
     """
     index = index_assets_by_name(assets)
     resolved = 0
+    uploaded = 0
     reused = 0
     missing: list[dict[str, Any]] = []
     folder = (media_folder or "").strip() or None
-    # Локальные файлы с клиента: exact + stem.
-    # Stem нужен, чтобы найти файл на диске; в Carrot reuse — только exact
-    # (см. lookup_asset_by_filename), иначе intro.jpg подменял intro.mp4.
-    files_by_exact: dict[str, bytes] = {}
-    files_by_stem: dict[str, bytes] = {}
+    files_by_name: dict[str, bytes] = {}
     if media_files:
         for fname, blob in media_files.items():
             if not fname or blob is None:
                 continue
-            exact = _norm_name(Path(str(fname)).name)
-            files_by_exact[exact] = bytes(blob)
+            files_by_name[_norm_name(Path(str(fname)).name)] = bytes(blob)
             stem = _norm_name(Path(str(fname)).stem)
-            if stem:
-                files_by_stem.setdefault(stem, bytes(blob))
-
-    def _local_blob_for(filename: str) -> Optional[bytes]:
-        key = _norm_name(filename)
-        if not key:
-            return None
-        hit = files_by_exact.get(key)
-        if hit is not None:
-            return hit
-        return files_by_stem.get(Path(key).stem)
-
-    # key -> pending upload job (уникальные файлы)
-    pending: dict[str, dict[str, Any]] = {}
-    # (draft_var_ref) waiting on key
-    waiting: list[tuple[str, dict[str, Any], Any, str]] = []
+            files_by_name.setdefault(stem, bytes(blob))
 
     for draft in drafts:
         excel_row = draft.get("_excelRow")
@@ -2849,7 +2728,6 @@ def resolve_media_in_drafts(
 
             aid, aname = _parse_media_value(raw)
             if aid and _GUID_RE.match(aid):
-                # Carrot ожидает AssetId;AssetName
                 if aname:
                     var["value"] = f"{aid};{aname}"
                 else:
@@ -2859,7 +2737,7 @@ def resolve_media_in_drafts(
 
             filename = aname or aid or raw
             key = _norm_name(filename)
-            hit = lookup_asset_by_filename(index, filename)
+            hit = index.get(key) or index.get(Path(key).stem)
             if hit and hit.get("id"):
                 var["value"] = f"{hit['id']};{hit.get('name') or filename}"
                 resolved += 1
@@ -2877,113 +2755,71 @@ def resolve_media_in_drafts(
                 )
                 continue
 
-            upload_name = Path(filename).name
-            blob = _local_blob_for(filename)
-            local_path: Optional[Path] = None
-            if blob is None:
-                if not folder:
-                    missing.append(
-                        {
-                            "row": excel_row,
-                            "variable": var.get("name"),
-                            "file": filename,
-                            "reason": "медиа нет в Carrot; выбери папку в Настройках",
-                        }
-                    )
-                    continue
-                try:
-                    local_path = find_local_media_file(folder, filename)
-                except ValueError as err:
-                    missing.append(
-                        {
-                            "row": excel_row,
-                            "variable": var.get("name"),
-                            "file": filename,
-                            "reason": str(err),
-                        }
-                    )
-                    continue
-                if local_path is None:
-                    missing.append(
-                        {
-                            "row": excel_row,
-                            "variable": var.get("name"),
-                            "file": filename,
-                            "reason": f"файл не найден в папке {folder}",
-                        }
-                    )
-                    continue
-                upload_name = local_path.name
-
-            job_key = key
-            if job_key not in pending:
-                pending[job_key] = {
-                    "blob": blob,
-                    "path": str(local_path) if local_path is not None else None,
-                    "upload_name": upload_name,
-                }
-            waiting.append((job_key, var, excel_row, filename))
-
-    uploaded_by_key: dict[str, dict[str, Any]] = {}
-    upload_errors: dict[str, str] = {}
-
-    def _do_upload(job_key: str, job: dict[str, Any]) -> tuple[str, Optional[dict[str, Any]], str]:
-        try:
-            data = job.get("blob")
-            if data is None and job.get("path"):
-                data = Path(job["path"]).read_bytes()
-            if not data:
-                return job_key, None, "пустой файл для загрузки"
-            assert upload_file is not None
-            asset = upload_file(bytes(data), str(job["upload_name"]))
-            return job_key, asset, ""
-        except Exception as err:  # noqa: BLE001
-            return job_key, None, str(err) or "ошибка загрузки"
-
-    if pending and upload_file is not None:
-        workers = min(max(1, int(upload_workers) or 1), len(pending))
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            futs = [
-                pool.submit(_do_upload, job_key, job)
-                for job_key, job in pending.items()
-            ]
-            for fut in as_completed(futs):
-                job_key, asset, err_msg = fut.result()
-                if asset is None:
-                    upload_errors[job_key] = err_msg or "не удалось загрузить"
-                    continue
-                uploaded_by_key[job_key] = asset
-                aname = asset.get("name") or pending[job_key]["upload_name"]
-                index[_norm_name(aname)] = asset
-                stem = Path(_norm_name(aname)).stem
-                if stem:
-                    index.setdefault(stem, asset)
-
-    for job_key, var, excel_row, filename in waiting:
-        asset = uploaded_by_key.get(job_key)
-        if not asset or not asset.get("id"):
-            missing.append(
-                {
-                    "row": excel_row,
-                    "variable": var.get("name"),
-                    "file": filename,
-                    "reason": upload_errors.get(job_key) or "не удалось загрузить",
-                }
+            blob = files_by_name.get(key) or files_by_name.get(
+                _norm_name(Path(key).stem)
             )
-            continue
-        name = asset.get("name") or pending.get(job_key, {}).get("upload_name") or filename
-        var["value"] = f"{asset['id']};{name}"
-        resolved += 1
+            upload_name = Path(filename).name
+            if blob is not None:
+                asset = upload_file(blob, upload_name)
+                var["value"] = f"{asset['id']};{asset.get('name') or upload_name}"
+                index[_norm_name(asset.get("name") or upload_name)] = asset
+                resolved += 1
+                uploaded += 1
+                continue
+
+            if not folder:
+                missing.append(
+                    {
+                        "row": excel_row,
+                        "variable": var.get("name"),
+                        "file": filename,
+                        "reason": "медиа нет в Carrot; выбери папку в Настройках",
+                    }
+                )
+                continue
+
+            try:
+                local = find_local_media_file(folder, filename)
+            except ValueError as err:
+                missing.append(
+                    {
+                        "row": excel_row,
+                        "variable": var.get("name"),
+                        "file": filename,
+                        "reason": str(err),
+                    }
+                )
+                continue
+
+            if local is None:
+                missing.append(
+                    {
+                        "row": excel_row,
+                        "variable": var.get("name"),
+                        "file": filename,
+                        "reason": f"файл не найден в папке {folder}",
+                    }
+                )
+                continue
+
+            asset = upload_file(local.read_bytes(), local.name)
+            index[_norm_name(asset.get("name") or local.name)] = asset
+            stem = Path(_norm_name(asset.get("name") or local.name)).stem
+            if stem:
+                index.setdefault(stem, asset)
+            var["value"] = f"{asset['id']};{asset.get('name') or local.name}"
+            resolved += 1
+            uploaded += 1
 
     return {
         "resolved": resolved,
-        "uploaded": len(uploaded_by_key),
+        "uploaded": uploaded,
         "reused": reused,
         "missing": missing,
-        # совместимость со старым UI
         "warnings": missing,
         "ok": not missing,
     }
+
 
 __all__ = [
     "CarrotClient",
@@ -2994,9 +2830,6 @@ __all__ = [
     "read_excel_rows",
     "rows_to_event_drafts",
     "resolve_media_in_drafts",
-    "list_missing_local_media_names",
     "name_from_first_variable",
     "is_media_type",
-    "media_value_is_bound",
-    "lookup_asset_by_filename",
 ]

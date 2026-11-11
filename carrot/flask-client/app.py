@@ -8,7 +8,6 @@
 
 from __future__ import annotations
 
-import copy
 import logging
 import os
 import re
@@ -17,7 +16,6 @@ import subprocess
 import threading
 import time
 import traceback
-import uuid
 import webbrowser
 from pathlib import Path
 from typing import Any, Optional
@@ -29,8 +27,6 @@ from carrot_client import (
     CarrotClient,
     CarrotError,
     is_media_type,
-    list_missing_local_media_names,
-    media_value_is_bound,
     read_excel_rows,
     resolve_media_in_drafts,
     rows_to_event_drafts,
@@ -66,55 +62,6 @@ _client_key: str = ""
 # Последние успешные креды сессии (чтобы смена baseUrl в Настройках
 # и последующие /api/* без тела не откатывались к .env).
 _session: dict[str, Any] = {}
-
-# Кэш planOnly → реальный импорт (не парсить Excel / media list повторно).
-_import_plans: dict[str, dict[str, Any]] = {}
-_import_plans_lock = threading.Lock()
-_IMPORT_PLAN_TTL_S = 600.0
-_IMPORT_PLAN_MAX = 24
-
-
-def _prune_import_plans_locked() -> None:
-    now = time.time()
-    dead = [
-        k
-        for k, v in _import_plans.items()
-        if now - float(v.get("at") or 0) > _IMPORT_PLAN_TTL_S
-    ]
-    for k in dead:
-        _import_plans.pop(k, None)
-    if len(_import_plans) <= _IMPORT_PLAN_MAX:
-        return
-    ordered = sorted(
-        _import_plans.items(), key=lambda kv: float(kv[1].get("at") or 0)
-    )
-    overflow = len(ordered) - _IMPORT_PLAN_MAX
-    for k, _ in ordered[:overflow]:
-        _import_plans.pop(k, None)
-
-
-def store_import_plan(payload: dict[str, Any]) -> str:
-    plan_id = str(uuid.uuid4())
-    with _import_plans_lock:
-        _prune_import_plans_locked()
-        _import_plans[plan_id] = {**payload, "at": time.time()}
-    return plan_id
-
-
-def get_import_plan(plan_id: str) -> Optional[dict[str, Any]]:
-    if not plan_id:
-        return None
-    with _import_plans_lock:
-        _prune_import_plans_locked()
-        hit = _import_plans.get(plan_id)
-        return hit
-
-
-def drop_import_plan(plan_id: str) -> None:
-    if not plan_id:
-        return
-    with _import_plans_lock:
-        _import_plans.pop(plan_id, None)
 
 
 def env(name: str, default: Optional[str] = None) -> Optional[str]:
@@ -687,31 +634,18 @@ def api_events_import_excel():
     Создать ивенты из Excel по выбранному шаблону.
 
     multipart/form-data:
-      file — .xlsx/.xlsm (не нужен, если передан валидный planId)
-      planId — опц. id плана из предыдущего planOnly
+      file — .xlsx/.xlsm
       templateId — GUID шаблона
       mediaFolder — опц. локальная папка сервера для Media-файлов из Excel
       mediaFiles — опц. файлы из выбранной в браузере папки
       hasHeader — optional 0/1 (авто: если 1-я ячейка похожа на «имя»/name)
-      planOnly — optional 0/1: только список медиа, которые нужно прислать
-                 с клиента (без создания ивентов); ответ включает planId
 
     Столбцы: 1 = имя, последний = External id, между ними = переменные
     шаблона в порядке template.variables. Для Media — имя файла.
     """
-    plan_id = (
-        request.form.get("planId")
-        or request.form.get("plan_id")
-        or request.args.get("planId")
-        or ""
-    ).strip()
-
     upload = request.files.get("file")
-    cached = get_import_plan(plan_id) if plan_id else None
-    if cached is None and (not upload or not upload.filename):
-        return jsonify(
-            {"ok": False, "error": "Нужен Excel-файл в поле file или валидный planId"}
-        ), 400
+    if not upload or not upload.filename:
+        return jsonify({"ok": False, "error": "Нужен Excel-файл в поле file"}), 400
 
     template_id = (
         request.form.get("templateId")
@@ -719,8 +653,6 @@ def api_events_import_excel():
         or request.args.get("templateId")
         or ""
     ).strip()
-    if cached is not None:
-        template_id = str(cached.get("templateId") or template_id).strip()
     if not template_id:
         return jsonify({"ok": False, "error": "Нужен templateId"}), 400
 
@@ -774,57 +706,18 @@ def api_events_import_excel():
             "on",
         )
 
-    plan_only_raw = (
-        request.form.get("planOnly")
-        or request.form.get("plan_only")
-        or request.args.get("planOnly")
-    )
-    plan_only = str(plan_only_raw or "").strip().lower() in (
-        "1",
-        "true",
-        "yes",
-        "y",
-        "on",
-    )
+    raw = upload.read()
+    try:
+        rows = read_excel_rows(raw)
+    except ValueError as err:
+        return jsonify({"ok": False, "error": str(err)}), 400
 
     client = ensure_client()
-    template_name = ""
-    media_var_indexes: list[int] = []
-    assets: list[dict[str, Any]] = []
-
-    if cached is not None:
-        drafts = copy.deepcopy(cached.get("drafts") or [])
-        skipped = list(cached.get("skipped") or [])
-        header_skipped = bool(cached.get("headerSkipped"))
-        variable_names = list(cached.get("variableNames") or [])
-        template_name = str(cached.get("templateName") or "")
-        media_var_indexes = list(cached.get("mediaVarIndexes") or [])
-        assets = list(cached.get("assets") or [])
-        if "autoName" in cached:
-            auto_name = bool(cached.get("autoName"))
-        parsed = {
-            "drafts": drafts,
-            "skipped": skipped,
-            "headerSkipped": header_skipped,
-            "variableNames": variable_names,
-            "mediaVarIndexes": media_var_indexes,
-        }
-        log.info("[excel] reuse planId=%s drafts=%s", plan_id, len(drafts))
-    else:
-        raw = upload.read()
-        try:
-            rows = read_excel_rows(raw)
-        except ValueError as err:
-            return jsonify({"ok": False, "error": str(err)}), 400
-
-        template = client.get_normalized_template(template_id)
-        template_name = template.get("name") or ""
-        parsed = rows_to_event_drafts(
-            rows, template, has_header=has_header, auto_name=auto_name
-        )
-        drafts = parsed["drafts"]
-        media_var_indexes = list(parsed.get("mediaVarIndexes") or [])
-
+    template = client.get_normalized_template(template_id)
+    parsed = rows_to_event_drafts(
+        rows, template, has_header=has_header, auto_name=auto_name
+    )
+    drafts = parsed["drafts"]
     if not drafts:
         return jsonify(
             {
@@ -836,60 +729,18 @@ def api_events_import_excel():
             }
         ), 400
 
-    if plan_only:
-        media_plan: dict[str, Any] = {
-            "needed": [],
-            "inCarrot": [],
-            "referenced": [],
-        }
-        if media_var_indexes:
-            try:
-                assets = client.list_media_assets({"deep": True}) or []
-            except Exception as err:  # noqa: BLE001
-                log.warning("[excel] plan: список медиа недоступен: %s", err)
-                assets = []
-            media_plan = list_missing_local_media_names(drafts, assets=assets)
-        new_plan_id = store_import_plan(
-            {
-                "drafts": copy.deepcopy(drafts),
-                "assets": list(assets),
-                "skipped": parsed["skipped"],
-                "headerSkipped": parsed["headerSkipped"],
-                "variableNames": parsed["variableNames"],
-                "mediaVarIndexes": media_var_indexes,
-                "templateId": template_id,
-                "templateName": template_name,
-                "autoName": auto_name,
-            }
-        )
-        return jsonify(
-            {
-                "ok": True,
-                "planOnly": True,
-                "planId": new_plan_id,
-                "draftCount": len(drafts),
-                "skipped": parsed["skipped"],
-                "headerSkipped": parsed["headerSkipped"],
-                "variableNames": parsed["variableNames"],
-                "templateId": template_id,
-                "templateName": template_name,
-                "media": media_plan,
-            }
-        )
-
     media_report: dict[str, Any] = {
         "resolved": 0,
         "uploaded": 0,
         "reused": 0,
         "warnings": [],
     }
-    if media_var_indexes:
-        if not assets:
-            try:
-                assets = client.list_media_assets({"deep": True}) or []
-            except Exception as err:  # noqa: BLE001
-                log.warning("[excel] список медиа недоступен: %s", err)
-                assets = []
+    if parsed.get("mediaVarIndexes"):
+        try:
+            assets = client.list_media_assets({"deep": True}) or []
+        except Exception as err:  # noqa: BLE001
+            log.warning("[excel] список медиа недоступен: %s", err)
+            assets = []
 
         def _upload(file_bytes: bytes, filename: str) -> dict[str, Any]:
             return client.upload_asset(file_bytes, filename)
@@ -903,7 +754,6 @@ def api_events_import_excel():
         )
         missing = media_report.get("missing") or []
         if missing:
-            # Без найденных медиа импорт не выполняем — ивенты не создаём.
             names = sorted(
                 {
                     str(m.get("file") or "").strip()
@@ -933,70 +783,11 @@ def api_events_import_excel():
                     "headerSkipped": parsed["headerSkipped"],
                     "variableNames": parsed["variableNames"],
                     "templateId": template_id,
-                    "templateName": template_name,
+                    "templateName": template.get("name") or "",
                     "media": media_report,
                 }
             ), 400
 
-    # Не создаём ивенты с «голыми» именами файлов вместо AssetId;Name —
-    # в Carrot это даёт missing media asset, а UI может показать подпись.
-    unbound_media: list[dict[str, Any]] = []
-    for d in drafts:
-        for var in d.get("variables") or []:
-            if not is_media_type(var.get("type")):
-                continue
-            raw = var.get("value")
-            if raw is None or str(raw).strip() == "":
-                continue
-            if media_value_is_bound(raw):
-                continue
-            unbound_media.append(
-                {
-                    "row": d.get("_excelRow"),
-                    "variable": var.get("name"),
-                    "file": str(raw).strip(),
-                    "reason": "медиа не привязано к AssetId в Carrot",
-                }
-            )
-    if unbound_media:
-        names = sorted(
-            {
-                str(m.get("file") or "").strip()
-                for m in unbound_media
-                if str(m.get("file") or "").strip()
-            }
-        )
-        preview = ", ".join(names[:5])
-        more = f" и ещё {len(names) - 5}" if len(names) > 5 else ""
-        log.warning(
-            "[excel] импорт отменён: unbound media=%s (%s%s)",
-            len(unbound_media),
-            preview,
-            more,
-        )
-        media_report = dict(media_report or {})
-        media_report["missing"] = unbound_media
-        media_report["warnings"] = unbound_media
-        media_report["ok"] = False
-        return jsonify(
-            {
-                "ok": False,
-                "error": (
-                    "Импорт отменён: медиа не привязаны к ассетам Carrot"
-                    + (f" ({preview}{more})" if preview else "")
-                    + ". Проверь имена файлов в Excel и папку медиа."
-                ),
-                "created": [],
-                "skipped": parsed["skipped"],
-                "headerSkipped": parsed["headerSkipped"],
-                "variableNames": parsed["variableNames"],
-                "templateId": template_id,
-                "templateName": template_name,
-                "media": media_report,
-            }
-        ), 400
-
-    # служебное поле _excelRow не уходит в Carrot
     events = []
     for d in drafts:
         ev = {k: v for k, v in d.items() if not k.startswith("_")}
@@ -1004,16 +795,13 @@ def api_events_import_excel():
 
     result = client.create_events(events, auto_name=auto_name)
     created = result.get("created") or []
-    if plan_id:
-        drop_import_plan(plan_id)
     log.info(
-        "[excel] шаблон %s: строк=%s создано=%s media upload=%s reuse=%s plan=%s",
-        template_name or template_id,
+        "[excel] шаблон %s: строк=%s создано=%s media upload=%s reuse=%s",
+        template.get("name") or template_id,
         len(drafts),
         len(created),
         media_report.get("uploaded"),
         media_report.get("reused"),
-        plan_id or "-",
     )
     return jsonify(
         {
@@ -1023,7 +811,7 @@ def api_events_import_excel():
             "headerSkipped": parsed["headerSkipped"],
             "variableNames": parsed["variableNames"],
             "templateId": template_id,
-            "templateName": template_name,
+            "templateName": template.get("name") or "",
             "media": media_report,
         }
     )
