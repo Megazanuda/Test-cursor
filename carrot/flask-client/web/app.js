@@ -2682,70 +2682,98 @@ async function collectSelectedMediaFiles() {
   return [];
 }
 
+function sanitizeMediaBaseName(name) {
+  var base = String(name || '').split(/[/\\]/).pop() || '';
+  base = base.replace(/^[\s"'«»]+|[\s"'«»]+$/g, '');
+  try { base = base.normalize('NFC'); } catch (e) { /* ignore */ }
+  return base.trim().toLowerCase();
+}
+
 function mediaNeededKeySet(neededNames) {
-  // exact: имя с расширением → только точное совпадение.
-  // stems: имя без расширения («intro») → можно взять intro.mp4.
+  // В папке: exact + stem. В Carrot reuse stem запрещён (только exact).
   const exact = Object.create(null);
   const stems = Object.create(null);
-  var target = 0;
   (neededNames || []).forEach(function (n) {
-    const base = String(n || '').split(/[/\\]/).pop().trim().toLowerCase();
+    const base = sanitizeMediaBaseName(n);
     if (!base) return;
-    if (!exact[base]) {
-      exact[base] = true;
-      target += 1;
-    }
-    const hasExt = /\.[^.]+$/.test(base);
-    if (!hasExt) stems[base] = true;
+    exact[base] = true;
+    const stem = base.replace(/\.[^.]+$/, '');
+    if (stem) stems[stem] = true;
   });
-  return { exact: exact, stems: stems, target: target };
+  return { exact: exact, stems: stems };
+}
+
+function localFileMatchesNeeded(fileName, pack) {
+  const name = sanitizeMediaBaseName(fileName);
+  if (!name) return false;
+  if (pack.exact[name]) return true;
+  const stem = name.replace(/\.[^.]+$/, '');
+  return !!(stem && pack.stems[stem]);
 }
 
 function filterMediaFilesByNeededNames(files, neededNames) {
   const pack = mediaNeededKeySet(neededNames);
   return (files || []).filter(function (f) {
-    const name = String(f.name || '').toLowerCase();
-    if (!name) return false;
-    if (pack.exact[name]) return true;
-    const stem = name.replace(/\.[^.]+$/, '');
-    return !!(stem && pack.stems[stem]);
+    return localFileMatchesNeeded(f && f.name, pack);
   });
 }
 
-/** Собрать только нужные медиа: getFile() лишь для совпадений, с ранним выходом. */
+function renameFileForUpload(file, uploadName) {
+  const raw = String(uploadName || '').split(/[/\\]/).pop() || '';
+  const name = raw.replace(/^[\s"'«»]+|[\s"'«»]+$/g, '').trim() || (file && file.name) || 'file';
+  try {
+    return new File([file], name, {
+      type: (file && file.type) || '',
+      lastModified: (file && file.lastModified) || Date.now(),
+    });
+  } catch (e) {
+    return file;
+  }
+}
+
+/** Найти локальный файл под имя из Excel: сначала exact, потом stem. */
+function pickLocalFileForNeededName(files, neededName) {
+  const want = sanitizeMediaBaseName(neededName);
+  if (!want || !files || !files.length) return null;
+  const wantStem = want.replace(/\.[^.]+$/, '');
+  var stemHit = null;
+  for (var i = 0; i < files.length; i++) {
+    const f = files[i];
+    const name = sanitizeMediaBaseName(f && f.name);
+    if (!name) continue;
+    if (name === want) return f;
+    const stem = name.replace(/\.[^.]+$/, '');
+    if (!stemHit && stem && stem === wantStem) stemHit = f;
+  }
+  return stemHit;
+}
+
+/**
+ * Собрать нужные медиа из папки.
+ * В FormData имя файла = как в Excel, чтобы сервер точно сопоставил строку.
+ */
 async function collectNeededMediaFiles(neededNames) {
   const needed = neededNames || [];
   if (!needed.length) return [];
   const pack = mediaNeededKeySet(needed);
-  const target = pack.target;
 
+  var pool = [];
   if (mediaDirHandle) {
     const ok = await ensureMediaDirPermission(mediaDirHandle, true);
     if (!ok) {
       throw new Error('Нет доступа к папке медиа. Нажми «Выбрать папку…» в Настройках.');
     }
-    const out = [];
-    var found = 0;
-    const seenFile = Object.create(null);
-    const matchedKey = Object.create(null);
+    // Точечный обход: getFile только для кандидатов.
+    const seen = Object.create(null);
     async function walk(handle) {
-      if (found >= target) return;
       for await (const entry of handle.values()) {
-        if (found >= target) return;
         try {
           if (entry.kind === 'file') {
-            const name = String(entry.name || '').toLowerCase();
-            if (!name || seenFile[name]) continue;
-            const stem = name.replace(/\.[^.]+$/, '');
-            var matchKey = '';
-            if (pack.exact[name] && !matchedKey[name]) matchKey = name;
-            else if (stem && pack.stems[stem] && !matchedKey[stem]) matchKey = stem;
-            if (!matchKey) continue;
+            const name = sanitizeMediaBaseName(entry.name);
+            if (!name || seen[name] || !localFileMatchesNeeded(name, pack)) continue;
             const file = await entry.getFile();
-            out.push(file);
-            seenFile[name] = true;
-            matchedKey[matchKey] = true;
-            found += 1;
+            pool.push(file);
+            seen[name] = true;
           } else if (entry.kind === 'directory') {
             await walk(entry);
           }
@@ -2755,13 +2783,28 @@ async function collectNeededMediaFiles(neededNames) {
       }
     }
     await walk(mediaDirHandle);
-    return out;
+  } else if (mediaPickedFiles && mediaPickedFiles.length) {
+    pool = mediaPickedFiles.filter(function (f) {
+      return localFileMatchesNeeded(f && f.name, pack);
+    });
   }
 
-  if (mediaPickedFiles && mediaPickedFiles.length) {
-    return filterMediaFilesByNeededNames(mediaPickedFiles, needed);
+  if (!pool.length && mediaFolderIsReady()) {
+    pool = filterMediaFilesByNeededNames(await collectSelectedMediaFiles(), needed);
   }
-  return [];
+
+  const out = [];
+  const used = Object.create(null);
+  needed.forEach(function (n) {
+    const hit = pickLocalFileForNeededName(pool, n);
+    if (!hit) return;
+    const id = String(hit.name || '') + '\0' + String(hit.size || '') + '\0' +
+      String(hit.lastModified || '');
+    if (used[id]) return;
+    used[id] = true;
+    out.push(renameFileForUpload(hit, n));
+  });
+  return out;
 }
 
 async function templateNeedsMediaPlan(templateId) {
