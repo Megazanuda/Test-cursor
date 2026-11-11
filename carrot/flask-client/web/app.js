@@ -157,7 +157,6 @@ const el = {
   themeToggleBtn: document.getElementById('themeToggleBtn'),
   autoNameToggle: document.getElementById('autoNameToggle'),
   settingsMediaFolderRow: document.getElementById('settingsMediaFolderRow'),
-  settingsMediaFolderHint: document.getElementById('settingsMediaFolderHint'),
   settingsMediaFolderActions: document.getElementById('settingsMediaFolderActions'),
   mediaFolderPath: document.getElementById('mediaFolderPath'),
   mediaFolderPickBtn: document.getElementById('mediaFolderPickBtn'),
@@ -2368,14 +2367,6 @@ function syncMediaFolderUiPlacement() {
   }
   if (el.settingsMediaFolderActions) {
     el.settingsMediaFolderActions.hidden = !persist;
-  }
-  if (el.settingsMediaFolderHint) {
-    el.settingsMediaFolderHint.textContent = persist
-      ? 'Вложенные папки тоже. Папка запоминается в этом браузере.'
-      : 'На этом адресе папка не запоминается — выбери её в окне «Импорт Excel».';
-  }
-  if (el.settingsMediaFolderRow && !persist && !ready && !getMediaFolderLabel()) {
-    // строка в настройках остаётся как подсказка
   }
 }
 
