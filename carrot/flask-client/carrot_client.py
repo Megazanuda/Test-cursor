@@ -807,6 +807,17 @@ class CarrotClient:
         )
         self._template_name_cache: dict[str, str] = {}
         self._session = requests.Session()
+        # DEV: колбэк трафика (channel=carrot). Сигнатура: fn(dict)
+        self.traffic_hook = opts.get("traffic_hook") or opts.get("trafficHook")
+
+    def _emit_traffic(self, **kwargs: Any) -> None:
+        hook = getattr(self, "traffic_hook", None)
+        if not callable(hook):
+            return
+        try:
+            hook({**kwargs, "channel": kwargs.get("channel") or "carrot"})
+        except Exception:
+            pass
 
     # --- совместимость camelCase-свойств (как в JS) ---
     @property
@@ -879,6 +890,7 @@ class CarrotClient:
         last_err: Optional[CarrotError] = None
 
         for attempt in range(self.max_retries + 1):
+            t0 = time.time()
             try:
                 kwargs: dict[str, Any] = {
                     "method": method,
@@ -889,8 +901,20 @@ class CarrotClient:
                 if body is not None:
                     kwargs["json"] = body
                 res = self._session.request(**kwargs)
+                duration_ms = (time.time() - t0) * 1000.0
 
                 if res.status_code == 401 and auth and not _retried_auth:
+                    self._emit_traffic(
+                        method=method,
+                        url=url,
+                        status=res.status_code,
+                        duration_ms=duration_ms,
+                        request_headers=headers,
+                        request_body=body,
+                        response_headers=dict(res.headers),
+                        response_body=(res.text or "")[:2000],
+                        note="401 → refresh token + retry",
+                    )
                     self.token = None
                     self._ensure_token()
                     return self._request(
@@ -907,6 +931,17 @@ class CarrotClient:
                         preview = re.sub(r"\s+", " ", text)[:220]
                         looks_html = bool(
                             re.search(r"<html|<!doctype html|<head|<body", text, re.I)
+                        )
+                        self._emit_traffic(
+                            method=method,
+                            url=url,
+                            status=res.status_code,
+                            duration_ms=duration_ms,
+                            request_headers=headers,
+                            request_body=body,
+                            response_headers=dict(res.headers),
+                            response_body=preview,
+                            error="non-JSON response",
                         )
                         raise CarrotError(
                             f"Ответ не JSON (HTTP {res.status_code}, Content-Type: {ctype}). "
@@ -930,6 +965,17 @@ class CarrotClient:
                             " Путь не найден. В .env нужен http://хост:порт/api — "
                             "без /auth/generate на конце и без второго /api."
                         )
+                    self._emit_traffic(
+                        method=method,
+                        url=url,
+                        status=res.status_code,
+                        duration_ms=duration_ms,
+                        request_headers=headers,
+                        request_body=body,
+                        response_headers=dict(res.headers),
+                        response_body=json_data if json_data is not None else preview,
+                        error=f"HTTP {res.status_code}",
+                    )
                     raise CarrotError(
                         f"HTTP {res.status_code} {res.reason} [{method} {url}]{hint}"
                         + (f" | ответ: {preview}" if preview else ""),
@@ -944,6 +990,17 @@ class CarrotClient:
                     and isinstance(data.get("errorCode"), int)
                     and data["errorCode"] != 0
                 ):
+                    self._emit_traffic(
+                        method=method,
+                        url=url,
+                        status=res.status_code,
+                        duration_ms=duration_ms,
+                        request_headers=headers,
+                        request_body=body,
+                        response_headers=dict(res.headers),
+                        response_body=json_data,
+                        error=f"errorCode={data['errorCode']}",
+                    )
                     raise CarrotError(
                         f"Carrot {ERROR_NAMES.get(data['errorCode'], data['errorCode'])}: "
                         f"{data.get('description') or ''}",
@@ -951,11 +1008,31 @@ class CarrotClient:
                         description=data.get("description"),
                     )
 
+                self._emit_traffic(
+                    method=method,
+                    url=url,
+                    status=res.status_code,
+                    duration_ms=duration_ms,
+                    request_headers=headers,
+                    request_body=body,
+                    response_headers=dict(res.headers),
+                    response_body=json_data if json_data is not None else None,
+                )
                 return data
             except CarrotError:
                 raise
             except Exception as err:
+                duration_ms = (time.time() - t0) * 1000.0
                 wrapped = _wrap_net_error(err, url)
+                self._emit_traffic(
+                    method=method,
+                    url=url,
+                    status=None,
+                    duration_ms=duration_ms,
+                    request_headers=headers,
+                    request_body=body,
+                    error=str(wrapped),
+                )
                 last_err = wrapped
                 if _FATAL_NET.match(wrapped.code or "") or attempt >= self.max_retries:
                     raise wrapped from err
@@ -1299,12 +1376,18 @@ class CarrotClient:
 
     listNormalizedTemplates = list_normalized_templates
 
-    def create_events(self, entries: list[dict[str, Any]]) -> dict[str, Any]:
+    def create_events(
+        self,
+        entries: list[dict[str, Any]],
+        *,
+        auto_name: bool = True,
+    ) -> dict[str, Any]:
         """
         Создать одно или несколько событий (REST POST /events, затем WS CreateEventInDB).
 
         entries: [{ name, templateId, contentId?, templateTypeInt?, state?, comment?, variables? }]
         Пустой ExternalId подменяется на Id. Проверок уникальности имени/ExternalId нет.
+        Если auto_name и имя пустое — берётся значение первой переменной.
         """
         lst = list(entries) if isinstance(entries, list) else []
         if not lst:
@@ -1315,13 +1398,12 @@ class CarrotClient:
             e = e or {}
             if not e.get("templateId"):
                 raise ValueError(f"Событие #{i + 1}: нужен templateId")
-            if not e.get("name") or not str(e["name"]).strip():
-                raise ValueError(f"Событие #{i + 1}: нужно имя")
 
             content_id = e.get("contentId") or ""
             template_type_int = e.get("templateTypeInt")
             variables = list(e["variables"]) if isinstance(e.get("variables"), list) else []
             state = e.get("state") or "IN"
+            name = str(e.get("name") or "").strip()
 
             if not content_id or template_type_int is None or not variables:
                 tpl = self.get_normalized_template(e["templateId"])
@@ -1355,9 +1437,21 @@ class CarrotClient:
                         merged.append(nv)
                     variables = merged
 
+            if not name and auto_name:
+                name = name_from_first_variable(variables)
+            if not name:
+                raise ValueError(
+                    f"Событие #{i + 1}: нужно имя"
+                    + (
+                        " или значение первой переменной"
+                        if auto_name
+                        else ""
+                    )
+                )
+
             if not content_id:
                 raise ValueError(
-                    f"Событие «{str(e['name']).strip()}»: "
+                    f"Событие «{name}»: "
                     "у шаблона нет ContentId — создание невозможно"
                 )
 
@@ -1371,7 +1465,7 @@ class CarrotClient:
             prepared.append(
                 {
                     "id": eid,
-                    "name": str(e["name"]).strip(),
+                    "name": name,
                     "externalId": external_id,
                     "templateId": e["templateId"],
                     "contentId": content_id,
@@ -1545,11 +1639,20 @@ class CarrotClient:
             "Upload-Metadata": meta,
         }
         create_url = self.base_url + "/assets/upload" + self._envelope_query()
+        t0 = time.time()
         try:
             res = self._session.post(
                 create_url, headers=create_headers, data=b"", timeout=timeout_s
             )
         except Exception as err:
+            self._emit_traffic(
+                method="POST",
+                url=create_url,
+                request_headers=create_headers,
+                request_body={"Upload-Length": len(data), "filename": name},
+                error=str(err),
+                note="TUS create",
+            )
             raise _wrap_net_error(err, create_url) from err
 
         if res.status_code == 401:
@@ -1562,6 +1665,23 @@ class CarrotClient:
                 )
             except Exception as err:
                 raise _wrap_net_error(err, create_url) from err
+
+        self._emit_traffic(
+            method="POST",
+            url=create_url,
+            status=res.status_code,
+            duration_ms=(time.time() - t0) * 1000.0,
+            request_headers=create_headers,
+            request_body={
+                "Upload-Length": len(data),
+                "Upload-Metadata": meta,
+                "filename": name,
+            },
+            response_headers=dict(res.headers),
+            response_body=(res.text or "")[:2000],
+            note="TUS create",
+            error=None if res.status_code in (200, 201) else f"HTTP {res.status_code}",
+        )
 
         if res.status_code not in (200, 201):
             raise CarrotError(
@@ -1590,9 +1710,13 @@ class CarrotClient:
                 http_status=res.status_code,
                 url=create_url,
             )
+        # Location иногда с query — отрезать
+        if "?" in file_id:
+            file_id = file_id.split("?", 1)[0]
 
         # --- 2. PATCH chunks ---
         offset = 0
+        chunk_index = 0
         while offset < len(data):
             chunk = data[offset : offset + chunk_size]
             patch_headers = {
@@ -1608,11 +1732,25 @@ class CarrotClient:
                 + quote(str(file_id), safe="")
                 + self._envelope_query()
             )
+            t1 = time.time()
             try:
                 pres = self._session.patch(
                     patch_url, headers=patch_headers, data=chunk, timeout=timeout_s
                 )
             except Exception as err:
+                self._emit_traffic(
+                    method="PATCH",
+                    url=patch_url,
+                    request_headers=patch_headers,
+                    request_body={
+                        "chunkIndex": chunk_index,
+                        "offset": offset,
+                        "chunkBytes": len(chunk),
+                        "totalBytes": len(data),
+                    },
+                    error=str(err),
+                    note="TUS patch",
+                )
                 raise _wrap_net_error(err, patch_url) from err
 
             if pres.status_code == 401:
@@ -1626,6 +1764,39 @@ class CarrotClient:
                 except Exception as err:
                     raise _wrap_net_error(err, patch_url) from err
 
+            off_hdr = pres.headers.get("Upload-Offset") or pres.headers.get(
+                "upload-offset"
+            )
+            # Логируем каждый чанк только если их мало, иначе — первый/последний + ошибки
+            is_last = (offset + len(chunk)) >= len(data) or (
+                off_hdr is not None
+                and str(off_hdr).isdigit()
+                and int(off_hdr) >= len(data)
+            )
+            if chunk_index == 0 or is_last or pres.status_code not in (200, 204):
+                self._emit_traffic(
+                    method="PATCH",
+                    url=patch_url,
+                    status=pres.status_code,
+                    duration_ms=(time.time() - t1) * 1000.0,
+                    request_headers=patch_headers,
+                    request_body={
+                        "chunkIndex": chunk_index,
+                        "offset": offset,
+                        "chunkBytes": len(chunk),
+                        "totalBytes": len(data),
+                        "fileId": file_id,
+                    },
+                    response_headers=dict(pres.headers),
+                    response_body=(pres.text or "")[:1000],
+                    note="TUS patch"
+                    + (" (last)" if is_last else "")
+                    + (f" #{chunk_index}" if chunk_index else " #0"),
+                    error=None
+                    if pres.status_code in (200, 204)
+                    else f"HTTP {pres.status_code}",
+                )
+
             if pres.status_code not in (200, 204):
                 raise CarrotError(
                     f"TUS patch failed HTTP {pres.status_code} @offset={offset}: "
@@ -1634,16 +1805,27 @@ class CarrotClient:
                     url=patch_url,
                 )
 
-            off_hdr = pres.headers.get("Upload-Offset") or pres.headers.get(
-                "upload-offset"
-            )
             if off_hdr is not None and str(off_hdr).strip() != "":
                 try:
                     offset = int(off_hdr)
+                    chunk_index += 1
                     continue
                 except ValueError:
                     pass
             offset += len(chunk)
+            chunk_index += 1
+
+        self._emit_traffic(
+            method="PATCH",
+            url=self.base_url + "/assets/upload/" + str(file_id),
+            status=204,
+            request_body={
+                "fileId": file_id,
+                "totalBytes": len(data),
+                "chunks": chunk_index,
+            },
+            note="TUS patch summary — all chunks done, next: register",
+        )
 
         # --- 3. register as Asset ---
         # Тело — JSON-строка GUID папки; пусто → Guid.Empty (корень).
@@ -2256,11 +2438,29 @@ def _looks_like_header(row: list[str]) -> bool:
     return first in HEADER_NAME_ALIASES
 
 
+def name_from_first_variable(variables: Optional[list[Any]]) -> str:
+    """Имя ивента из значения первой переменной (для Media — имя файла)."""
+    if not variables:
+        return ""
+    first = variables[0] if isinstance(variables[0], dict) else None
+    if not first:
+        return ""
+    raw = "" if first.get("value") is None else str(first.get("value")).strip()
+    if not raw:
+        return ""
+    if is_media_type(first.get("type")):
+        _aid, aname = _parse_media_value(raw)
+        label = aname or _aid or raw
+        return Path(str(label)).name
+    return raw
+
+
 def rows_to_event_drafts(
     rows: list[list[str]],
     template: dict[str, Any],
     *,
     has_header: Optional[bool] = None,
+    auto_name: bool = True,
 ) -> dict[str, Any]:
     """
     Преобразовать строки Excel в черновики ивентов.
@@ -2271,6 +2471,7 @@ def rows_to_event_drafts(
       N — External id
 
     Для Media-переменных в середине ожидается имя файла (не id;name).
+    Если auto_name и имя пустое — берётся значение первой переменной (в т.ч. Media).
     """
     if not rows:
         raise ValueError("Нет строк для импорта")
@@ -2299,13 +2500,9 @@ def rows_to_event_drafts(
             )
             continue
 
-        name = row[0]
+        name = (row[0] or "").strip()
         external_id = row[-1]
         mid = row[1:-1]
-
-        if not name:
-            skipped.append({"row": excel_row, "reason": "пустое имя"})
-            continue
 
         variables: list[dict[str, Any]] = []
         for vi, meta in enumerate(var_meta):
@@ -2319,6 +2516,21 @@ def rows_to_event_drafts(
                     else (meta.get("defaultValue") or "")
                 )
             variables.append(nv)
+
+        if not name and auto_name:
+            name = name_from_first_variable(variables)
+        if not name:
+            skipped.append(
+                {
+                    "row": excel_row,
+                    "reason": (
+                        "пустое имя и пустая первая переменная"
+                        if auto_name
+                        else "пустое имя"
+                    ),
+                }
+            )
+            continue
 
         drafts.append(
             {
@@ -2377,7 +2589,7 @@ def index_assets_by_name(assets: list[dict[str, Any]]) -> dict[str, dict[str, An
 
 def find_local_media_file(folder: str, filename: str) -> Optional[Path]:
     """
-    Найти файл в папке по имени (с расширением или без).
+    Найти файл в папке (и во всех вложенных) по имени с расширением или без.
 
     Только внутри folder (path traversal блокируется).
     """
@@ -2390,23 +2602,84 @@ def find_local_media_file(folder: str, filename: str) -> Optional[Path]:
     if not wanted or wanted in (".", ".."):
         return None
 
-    candidate = (root / wanted).resolve()
-    try:
-        candidate.relative_to(root_resolved)
-    except ValueError as err:
-        raise ValueError("Имя файла выходит за пределы папки медиа") from err
+    def _inside(path: Path) -> bool:
+        try:
+            path.resolve().relative_to(root_resolved)
+            return True
+        except ValueError:
+            return False
 
-    if candidate.is_file():
-        return candidate
+    # Точное имя: сначала в корне, затем рекурсивно.
+    direct = (root / wanted).resolve()
+    if direct.is_file() and _inside(direct):
+        return direct
+    for path in sorted(root_resolved.rglob(wanted)):
+        if path.is_file() and _inside(path):
+            return path
 
-    # без расширения — первое совпадение по stem
+    # Без расширения — первое совпадение по stem (включая вложенные).
     stem = Path(wanted).stem.lower()
     if not stem:
         return None
-    for path in sorted(root_resolved.iterdir()):
-        if path.is_file() and path.stem.lower() == stem:
+    for path in sorted(root_resolved.rglob("*")):
+        if path.is_file() and path.stem.lower() == stem and _inside(path):
             return path
     return None
+
+
+def list_missing_local_media_names(
+    drafts: list[dict[str, Any]],
+    *,
+    assets: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """
+    Какие Media-имена из Excel ещё нет в Carrot (нужны из локальной папки).
+
+    Не меняет drafts. Возвращает:
+      needed — уникальные имена файлов, которых нет в Carrot
+      inCarrot — имена, которые уже есть
+      referenced — все упомянутые Media-имена (не guid)
+    """
+    index = index_assets_by_name(assets)
+    needed: list[str] = []
+    in_carrot: list[str] = []
+    referenced: list[str] = []
+    seen_needed: set[str] = set()
+    seen_ok: set[str] = set()
+    seen_ref: set[str] = set()
+
+    for draft in drafts:
+        for var in draft.get("variables") or []:
+            if not is_media_type(var.get("type")):
+                continue
+            raw = "" if var.get("value") is None else str(var.get("value")).strip()
+            if not raw:
+                continue
+            aid, aname = _parse_media_value(raw)
+            if aid and _GUID_RE.match(aid):
+                continue
+            filename = Path(aname or aid or raw).name
+            if not filename:
+                continue
+            key = _norm_name(filename)
+            if key not in seen_ref:
+                seen_ref.add(key)
+                referenced.append(filename)
+            hit = index.get(key) or index.get(Path(key).stem)
+            if hit and hit.get("id"):
+                if key not in seen_ok:
+                    seen_ok.add(key)
+                    in_carrot.append(filename)
+                continue
+            if key not in seen_needed:
+                seen_needed.add(key)
+                needed.append(filename)
+
+    return {
+        "needed": needed,
+        "inCarrot": in_carrot,
+        "referenced": referenced,
+    }
 
 
 def resolve_media_in_drafts(
@@ -2414,6 +2687,7 @@ def resolve_media_in_drafts(
     *,
     assets: list[dict[str, Any]],
     media_folder: Optional[str] = None,
+    media_files: Optional[dict[str, bytes]] = None,
     upload_file: Optional[Callable[[bytes, str], dict[str, Any]]] = None,
 ) -> dict[str, Any]:
     """
@@ -2421,7 +2695,7 @@ def resolve_media_in_drafts(
 
     1) если уже «guid;name» — оставить
     2) если ассет с таким именем есть в Carrot — подставить id;name
-    3) иначе искать в media_folder и upload_file(...)
+    3) иначе взять из media_files (имя → bytes) или media_folder и upload_file(...)
     """
     index = index_assets_by_name(assets)
     resolved = 0
@@ -2429,6 +2703,14 @@ def resolve_media_in_drafts(
     reused = 0
     missing: list[dict[str, Any]] = []
     folder = (media_folder or "").strip() or None
+    files_by_name: dict[str, bytes] = {}
+    if media_files:
+        for fname, blob in media_files.items():
+            if not fname or blob is None:
+                continue
+            files_by_name[_norm_name(Path(str(fname)).name)] = bytes(blob)
+            stem = _norm_name(Path(str(fname)).stem)
+            files_by_name.setdefault(stem, bytes(blob))
 
     for draft in drafts:
         excel_row = draft.get("_excelRow")
@@ -2458,17 +2740,6 @@ def resolve_media_in_drafts(
                 reused += 1
                 continue
 
-            if not folder:
-                missing.append(
-                    {
-                        "row": excel_row,
-                        "variable": var.get("name"),
-                        "file": filename,
-                        "reason": "медиа нет в Carrot; укажи папку в Настройках",
-                    }
-                )
-                continue
-
             if upload_file is None:
                 missing.append(
                     {
@@ -2476,6 +2747,27 @@ def resolve_media_in_drafts(
                         "variable": var.get("name"),
                         "file": filename,
                         "reason": "нет обработчика загрузки",
+                    }
+                )
+                continue
+
+            blob = files_by_name.get(key) or files_by_name.get(_norm_name(Path(key).stem))
+            upload_name = Path(filename).name
+            if blob is not None:
+                asset = upload_file(blob, upload_name)
+                var["value"] = f"{asset['id']};{asset.get('name') or upload_name}"
+                index[_norm_name(asset.get("name") or upload_name)] = asset
+                resolved += 1
+                uploaded += 1
+                continue
+
+            if not folder:
+                missing.append(
+                    {
+                        "row": excel_row,
+                        "variable": var.get("name"),
+                        "file": filename,
+                        "reason": "медиа нет в Carrot; выбери папку в Настройках",
                     }
                 )
                 continue
@@ -2532,4 +2824,6 @@ __all__ = [
     "read_excel_rows",
     "rows_to_event_drafts",
     "resolve_media_in_drafts",
+    "list_missing_local_media_names",
+    "name_from_first_variable",
 ]

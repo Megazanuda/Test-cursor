@@ -15,7 +15,12 @@ const HIDDEN_COLS_KEY = 'carrot-web-hidden-columns';
 const EDITOR_FOLD_KEY = 'carrot-web-editor-folded';
 const SIDE_OPEN_KEY = 'carrot-web-side-open';
 const MEDIA_FOLDER_KEY = 'carrot-media-folder';
+const MEDIA_FOLDER_MODE_KEY = 'carrot-media-folder-mode';
+const MEDIA_DIR_IDB_NAME = 'carrot-media-dir-v1';
+const MEDIA_DIR_IDB_STORE = 'handles';
+const MEDIA_DIR_IDB_KEY = 'mediaFolder';
 const THEME_KEY = 'site-theme';
+const AUTO_NAME_KEY = 'carrot-auto-name';
 const TWO_WEEKS_MS = 14 * 24 * 60 * 60 * 1000;
 
 function loadHiddenColumns() {
@@ -145,13 +150,22 @@ const el = {
   excelTemplateSelect: document.getElementById('excelTemplateSelect'),
   excelPickFileBtn: document.getElementById('excelPickFileBtn'),
   excelImportInput: document.getElementById('excelImportInput'),
+  excelMediaFolderBlock: document.getElementById('excelMediaFolderBlock'),
+  excelMediaFolderPath: document.getElementById('excelMediaFolderPath'),
+  excelMediaFolderPickBtn: document.getElementById('excelMediaFolderPickBtn'),
+  excelMediaFolderClearBtn: document.getElementById('excelMediaFolderClearBtn'),
   themeToggleBtn: document.getElementById('themeToggleBtn'),
+  autoNameToggle: document.getElementById('autoNameToggle'),
   settingsBaseUrl: document.getElementById('settingsBaseUrl'),
   settingsLogin: document.getElementById('settingsLogin'),
   settingsPassword: document.getElementById('settingsPassword'),
   settingsConnectionSaveBtn: document.getElementById('settingsConnectionSaveBtn'),
-  mediaFolderInput: document.getElementById('mediaFolderInput'),
-  mediaFolderSaveBtn: document.getElementById('mediaFolderSaveBtn'),
+  settingsMediaFolderRow: document.getElementById('settingsMediaFolderRow'),
+  settingsMediaFolderActions: document.getElementById('settingsMediaFolderActions'),
+  mediaFolderPath: document.getElementById('mediaFolderPath'),
+  mediaFolderPickBtn: document.getElementById('mediaFolderPickBtn'),
+  mediaFolderClearBtn: document.getElementById('mediaFolderClearBtn'),
+  mediaFolderFallbackInput: document.getElementById('mediaFolderFallbackInput'),
   playlistsGroup: document.getElementById('playlistsGroup'),
   settingsGroup: document.getElementById('settingsGroup'),
   editorPanel: document.getElementById('editorPanel'),
@@ -225,7 +239,7 @@ function humanizeError(err) {
   } else if (/cors|failed to fetch|networkerror|сеть:/.test(lower)) {
     title = 'Сетевая ошибка';
     message = 'Браузер не смог связаться с локальным сервером UI или с Carrot.';
-    hint = 'Убедись, что Flask/web.cmd запущен и адрес страницы верный.';
+    hint = 'Убедись, что web.cmd (Flask) запущен и адрес страницы верный.';
   } else if (/не json|html — веб-интерфейс|не rest/.test(lower)) {
     title = 'Неверный адрес REST API';
     message = 'По этому URL отвечает не REST Carrot (часто веб-плейлист).';
@@ -317,18 +331,22 @@ function showWarning(title, message, detail) {
 
 function showLoading(title, sub) {
   loadingDepth += 1;
-  if (el.loadingTitle) el.loadingTitle.textContent = title || 'Загрузка…';
+  updateLoading(title, sub);
+  if (el.loadingOverlay) el.loadingOverlay.hidden = false;
+  document.body.classList.add('is-loading');
+}
+
+function updateLoading(title, sub) {
+  if (title != null && el.loadingTitle) el.loadingTitle.textContent = title || 'Загрузка…';
   if (el.loadingSub) {
     if (sub) {
       el.loadingSub.hidden = false;
       el.loadingSub.textContent = sub;
-    } else {
+    } else if (sub === '') {
       el.loadingSub.hidden = true;
       el.loadingSub.textContent = '';
     }
   }
-  if (el.loadingOverlay) el.loadingOverlay.hidden = false;
-  document.body.classList.add('is-loading');
 }
 
 function hideLoading() {
@@ -427,6 +445,79 @@ function isRecentRow(row) {
 
 function isMediaType(type) {
   return String(type || '').toLowerCase() === 'media';
+}
+
+/** Имя ивента из первой переменной; для Media — имя файла. */
+function nameFromFirstVariable(variables) {
+  if (!variables || !variables.length) return '';
+  const v = variables[0] || {};
+  const raw = v.value == null ? '' : String(v.value).trim();
+  if (!raw) return '';
+  if (isMediaType(v.type)) {
+    const parsed = parseMediaValue(raw);
+    const label = (parsed.name || parsed.id || raw).trim();
+    if (!label) return '';
+    const parts = label.split(/[/\\]/);
+    return parts[parts.length - 1] || label;
+  }
+  return raw;
+}
+
+function isAutoNameEnabled() {
+  try {
+    const raw = localStorage.getItem(AUTO_NAME_KEY);
+    if (raw == null || raw === '') return true;
+    return raw !== '0' && raw !== 'false';
+  } catch (e) {
+    return true;
+  }
+}
+
+function setAutoNameEnabled(on) {
+  try {
+    localStorage.setItem(AUTO_NAME_KEY, on ? '1' : '0');
+  } catch (e) { /* ignore */ }
+  if (el.autoNameToggle) el.autoNameToggle.checked = !!on;
+  updateCreateNamePlaceholders();
+  updateCreateActions();
+}
+
+function updateCreateNamePlaceholders() {
+  const ph = isAutoNameEnabled() ? 'пусто → первая переменная' : 'Имя';
+  if (!el.createList) return;
+  el.createList.querySelectorAll('[data-field="name"]').forEach(function (input) {
+    input.placeholder = ph;
+  });
+}
+
+async function refreshEventsView() {
+  state.allEventsCache = null;
+  try {
+    if (state.view === 'playlist' && state.playlistId) {
+      const data = await api(
+        'GET',
+        '/api/playlists/' + encodeURIComponent(state.playlistId) + '/events'
+      );
+      applyEventRows(
+        (data.events || []).map(flattenRow),
+        state.playlistName || 'Плейлист',
+        'плейлист: ' + (state.playlistName || state.playlistId) +
+          ' · ' + (data.events || []).length + ' ивентов'
+      );
+    } else {
+      const flat = await fetchAllEvents(true);
+      state.view = 'all';
+      applyEventRows(flat, 'Все ивенты');
+      if (el.eventsTitle) el.eventsTitle.textContent = 'Все ивенты';
+      updateScopeButtons();
+      renderPlaylists();
+    }
+  } catch (err) {
+    toast(
+      'Не удалось обновить список ивентов: ' + (err && err.message ? err.message : err),
+      'err'
+    );
+  }
 }
 
 // В Carrot Media-значение хранится как «id;имя» без пробелов вокруг ';'.
@@ -771,8 +862,15 @@ async function uploadMediaFile(file) {
       assetTypeInt: asset.assetTypeInt != null ? asset.assetTypeInt : asset.type
     });
   }
-  refreshAllMediaSelects(mediaValue);
+  refreshAllMediaSelects();
   return { asset: asset, mediaValue: mediaValue };
+}
+
+/** Обновить опции всех media-select после загрузки/обновления списка медиа. */
+function refreshAllMediaSelects() {
+  document.querySelectorAll('select.media-select').forEach(function (select) {
+    fillMediaSelect(select, select.value || '');
+  });
 }
 
 function makeVarInput(v, onChange) {
@@ -795,7 +893,7 @@ function makeVarInput(v, onChange) {
     const fileInput = document.createElement('input');
     fileInput.type = 'file';
     fileInput.hidden = true;
-    fileInput.accept = 'image/*,video/*,.png,.jpg,.jpeg,.gif,.bmp,.tif,.tiff,.webp,.mp4,.mov,.avi,.mxf,.webm';
+    // Без accept — файловый менеджер показывает файлы любого расширения.
     upBtn.addEventListener('click', function (ev) {
       ev.stopPropagation();
       fileInput.click();
@@ -1419,15 +1517,40 @@ async function loadPlaylists() {
   renderPlaylists();
 }
 
+function hostPortFromBaseUrl(url) {
+  const raw = String(url || '').trim();
+  if (!raw) return '';
+  try {
+    const withScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(raw) ? raw : ('http://' + raw);
+    const u = new URL(withScheme);
+    if (!u.hostname) return raw.replace(/^https?:\/\//i, '').replace(/\/+$/, '');
+    return u.host;
+  } catch (e) {
+    return raw.replace(/^https?:\/\//i, '').replace(/\/+$/, '');
+  }
+}
+
+/** Собрать Base URL для API: всегда http://IP:порт */
+function baseUrlFromHostPort(hostPort) {
+  let s = String(hostPort || '').trim();
+  if (!s) return '';
+  s = s.replace(/^https?:\/\//i, '');
+  s = s.replace(/\/+$/, '');
+  s = s.replace(/\/.*$/, '');
+  if (!s) return '';
+  return 'http://' + s;
+}
+
 function syncConnectionFields(opts) {
   opts = opts || {};
   const url = opts.baseUrl != null ? String(opts.baseUrl).trim() : '';
   const login = opts.login != null ? String(opts.login).trim() : '';
   const password = opts.password != null ? String(opts.password) : null;
+  const hostPort = opts.baseUrl != null ? hostPortFromBaseUrl(url) : null;
 
-  if (opts.baseUrl != null) {
-    if (el.baseUrl) el.baseUrl.value = url;
-    if (el.settingsBaseUrl) el.settingsBaseUrl.value = url;
+  if (hostPort != null) {
+    if (el.baseUrl) el.baseUrl.value = hostPort;
+    if (el.settingsBaseUrl) el.settingsBaseUrl.value = hostPort;
   }
   if (opts.login != null) {
     if (el.login) el.login.value = login;
@@ -1462,7 +1585,7 @@ async function connect(creds) {
         login: data.login || (creds && creds.login) || '',
         password: (creds && creds.password) != null
           ? creds.password
-          : (el.settingsPassword && el.settingsPassword.value) || ''
+          : (el.password && el.password.value) || ''
       });
       clearLegacyCredentialStorage();
       setStatus('онлайн · ' + data.baseUrl, 'ok');
@@ -1475,7 +1598,7 @@ async function connect(creds) {
       await loadPlaylists();
       state.allEventsScope = 'recent';
       await selectAllEvents({ quiet: true });
-      toast('Подключено к ' + data.baseUrl + ' (.env обновлён)', 'ok');
+      toast('Подключено к ' + data.baseUrl, 'ok');
     }, 'Проверяем доступ к REST API');
   } catch (err) {
     setStatus('не подключено', 'err');
@@ -1487,19 +1610,20 @@ async function connect(creds) {
 }
 
 async function applyConnectionFromSettings() {
-  const url = el.settingsBaseUrl ? el.settingsBaseUrl.value.trim() : '';
+  const hostPort = el.settingsBaseUrl ? el.settingsBaseUrl.value.trim() : '';
+  const url = baseUrlFromHostPort(hostPort);
   const login = el.settingsLogin ? el.settingsLogin.value.trim() : '';
   const password = el.settingsPassword ? el.settingsPassword.value : '';
   if (!url) {
-    showWarning('Нет адреса', 'Укажи Carrot Base URL (например http://host:5001).');
+    showWarning('Нет адреса', 'Укажи IP:порт, например 172.17.97.71:5001');
     return;
   }
   if (!login) {
-    showWarning('Нет логина', 'Укажи login для Carrot REST.');
+    showWarning('Нет логина', 'Укажи логин Carrot.');
     return;
   }
   if (!password) {
-    showWarning('Нет пароля', 'Укажи password для Carrot REST.');
+    showWarning('Нет пароля', 'Укажи пароль Carrot.');
     return;
   }
   if (el.settingsConnectionSaveBtn) el.settingsConnectionSaveBtn.disabled = true;
@@ -1634,10 +1758,16 @@ function targetCreateForms(localId) {
   return state.createForms.filter(function (f) { return f.localId === localId; });
 }
 
+function createFormHasName(f) {
+  if (String(f.name || '').trim()) return true;
+  if (!isAutoNameEnabled()) return false;
+  return !!nameFromFirstVariable(f.variables || []);
+}
+
 function updateCreateActions() {
   const n = createSelectedCount();
   const ready = state.createForms.filter(function (f) {
-    return f.templateId && String(f.name || '').trim();
+    return f.templateId && createFormHasName(f);
   }).length;
   el.createRemoveBtn.disabled = n === 0;
   el.createRemoveBtn.textContent = n > 1 ? ('Удалить выбранные (' + n + ')') : 'Удалить выбранные';
@@ -1845,7 +1975,7 @@ function renderCreateForms() {
       const input = document.createElement('input');
       input.type = 'text';
       input.value = form.name || '';
-      input.placeholder = 'Имя';
+      input.placeholder = isAutoNameEnabled() ? 'пусто → первая переменная' : 'Имя';
       input.addEventListener('input', function () {
         onCreateNameChange(form.localId, nameInput.value);
       });
@@ -1965,40 +2095,50 @@ function clearAllCreateForms() {
 
 async function submitCreateForms() {
   const payload = state.createForms
-    .filter(function (f) { return f.templateId && String(f.name || '').trim(); })
+    .filter(function (f) { return !!f.templateId; })
     .map(function (f) {
+      const variables = (f.variables || []).map(function (v) {
+        var value = v.value == null ? '' : String(v.value);
+        if (isMediaType(v.type)) value = normalizeMediaValue(value);
+        return {
+          id: v.id,
+          name: v.name,
+          type: v.type,
+          value: value,
+          fieldId: v.fieldId,
+          defaultValue: v.defaultValue,
+          resetMedia: v.resetMedia,
+          useTimecode: v.useTimecode,
+          loop: v.loop,
+          locked: v.locked,
+          minValue: v.minValue,
+          maxValue: v.maxValue,
+          useDataVars: v.useDataVars
+        };
+      });
+      const autoName = isAutoNameEnabled();
+      const name = String(f.name || '').trim() ||
+        (autoName ? nameFromFirstVariable(variables) : '');
       return {
-        name: String(f.name).trim(),
+        name: name,
         externalId: String(f.externalId || '').trim(),
         templateId: f.templateId,
         contentId: f.contentId,
         templateTypeInt: f.templateTypeInt,
         state: f.state || 'IN',
         comment: f.comment || '',
-        variables: (f.variables || []).map(function (v) {
-          var value = v.value == null ? '' : String(v.value);
-          if (isMediaType(v.type)) value = normalizeMediaValue(value);
-          return {
-            id: v.id,
-            name: v.name,
-            type: v.type,
-            value: value,
-            fieldId: v.fieldId,
-            defaultValue: v.defaultValue,
-            resetMedia: v.resetMedia,
-            useTimecode: v.useTimecode,
-            loop: v.loop,
-            locked: v.locked,
-            minValue: v.minValue,
-            maxValue: v.maxValue,
-            useDataVars: v.useDataVars
-          };
-        })
+        variables: variables
       };
-    });
+    })
+    .filter(function (e) { return !!e.name; });
 
   if (!payload.length) {
-    showWarning('Нечего создавать', 'Заполни имя и шаблон хотя бы у одного ивента.');
+    showWarning(
+      'Нечего создавать',
+      isAutoNameEnabled()
+        ? 'Укажи шаблон и имя (или значение первой переменной) хотя бы у одного ивента.'
+        : 'Укажи шаблон и имя хотя бы у одного ивента.'
+    );
     return;
   }
 
@@ -2006,15 +2146,20 @@ async function submitCreateForms() {
   try {
     const data = await withLoading(
       'Создание ивентов…',
-      function () { return api('POST', '/api/events/create', { events: payload }); },
+      function () {
+        return api('POST', '/api/events/create', {
+          events: payload,
+          autoName: isAutoNameEnabled()
+        });
+      },
       'К созданию: ' + payload.length
     );
     const created = (data && data.created) ? data.created : [];
     showSuccess('Ивенты созданы', 'Создано: ' + created.length + '.');
-    state.allEventsCache = null;
     state.createForms = [blankCreateForm()];
     setCreateSelection([], null);
     renderCreateForms();
+    await refreshEventsView();
   } catch (err) {
     showError('Не удалось создать ивенты', err);
     setStatus('ошибка создания', 'err');
@@ -2027,7 +2172,7 @@ async function submitCreateForms() {
 el.connectForm.addEventListener('submit', function (e) {
   e.preventDefault();
   connect({
-    baseUrl: el.baseUrl.value.trim() || undefined,
+    baseUrl: baseUrlFromHostPort(el.baseUrl.value) || undefined,
     login: el.login.value.trim() || undefined,
     password: el.password.value || undefined
   }).catch(function () { /* toasted */ });
@@ -2160,6 +2305,8 @@ el.sectionEvents.hidden = false;
 (async function boot() {
   try {
     clearLegacyCredentialStorage();
+    await restoreMediaFolderOnBoot();
+    syncMediaFolderUiPlacement();
     const health = await api('GET', '/api/health');
     const d = health.defaults || {};
     syncConnectionFields({
@@ -2231,19 +2378,298 @@ document.addEventListener('DOMContentLoaded', function () {
 });
 
 
-function getMediaFolder() {
+var mediaDirHandle = null;
+var mediaPickedFiles = [];
+
+function getMediaFolderLabel() {
   try { return localStorage.getItem(MEDIA_FOLDER_KEY) || ''; }
   catch (e) { return ''; }
 }
 
-function setMediaFolder(path) {
-  const v = String(path || '').trim();
+function getMediaFolderMode() {
+  try { return localStorage.getItem(MEDIA_FOLDER_MODE_KEY) || ''; }
+  catch (e) { return ''; }
+}
+
+function setMediaFolderMode(mode) {
+  try {
+    if (mode) localStorage.setItem(MEDIA_FOLDER_MODE_KEY, mode);
+    else localStorage.removeItem(MEDIA_FOLDER_MODE_KEY);
+  } catch (e) { /* ignore */ }
+}
+
+function canPersistMediaFolder() {
+  return typeof window.showDirectoryPicker === 'function' &&
+    window.isSecureContext !== false;
+}
+
+function mediaFolderIsReady() {
+  return !!(mediaDirHandle || (mediaPickedFiles && mediaPickedFiles.length));
+}
+
+function setMediaFolderLabel(name, opts) {
+  opts = opts || {};
+  const v = String(name || '').trim();
   try {
     if (v) localStorage.setItem(MEDIA_FOLDER_KEY, v);
     else localStorage.removeItem(MEDIA_FOLDER_KEY);
   } catch (e) { /* ignore */ }
-  if (el.mediaFolderInput) el.mediaFolderInput.value = v;
+  var text = 'папка не выбрана';
+  if (v && opts.needsReselect) text = v + ' — выбери снова';
+  else if (v) text = v;
+  if (el.mediaFolderPath) el.mediaFolderPath.textContent = text;
+  if (el.excelMediaFolderPath) el.excelMediaFolderPath.textContent = text;
+  syncMediaFolderUiPlacement();
   return v;
+}
+
+function syncMediaFolderUiPlacement() {
+  const persist = canPersistMediaFolder();
+  const ready = mediaFolderIsReady();
+  // Если браузер не умеет запоминать папку — выбор в окне импорта Excel.
+  if (el.excelMediaFolderBlock) {
+    el.excelMediaFolderBlock.hidden = !!persist;
+  }
+  if (el.settingsMediaFolderActions) {
+    el.settingsMediaFolderActions.hidden = !persist;
+  }
+}
+
+function folderLabelFromFiles(files) {
+  if (!files || !files.length) return 'выбранная папка';
+  const rel = files[0].webkitRelativePath || '';
+  if (rel) {
+    const top = String(rel).split(/[/\\]/)[0];
+    if (top) return top;
+  }
+  return 'выбранная папка (' + files.length + ')';
+}
+
+function idbReq(req) {
+  return new Promise(function (resolve, reject) {
+    req.onsuccess = function () { resolve(req.result); };
+    req.onerror = function () { reject(req.error || new Error('IndexedDB error')); };
+  });
+}
+
+function openMediaDirDb() {
+  if (!window.indexedDB) return Promise.reject(new Error('IndexedDB недоступен'));
+  return new Promise(function (resolve, reject) {
+    const req = indexedDB.open(MEDIA_DIR_IDB_NAME, 1);
+    req.onupgradeneeded = function () {
+      const db = req.result;
+      if (!db.objectStoreNames.contains(MEDIA_DIR_IDB_STORE)) {
+        db.createObjectStore(MEDIA_DIR_IDB_STORE);
+      }
+    };
+    req.onsuccess = function () { resolve(req.result); };
+    req.onerror = function () { reject(req.error || new Error('IndexedDB open failed')); };
+  });
+}
+
+async function saveMediaDirHandle(handle) {
+  if (!handle || !window.indexedDB) return;
+  const db = await openMediaDirDb();
+  try {
+    await idbReq(db.transaction(MEDIA_DIR_IDB_STORE, 'readwrite')
+      .objectStore(MEDIA_DIR_IDB_STORE).put(handle, MEDIA_DIR_IDB_KEY));
+  } finally {
+    db.close();
+  }
+}
+
+async function loadMediaDirHandle() {
+  if (!window.indexedDB) return null;
+  const db = await openMediaDirDb();
+  try {
+    const handle = await idbReq(db.transaction(MEDIA_DIR_IDB_STORE, 'readonly')
+      .objectStore(MEDIA_DIR_IDB_STORE).get(MEDIA_DIR_IDB_KEY));
+    return handle || null;
+  } finally {
+    db.close();
+  }
+}
+
+async function clearStoredMediaDirHandle() {
+  if (!window.indexedDB) return;
+  try {
+    const db = await openMediaDirDb();
+    try {
+      await idbReq(db.transaction(MEDIA_DIR_IDB_STORE, 'readwrite')
+        .objectStore(MEDIA_DIR_IDB_STORE).delete(MEDIA_DIR_IDB_KEY));
+    } finally {
+      db.close();
+    }
+  } catch (e) { /* ignore */ }
+}
+
+async function ensureMediaDirPermission(handle, interactive) {
+  if (!handle || typeof handle.queryPermission !== 'function') return !!handle;
+  try {
+    var perm = await handle.queryPermission({ mode: 'read' });
+    if (perm === 'granted') return true;
+    if (!interactive || typeof handle.requestPermission !== 'function') return false;
+    perm = await handle.requestPermission({ mode: 'read' });
+    return perm === 'granted';
+  } catch (e) {
+    return false;
+  }
+}
+
+async function restoreMediaFolderOnBoot() {
+  const label = getMediaFolderLabel();
+  try {
+    const handle = await loadMediaDirHandle();
+    if (handle) {
+      const ok = await ensureMediaDirPermission(handle, false);
+      if (ok) {
+        mediaDirHandle = handle;
+        mediaPickedFiles = [];
+        setMediaFolderMode('handle');
+        setMediaFolderLabel(handle.name || label || 'выбранная папка');
+        return;
+      }
+    }
+  } catch (e) { /* ignore */ }
+
+  if (mediaPickedFiles && mediaPickedFiles.length) {
+    setMediaFolderLabel(label || folderLabelFromFiles(mediaPickedFiles));
+    return;
+  }
+  if (label) {
+    // Label survived reload, but FileList/handle access did not.
+    setMediaFolderLabel(label, { needsReselect: true });
+  } else {
+    setMediaFolderLabel('');
+  }
+}
+
+function pickMediaFolderViaInput() {
+  if (!el.mediaFolderFallbackInput) {
+    showWarning(
+      'Выбор папки недоступен',
+      'Браузер не даёт выбрать папку. Открой UI на localhost через web.cmd или обнови Chrome/Edge.'
+    );
+    return;
+  }
+  el.mediaFolderFallbackInput.value = '';
+  el.mediaFolderFallbackInput.click();
+}
+
+async function pickMediaFolder() {
+  const secureOk = window.isSecureContext !== false;
+  const hasPicker = typeof window.showDirectoryPicker === 'function';
+  // По http://LAN-IP showDirectoryPicker отсутствует или бесполезен.
+  if (hasPicker && secureOk) {
+    try {
+      const handle = await window.showDirectoryPicker({ mode: 'read' });
+      mediaDirHandle = handle;
+      mediaPickedFiles = [];
+      const label = handle.name || 'выбранная папка';
+      setMediaFolderMode('handle');
+      setMediaFolderLabel(label);
+      try { await saveMediaDirHandle(handle); }
+      catch (e) { /* ignore persist errors */ }
+      var scanned = 0;
+      try { scanned = (await collectMediaFilesFromDir(handle)).length; }
+      catch (e) { scanned = 0; }
+      toast(
+        'Папка медиа: ' + label +
+          (scanned ? (' · файлов (с вложенными): ' + scanned) : '') +
+          ' · запомнена',
+        'ok'
+      );
+      return;
+    } catch (err) {
+      if (err && err.name === 'AbortError') return;
+      toast('Directory picker недоступен, открываю обычный выбор папки…', 'err');
+    }
+  }
+  pickMediaFolderViaInput();
+}
+
+function onMediaFolderFallbackPicked() {
+  const input = el.mediaFolderFallbackInput;
+  const list = input && input.files ? Array.prototype.slice.call(input.files) : [];
+  if (!list.length) return;
+  mediaDirHandle = null;
+  clearStoredMediaDirHandle();
+  // Включая файлы из вложенных папок (webkitRelativePath: folder/sub/file).
+  mediaPickedFiles = list.filter(function (f) { return !!f && f.name; });
+  const label = folderLabelFromFiles(mediaPickedFiles);
+  const nested = mediaPickedFiles.filter(function (f) {
+    return String(f.webkitRelativePath || '').split(/[/\\]/).length > 2;
+  }).length;
+  setMediaFolderMode('files');
+  setMediaFolderLabel(label);
+  toast(
+    'Папка медиа: ' + label +
+      ' · файлов: ' + mediaPickedFiles.length +
+      (nested ? (' (вложенных: ' + nested + ')') : '') +
+      ' · до перезагрузки страницы',
+    'ok'
+  );
+}
+
+function clearMediaFolder() {
+  mediaDirHandle = null;
+  mediaPickedFiles = [];
+  if (el.mediaFolderFallbackInput) el.mediaFolderFallbackInput.value = '';
+  clearStoredMediaDirHandle();
+  setMediaFolderMode('');
+  setMediaFolderLabel('');
+  toast('Папка медиа сброшена', 'ok');
+}
+
+async function collectMediaFilesFromDir(dirHandle) {
+  const out = [];
+  if (!dirHandle) return out;
+  async function walk(handle) {
+    for await (const entry of handle.values()) {
+      try {
+        if (entry.kind === 'file') {
+          const file = await entry.getFile();
+          out.push(file);
+        } else if (entry.kind === 'directory') {
+          await walk(entry);
+        }
+      } catch (err) {
+        // Пропускаем недоступные файлы/подпапки.
+      }
+    }
+  }
+  await walk(dirHandle);
+  return out;
+}
+
+async function collectSelectedMediaFiles() {
+  if (mediaDirHandle) {
+    const ok = await ensureMediaDirPermission(mediaDirHandle, true);
+    if (!ok) {
+      throw new Error('Нет доступа к папке медиа. Нажми «Выбрать папку…» в Настройках.');
+    }
+    return collectMediaFilesFromDir(mediaDirHandle);
+  }
+  if (mediaPickedFiles && mediaPickedFiles.length) return mediaPickedFiles.slice();
+  return [];
+}
+
+function filterMediaFilesByNeededNames(files, neededNames) {
+  const keys = Object.create(null);
+  (neededNames || []).forEach(function (n) {
+    const base = String(n || '').split(/[/\\]/).pop().trim().toLowerCase();
+    if (!base) return;
+    keys[base] = true;
+    const stem = base.replace(/\.[^.]+$/, '');
+    if (stem) keys[stem] = true;
+  });
+  return (files || []).filter(function (f) {
+    const name = String(f.name || '').toLowerCase();
+    if (!name) return false;
+    if (keys[name]) return true;
+    const stem = name.replace(/\.[^.]+$/, '');
+    return !!(stem && keys[stem]);
+  });
 }
 
 function applyTheme(theme) {
@@ -2281,6 +2707,7 @@ function fillExcelTemplateSelect() {
 }
 
 async function openExcelImportDialog() {
+  syncMediaFolderUiPlacement();
   fillExcelTemplateSelect();
   if (el.excelPickFileBtn) {
     el.excelPickFileBtn.disabled = !(el.excelTemplateSelect && el.excelTemplateSelect.value);
@@ -2297,6 +2724,29 @@ async function openExcelImportDialog() {
   if (el.excelPickFileBtn) {
     el.excelPickFileBtn.disabled = !(el.excelTemplateSelect && el.excelTemplateSelect.value);
   }
+  syncMediaFolderUiPlacement();
+}
+
+async function postImportExcelForm(fd) {
+  const res = await fetch('/api/events/import-excel', { method: 'POST', body: fd });
+  const text = await res.text();
+  var parsed = null;
+  try { parsed = text ? JSON.parse(text) : null; }
+  catch (e) { throw new Error('Ответ сервера не JSON (HTTP ' + res.status + ')'); }
+  if (!res.ok || (parsed && parsed.ok === false)) {
+    const err = new Error((parsed && parsed.error) || ('HTTP ' + res.status));
+    const missing = (parsed && parsed.media &&
+      (parsed.media.missing || parsed.media.warnings)) || [];
+    if (missing.length) {
+      err.detail = missing.map(function (w) {
+        return 'Строка ' + (w.row || '?') +
+          (w.variable ? ' [' + w.variable + ']' : '') +
+          ': ' + (w.file || '') + ' — ' + (w.reason || '');
+      }).join('\n');
+    }
+    throw err;
+  }
+  return parsed;
 }
 
 async function importEventsFromExcel(file) {
@@ -2306,42 +2756,79 @@ async function importEventsFromExcel(file) {
     showWarning('Нужен шаблон', 'Сначала выбери шаблон в диалоге импорта Excel.');
     return;
   }
-  const fd = new FormData();
-  fd.append('file', file, file.name);
-  fd.append('templateId', templateId);
-  const folder = getMediaFolder();
-  if (folder) fd.append('mediaFolder', folder);
+  const folderLabel = getMediaFolderLabel();
+  const autoName = isAutoNameEnabled() ? '1' : '0';
+
+  if (el.excelImportDialog && el.excelImportDialog.open) {
+    el.excelImportDialog.close();
+  }
 
   const json = await withLoading(
-    'Импорт Excel…',
+    'Импорт Excel',
     async function () {
-      const res = await fetch('/api/events/import-excel', { method: 'POST', body: fd });
-      const text = await res.text();
-      var parsed = null;
-      try { parsed = text ? JSON.parse(text) : null; }
-      catch (e) { throw new Error('Ответ сервера не JSON (HTTP ' + res.status + ')'); }
-      if (!res.ok || (parsed && parsed.ok === false)) {
-        const err = new Error((parsed && parsed.error) || ('HTTP ' + res.status));
-        const missing = (parsed && parsed.media &&
-          (parsed.media.missing || parsed.media.warnings)) || [];
-        if (missing.length) {
-          err.detail = missing.map(function (w) {
-            return 'Строка ' + (w.row || '?') +
-              (w.variable ? ' [' + w.variable + ']' : '') +
-              ': ' + (w.file || '') + ' — ' + (w.reason || '');
-          }).join('\n');
+      updateLoading('Импорт Excel', '1/4 · Разбираю Excel и ищу нужные медиа…');
+      const planFd = new FormData();
+      planFd.append('file', file, file.name);
+      planFd.append('templateId', templateId);
+      planFd.append('autoName', autoName);
+      planFd.append('planOnly', '1');
+      const plan = await postImportExcelForm(planFd);
+      const needed = (plan && plan.media && plan.media.needed) || [];
+      const inCarrot = (plan && plan.media && plan.media.inCarrot) || [];
+
+      var toSend = [];
+      if (needed.length) {
+        updateLoading(
+          'Импорт Excel',
+          '2/4 · Нужно медиа: ' + needed.length +
+            (inCarrot.length ? (', уже в Carrot: ' + inCarrot.length) : '') +
+            '\nЧитаю выбранную папку…'
+        );
+        const allLocal = await collectSelectedMediaFiles();
+        toSend = filterMediaFilesByNeededNames(allLocal, needed);
+        if (!toSend.length && allLocal.length) {
+          throw new Error(
+            'В выбранной папке нет нужных файлов: ' + needed.slice(0, 5).join(', ') +
+              (needed.length > 5 ? '…' : '')
+          );
         }
-        throw err;
+        if (!allLocal.length) {
+          throw new Error(
+            'Нужны локальные медиа (' + needed.length +
+              '). Выбери папку медиа в окне импорта и повтори.'
+          );
+        }
+        updateLoading(
+          'Импорт Excel',
+          '3/4 · Отправляю файлов: ' + toSend.length + ' из ' + needed.length +
+            ' и создаю ивенты…'
+        );
+      } else {
+        updateLoading(
+          'Импорт Excel',
+          '2/4 · Локальные медиа не нужны' +
+            (inCarrot.length ? (' (в Carrot уже: ' + inCarrot.length + ')') : '') +
+            '\n3/4 · Создаю ивенты…'
+        );
       }
-      return parsed;
+
+      const fd = new FormData();
+      fd.append('file', file, file.name);
+      fd.append('templateId', templateId);
+      fd.append('autoName', autoName);
+      toSend.forEach(function (mf) {
+        fd.append('mediaFiles', mf, mf.name);
+      });
+      const result = await postImportExcelForm(fd);
+      updateLoading('Импорт Excel', '4/4 · Обновляю таблицу ивентов…');
+      return result;
     },
-    file.name + (folder ? '\nПапка медиа: ' + folder : '')
+    file.name + (folderLabel ? '\nПапка медиа: ' + folderLabel : '')
   );
 
   const created = (json && json.created) ? json.created : [];
   const skipped = (json && json.skipped) ? json.skipped : [];
   const media = (json && json.media) ? json.media : {};
-  state.allEventsCache = null;
   state.mediaLoaded = false;
 
   var lines = ['Создано ивентов: ' + created.length + '.'];
@@ -2361,6 +2848,10 @@ async function importEventsFromExcel(file) {
     showWarning('Импорт завершён с замечаниями', lines.join('\n'), detail);
   } else {
     showSuccess('Импорт Excel выполнен', lines.join('\n'));
+  }
+  if (created.length) {
+    updateLoading('Импорт Excel', '4/4 · Обновляю таблицу ивентов…');
+    await refreshEventsView();
   }
   return json;
 }
@@ -2396,14 +2887,23 @@ if (el.excelPickFileBtn && el.excelImportInput) {
     el.excelPickFileBtn.disabled = true;
     try {
       await importEventsFromExcel(file);
-      if (el.excelImportDialog && el.excelImportDialog.open) {
-        el.excelImportDialog.close();
-      }
     } catch (err) {
       showError('Не удалось импортировать Excel', err);
     } finally {
       el.excelPickFileBtn.disabled = !(el.excelTemplateSelect && el.excelTemplateSelect.value);
     }
+  });
+}
+if (el.excelMediaFolderPickBtn) {
+  el.excelMediaFolderPickBtn.addEventListener('click', function (ev) {
+    ev.preventDefault();
+    pickMediaFolder();
+  });
+}
+if (el.excelMediaFolderClearBtn) {
+  el.excelMediaFolderClearBtn.addEventListener('click', function (ev) {
+    ev.preventDefault();
+    clearMediaFolder();
   });
 }
 if (el.excelImportForm) {
@@ -2412,6 +2912,21 @@ if (el.excelImportForm) {
   });
 }
 
+if (el.mediaFolderPickBtn) {
+  el.mediaFolderPickBtn.addEventListener('click', function () {
+    pickMediaFolder();
+  });
+}
+if (el.mediaFolderClearBtn) {
+  el.mediaFolderClearBtn.addEventListener('click', function () {
+    clearMediaFolder();
+  });
+}
+if (el.mediaFolderFallbackInput) {
+  el.mediaFolderFallbackInput.addEventListener('change', function () {
+    onMediaFolderFallbackPicked();
+  });
+}
 if (el.settingsConnectionSaveBtn) {
   el.settingsConnectionSaveBtn.addEventListener('click', function () {
     applyConnectionFromSettings();
@@ -2428,38 +2943,16 @@ if (el.settingsConnectionSaveBtn) {
   });
 });
 
-if (el.mediaFolderInput) {
-  el.mediaFolderInput.value = getMediaFolder();
-}
-if (el.mediaFolderSaveBtn) {
-  el.mediaFolderSaveBtn.addEventListener('click', async function () {
-    const path = el.mediaFolderInput ? el.mediaFolderInput.value.trim() : '';
-    if (!path) {
-      setMediaFolder('');
-      toast('Папка медиа сброшена', 'ok');
-      return;
-    }
-    el.mediaFolderSaveBtn.disabled = true;
-    try {
-      const data = await withLoading(
-        'Проверка папки медиа…',
-        function () { return api('POST', '/api/settings/check-media-folder', { path: path }); },
-        path
-      );
-      setMediaFolder(data.path || path);
-      toast('Папка медиа сохранена', 'ok');
-    } catch (err) {
-      showError('Папка медиа недоступна', err);
-    } finally {
-      el.mediaFolderSaveBtn.disabled = false;
-    }
-  });
-}
-
 applyTheme(localStorage.getItem(THEME_KEY) === 'dark' ? 'dark' : 'light');
 if (el.themeToggleBtn) {
   el.themeToggleBtn.addEventListener('click', function () {
     applyTheme(currentTheme() === 'dark' ? 'light' : 'dark');
+  });
+}
+if (el.autoNameToggle) {
+  el.autoNameToggle.checked = isAutoNameEnabled();
+  el.autoNameToggle.addEventListener('change', function () {
+    setAutoNameEnabled(!!el.autoNameToggle.checked);
   });
 }
 
@@ -2469,3 +2962,185 @@ document.addEventListener('click', function (event) {
     menu.removeAttribute('open');
   }
 });
+
+/* ===== DEV traffic panel ===== */
+(function initDevTrafficPanel() {
+  const panel = document.getElementById('devTrafficPanel');
+  const fab = document.getElementById('devTrafficFab');
+  const listEl = document.getElementById('devTrafficList');
+  const detailEl = document.getElementById('devTrafficDetail');
+  const statsEl = document.getElementById('devTrafficStats');
+  const pauseBtn = document.getElementById('devTrafficPauseBtn');
+  const clearBtn = document.getElementById('devTrafficClearBtn');
+  const closeBtn = document.getElementById('devTrafficCloseBtn');
+  const uiCb = document.getElementById('devTrafficUi');
+  const carrotCb = document.getElementById('devTrafficCarrot');
+  if (!panel || !fab || !listEl || !detailEl) return;
+
+  const OPEN_KEY = 'carrot-dev-traffic-open';
+  var entriesById = Object.create(null);
+  var order = [];
+  var selectedId = null;
+  var paused = false;
+  var timer = null;
+
+  function wantOpen() {
+    try {
+      if (localStorage.getItem(OPEN_KEY) === '1') return true;
+    } catch (e) { /* ignore */ }
+    return /(?:^|[?&])dev=1(?:&|$)/.test(location.search);
+  }
+
+  function setOpen(open) {
+    panel.hidden = !open;
+    fab.hidden = !!open;
+    try { localStorage.setItem(OPEN_KEY, open ? '1' : '0'); } catch (e) { /* ignore */ }
+    if (open) startPoll();
+    else stopPoll();
+  }
+
+  function stopPoll() {
+    if (timer) { clearInterval(timer); timer = null; }
+  }
+
+  function startPoll() {
+    stopPoll();
+    poll();
+    timer = setInterval(poll, 1000);
+  }
+
+  function channelAllowed(ch) {
+    if (ch === 'ui') return !uiCb || uiCb.checked;
+    if (ch === 'carrot') return !carrotCb || carrotCb.checked;
+    return true;
+  }
+
+  function statusClass(st) {
+    if (st == null) return 'dev-st-err';
+    if (st >= 200 && st < 400) return 'dev-st-ok';
+    return 'dev-st-err';
+  }
+
+  function shortUrl(url) {
+    if (!url) return '';
+    try {
+      const u = new URL(url, location.origin);
+      return u.pathname + (u.search ? '?…' : '');
+    } catch (e) {
+      return String(url).slice(0, 80);
+    }
+  }
+
+  function renderList() {
+    listEl.innerHTML = '';
+    order.forEach(function (id) {
+      const e = entriesById[id];
+      if (!e || !channelAllowed(e.channel)) return;
+      const li = document.createElement('li');
+      if (id === selectedId) li.className = 'active';
+      li.dataset.id = id;
+      const ch = document.createElement('span');
+      ch.className = 'dev-ch' + (e.channel === 'ui' ? ' ui' : '');
+      ch.textContent = e.channel || '?';
+      const st = document.createElement('span');
+      st.className = statusClass(e.status);
+      st.textContent = ' ' + (e.status != null ? e.status : 'ERR') + ' ';
+      const meta = document.createElement('span');
+      meta.className = 'dev-meta';
+      meta.textContent = (e.method || '') + ' ' + shortUrl(e.url) +
+        (e.durationMs != null ? ' · ' + e.durationMs + 'ms' : '') +
+        (e.note ? ' · ' + e.note : '') +
+        (e.error ? ' · ' + e.error : '');
+      li.appendChild(ch);
+      li.appendChild(st);
+      li.appendChild(meta);
+      li.addEventListener('click', function () {
+        selectedId = id;
+        renderList();
+        renderDetail(e);
+      });
+      listEl.appendChild(li);
+    });
+  }
+
+  function renderDetail(e) {
+    if (!e) {
+      detailEl.textContent = 'Выбери запрос слева';
+      return;
+    }
+    const payload = {
+      id: e.id,
+      ts: e.ts ? new Date(e.ts * 1000).toISOString() : null,
+      channel: e.channel,
+      method: e.method,
+      url: e.url,
+      status: e.status,
+      durationMs: e.durationMs,
+      note: e.note,
+      error: e.error,
+      requestHeaders: e.requestHeaders,
+      requestBody: e.requestBody,
+      responseHeaders: e.responseHeaders,
+      responseBody: e.responseBody
+    };
+    detailEl.textContent = JSON.stringify(payload, null, 2);
+  }
+
+  function mergeEntries(list) {
+    (list || []).forEach(function (e) {
+      if (!e || !e.id) return;
+      if (!entriesById[e.id]) order.unshift(e.id);
+      entriesById[e.id] = e;
+    });
+    if (order.length > 400) {
+      const drop = order.splice(400);
+      drop.forEach(function (id) { delete entriesById[id]; });
+    }
+  }
+
+  async function poll() {
+    if (paused || panel.hidden) return;
+    try {
+      const data = await api('GET', '/api/dev/traffic?limit=120');
+      mergeEntries(data.entries || []);
+      if (statsEl && data.stats) {
+        statsEl.textContent = 'всего ' + data.stats.total +
+          ' · ui ' + data.stats.ui +
+          ' · carrot ' + data.stats.carrot;
+      }
+      renderList();
+      if (selectedId && entriesById[selectedId]) renderDetail(entriesById[selectedId]);
+    } catch (err) {
+      if (statsEl) statsEl.textContent = 'ошибка опроса: ' + (err.message || err);
+    }
+  }
+
+  fab.addEventListener('click', function () { setOpen(true); });
+  if (closeBtn) closeBtn.addEventListener('click', function () { setOpen(false); });
+  if (pauseBtn) {
+    pauseBtn.addEventListener('click', function () {
+      paused = !paused;
+      pauseBtn.textContent = paused ? 'Продолжить' : 'Пауза';
+      if (!paused) poll();
+    });
+  }
+  if (clearBtn) {
+    clearBtn.addEventListener('click', async function () {
+      try {
+        await api('POST', '/api/dev/traffic/clear', {});
+        entriesById = Object.create(null);
+        order = [];
+        selectedId = null;
+        renderList();
+        renderDetail(null);
+        toast('DEV-лог очищен', 'ok');
+      } catch (err) {
+        showError('Не удалось очистить DEV-лог', err);
+      }
+    });
+  }
+  if (uiCb) uiCb.addEventListener('change', renderList);
+  if (carrotCb) carrotCb.addEventListener('change', renderList);
+
+  setOpen(wantOpen());
+})();
