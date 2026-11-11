@@ -30,6 +30,7 @@ from carrot_client import (
     CarrotError,
     is_media_type,
     list_missing_local_media_names,
+    media_value_is_bound,
     read_excel_rows,
     resolve_media_in_drafts,
     rows_to_event_drafts,
@@ -936,6 +937,64 @@ def api_events_import_excel():
                     "media": media_report,
                 }
             ), 400
+
+    # Не создаём ивенты с «голыми» именами файлов вместо AssetId;Name —
+    # в Carrot это даёт missing media asset, а UI может показать подпись.
+    unbound_media: list[dict[str, Any]] = []
+    for d in drafts:
+        for var in d.get("variables") or []:
+            if not is_media_type(var.get("type")):
+                continue
+            raw = var.get("value")
+            if raw is None or str(raw).strip() == "":
+                continue
+            if media_value_is_bound(raw):
+                continue
+            unbound_media.append(
+                {
+                    "row": d.get("_excelRow"),
+                    "variable": var.get("name"),
+                    "file": str(raw).strip(),
+                    "reason": "медиа не привязано к AssetId в Carrot",
+                }
+            )
+    if unbound_media:
+        names = sorted(
+            {
+                str(m.get("file") or "").strip()
+                for m in unbound_media
+                if str(m.get("file") or "").strip()
+            }
+        )
+        preview = ", ".join(names[:5])
+        more = f" и ещё {len(names) - 5}" if len(names) > 5 else ""
+        log.warning(
+            "[excel] импорт отменён: unbound media=%s (%s%s)",
+            len(unbound_media),
+            preview,
+            more,
+        )
+        media_report = dict(media_report or {})
+        media_report["missing"] = unbound_media
+        media_report["warnings"] = unbound_media
+        media_report["ok"] = False
+        return jsonify(
+            {
+                "ok": False,
+                "error": (
+                    "Импорт отменён: медиа не привязаны к ассетам Carrot"
+                    + (f" ({preview}{more})" if preview else "")
+                    + ". Проверь имена файлов в Excel и папку медиа."
+                ),
+                "created": [],
+                "skipped": parsed["skipped"],
+                "headerSkipped": parsed["headerSkipped"],
+                "variableNames": parsed["variableNames"],
+                "templateId": template_id,
+                "templateName": template_name,
+                "media": media_report,
+            }
+        ), 400
 
     # служебное поле _excelRow не уходит в Carrot
     events = []
