@@ -2538,7 +2538,9 @@ def rows_to_event_drafts(
 
 
 def _norm_name(name: str) -> str:
-    return os.path.basename(str(name or "").strip()).lower()
+    base = os.path.basename(str(name or "").strip())
+    base = base.strip().strip("\"'«»").strip()
+    return base.lower()
 
 
 def _has_file_extension(name: str) -> bool:
@@ -2717,6 +2719,9 @@ def resolve_media_in_drafts(
     reused = 0
     missing: list[dict[str, Any]] = []
     folder = (media_folder or "").strip() or None
+    # Локальные файлы с клиента: exact + stem.
+    # Stem нужен, чтобы найти файл на диске; в Carrot reuse — только exact
+    # (см. lookup_asset_by_filename), иначе intro.jpg подменял intro.mp4.
     files_by_exact: dict[str, bytes] = {}
     files_by_stem: dict[str, bytes] = {}
     if media_files:
@@ -2725,7 +2730,6 @@ def resolve_media_in_drafts(
                 continue
             exact = _norm_name(Path(str(fname)).name)
             files_by_exact[exact] = bytes(blob)
-            # Stem map — только для Excel-имён без расширения.
             stem = _norm_name(Path(str(fname)).stem)
             if stem:
                 files_by_stem.setdefault(stem, bytes(blob))
@@ -2737,8 +2741,6 @@ def resolve_media_in_drafts(
         hit = files_by_exact.get(key)
         if hit is not None:
             return hit
-        if _has_file_extension(key):
-            return None
         return files_by_stem.get(Path(key).stem)
 
     # key -> pending upload job (уникальные файлы)
