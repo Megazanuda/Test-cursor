@@ -15,6 +15,10 @@ const HIDDEN_COLS_KEY = 'carrot-web-hidden-columns';
 const EDITOR_FOLD_KEY = 'carrot-web-editor-folded';
 const SIDE_OPEN_KEY = 'carrot-web-side-open';
 const MEDIA_FOLDER_KEY = 'carrot-media-folder';
+const MEDIA_FOLDER_MODE_KEY = 'carrot-media-folder-mode';
+const MEDIA_DIR_IDB_NAME = 'carrot-media-dir-v1';
+const MEDIA_DIR_IDB_STORE = 'handles';
+const MEDIA_DIR_IDB_KEY = 'mediaFolder';
 const THEME_KEY = 'site-theme';
 const AUTO_NAME_KEY = 'carrot-auto-name';
 const TWO_WEEKS_MS = 14 * 24 * 60 * 60 * 1000;
@@ -2291,6 +2295,7 @@ el.sectionEvents.hidden = false;
 (async function boot() {
   try {
     clearLegacyCredentialStorage();
+    await restoreMediaFolderOnBoot();
     const health = await api('GET', '/api/health');
     const d = health.defaults || {};
     syncConnectionFields({
@@ -2370,14 +2375,32 @@ function getMediaFolderLabel() {
   catch (e) { return ''; }
 }
 
-function setMediaFolderLabel(name) {
+function getMediaFolderMode() {
+  try { return localStorage.getItem(MEDIA_FOLDER_MODE_KEY) || ''; }
+  catch (e) { return ''; }
+}
+
+function setMediaFolderMode(mode) {
+  try {
+    if (mode) localStorage.setItem(MEDIA_FOLDER_MODE_KEY, mode);
+    else localStorage.removeItem(MEDIA_FOLDER_MODE_KEY);
+  } catch (e) { /* ignore */ }
+}
+
+function setMediaFolderLabel(name, opts) {
+  opts = opts || {};
   const v = String(name || '').trim();
   try {
     if (v) localStorage.setItem(MEDIA_FOLDER_KEY, v);
     else localStorage.removeItem(MEDIA_FOLDER_KEY);
   } catch (e) { /* ignore */ }
   if (el.mediaFolderPath) {
-    el.mediaFolderPath.textContent = v ? v : 'папка не выбрана';
+    if (!v) el.mediaFolderPath.textContent = 'папка не выбрана';
+    else if (opts.needsReselect) {
+      el.mediaFolderPath.textContent = v + ' — нажми «Выбрать папку…» снова';
+    } else {
+      el.mediaFolderPath.textContent = v;
+    }
   }
   return v;
 }
@@ -2390,6 +2413,105 @@ function folderLabelFromFiles(files) {
     if (top) return top;
   }
   return 'выбранная папка (' + files.length + ')';
+}
+
+function idbReq(req) {
+  return new Promise(function (resolve, reject) {
+    req.onsuccess = function () { resolve(req.result); };
+    req.onerror = function () { reject(req.error || new Error('IndexedDB error')); };
+  });
+}
+
+function openMediaDirDb() {
+  if (!window.indexedDB) return Promise.reject(new Error('IndexedDB недоступен'));
+  return new Promise(function (resolve, reject) {
+    const req = indexedDB.open(MEDIA_DIR_IDB_NAME, 1);
+    req.onupgradeneeded = function () {
+      const db = req.result;
+      if (!db.objectStoreNames.contains(MEDIA_DIR_IDB_STORE)) {
+        db.createObjectStore(MEDIA_DIR_IDB_STORE);
+      }
+    };
+    req.onsuccess = function () { resolve(req.result); };
+    req.onerror = function () { reject(req.error || new Error('IndexedDB open failed')); };
+  });
+}
+
+async function saveMediaDirHandle(handle) {
+  if (!handle || !window.indexedDB) return;
+  const db = await openMediaDirDb();
+  try {
+    await idbReq(db.transaction(MEDIA_DIR_IDB_STORE, 'readwrite')
+      .objectStore(MEDIA_DIR_IDB_STORE).put(handle, MEDIA_DIR_IDB_KEY));
+  } finally {
+    db.close();
+  }
+}
+
+async function loadMediaDirHandle() {
+  if (!window.indexedDB) return null;
+  const db = await openMediaDirDb();
+  try {
+    const handle = await idbReq(db.transaction(MEDIA_DIR_IDB_STORE, 'readonly')
+      .objectStore(MEDIA_DIR_IDB_STORE).get(MEDIA_DIR_IDB_KEY));
+    return handle || null;
+  } finally {
+    db.close();
+  }
+}
+
+async function clearStoredMediaDirHandle() {
+  if (!window.indexedDB) return;
+  try {
+    const db = await openMediaDirDb();
+    try {
+      await idbReq(db.transaction(MEDIA_DIR_IDB_STORE, 'readwrite')
+        .objectStore(MEDIA_DIR_IDB_STORE).delete(MEDIA_DIR_IDB_KEY));
+    } finally {
+      db.close();
+    }
+  } catch (e) { /* ignore */ }
+}
+
+async function ensureMediaDirPermission(handle, interactive) {
+  if (!handle || typeof handle.queryPermission !== 'function') return !!handle;
+  try {
+    var perm = await handle.queryPermission({ mode: 'read' });
+    if (perm === 'granted') return true;
+    if (!interactive || typeof handle.requestPermission !== 'function') return false;
+    perm = await handle.requestPermission({ mode: 'read' });
+    return perm === 'granted';
+  } catch (e) {
+    return false;
+  }
+}
+
+async function restoreMediaFolderOnBoot() {
+  const label = getMediaFolderLabel();
+  try {
+    const handle = await loadMediaDirHandle();
+    if (handle) {
+      const ok = await ensureMediaDirPermission(handle, false);
+      if (ok) {
+        mediaDirHandle = handle;
+        mediaPickedFiles = [];
+        setMediaFolderMode('handle');
+        setMediaFolderLabel(handle.name || label || 'выбранная папка');
+        return;
+      }
+    }
+  } catch (e) { /* ignore */ }
+
+  if (mediaPickedFiles && mediaPickedFiles.length) {
+    setMediaFolderLabel(label || folderLabelFromFiles(mediaPickedFiles));
+    return;
+  }
+  if (label) {
+    // Label survived reload, but FileList/handle access did not.
+    setMediaFolderLabel(label, { needsReselect: true });
+  } else {
+    setMediaFolderLabel('');
+  }
 }
 
 function pickMediaFolderViaInput() {
@@ -2414,19 +2536,22 @@ async function pickMediaFolder() {
       mediaDirHandle = handle;
       mediaPickedFiles = [];
       const label = handle.name || 'выбранная папка';
+      setMediaFolderMode('handle');
       setMediaFolderLabel(label);
+      try { await saveMediaDirHandle(handle); }
+      catch (e) { /* ignore persist errors */ }
       var scanned = 0;
       try { scanned = (await collectMediaFilesFromDir(handle)).length; }
       catch (e) { scanned = 0; }
       toast(
         'Папка медиа: ' + label +
-          (scanned ? (' · файлов (с вложенными): ' + scanned) : ''),
+          (scanned ? (' · файлов (с вложенными): ' + scanned) : '') +
+          ' · запомнена',
         'ok'
       );
       return;
     } catch (err) {
       if (err && err.name === 'AbortError') return;
-      // Если API есть, но упал (редкий случай) — fallback на input.
       toast('Directory picker недоступен, открываю обычный выбор папки…', 'err');
     }
   }
@@ -2438,17 +2563,20 @@ function onMediaFolderFallbackPicked() {
   const list = input && input.files ? Array.prototype.slice.call(input.files) : [];
   if (!list.length) return;
   mediaDirHandle = null;
+  clearStoredMediaDirHandle();
   // Включая файлы из вложенных папок (webkitRelativePath: folder/sub/file).
   mediaPickedFiles = list.filter(function (f) { return !!f && f.name; });
   const label = folderLabelFromFiles(mediaPickedFiles);
   const nested = mediaPickedFiles.filter(function (f) {
     return String(f.webkitRelativePath || '').split(/[/\\]/).length > 2;
   }).length;
+  setMediaFolderMode('files');
   setMediaFolderLabel(label);
   toast(
     'Папка медиа: ' + label +
       ' · файлов: ' + mediaPickedFiles.length +
-      (nested ? (' (вложенных: ' + nested + ')') : ''),
+      (nested ? (' (вложенных: ' + nested + ')') : '') +
+      ' · до перезагрузки страницы',
     'ok'
   );
 }
@@ -2457,6 +2585,8 @@ function clearMediaFolder() {
   mediaDirHandle = null;
   mediaPickedFiles = [];
   if (el.mediaFolderFallbackInput) el.mediaFolderFallbackInput.value = '';
+  clearStoredMediaDirHandle();
+  setMediaFolderMode('');
   setMediaFolderLabel('');
   toast('Папка медиа сброшена', 'ok');
 }
@@ -2471,7 +2601,6 @@ async function collectMediaFilesFromDir(dirHandle) {
           const file = await entry.getFile();
           out.push(file);
         } else if (entry.kind === 'directory') {
-          // Рекурсивно: все вложенные папки.
           await walk(entry);
         }
       } catch (err) {
@@ -2484,10 +2613,33 @@ async function collectMediaFilesFromDir(dirHandle) {
 }
 
 async function collectSelectedMediaFiles() {
-  if (mediaDirHandle) return collectMediaFilesFromDir(mediaDirHandle);
-  // webkitdirectory уже отдаёт файлы из всех вложенных папок.
+  if (mediaDirHandle) {
+    const ok = await ensureMediaDirPermission(mediaDirHandle, true);
+    if (!ok) {
+      throw new Error('Нет доступа к папке медиа. Нажми «Выбрать папку…» в Настройках.');
+    }
+    return collectMediaFilesFromDir(mediaDirHandle);
+  }
   if (mediaPickedFiles && mediaPickedFiles.length) return mediaPickedFiles.slice();
   return [];
+}
+
+function filterMediaFilesByNeededNames(files, neededNames) {
+  const keys = Object.create(null);
+  (neededNames || []).forEach(function (n) {
+    const base = String(n || '').split(/[/\\]/).pop().trim().toLowerCase();
+    if (!base) return;
+    keys[base] = true;
+    const stem = base.replace(/\.[^.]+$/, '');
+    if (stem) keys[stem] = true;
+  });
+  return (files || []).filter(function (f) {
+    const name = String(f.name || '').toLowerCase();
+    if (!name) return false;
+    if (keys[name]) return true;
+    const stem = name.replace(/\.[^.]+$/, '');
+    return !!(stem && keys[stem]);
+  });
 }
 
 function applyTheme(theme) {
@@ -2543,6 +2695,28 @@ async function openExcelImportDialog() {
   }
 }
 
+async function postImportExcelForm(fd) {
+  const res = await fetch('/api/events/import-excel', { method: 'POST', body: fd });
+  const text = await res.text();
+  var parsed = null;
+  try { parsed = text ? JSON.parse(text) : null; }
+  catch (e) { throw new Error('Ответ сервера не JSON (HTTP ' + res.status + ')'); }
+  if (!res.ok || (parsed && parsed.ok === false)) {
+    const err = new Error((parsed && parsed.error) || ('HTTP ' + res.status));
+    const missing = (parsed && parsed.media &&
+      (parsed.media.missing || parsed.media.warnings)) || [];
+    if (missing.length) {
+      err.detail = missing.map(function (w) {
+        return 'Строка ' + (w.row || '?') +
+          (w.variable ? ' [' + w.variable + ']' : '') +
+          ': ' + (w.file || '') + ' — ' + (w.reason || '');
+      }).join('\n');
+    }
+    throw err;
+  }
+  return parsed;
+}
+
 async function importEventsFromExcel(file) {
   if (!file) return;
   const templateId = el.excelTemplateSelect && el.excelTemplateSelect.value;
@@ -2551,40 +2725,51 @@ async function importEventsFromExcel(file) {
     return;
   }
   const folderLabel = getMediaFolderLabel();
-  const fd = new FormData();
-  fd.append('file', file, file.name);
-  fd.append('templateId', templateId);
-  fd.append('autoName', isAutoNameEnabled() ? '1' : '0');
-
-  const mediaFiles = await collectSelectedMediaFiles();
-  mediaFiles.forEach(function (mf) {
-    fd.append('mediaFiles', mf, mf.name);
-  });
+  const autoName = isAutoNameEnabled() ? '1' : '0';
 
   const json = await withLoading(
     'Импорт Excel…',
     async function () {
-      const res = await fetch('/api/events/import-excel', { method: 'POST', body: fd });
-      const text = await res.text();
-      var parsed = null;
-      try { parsed = text ? JSON.parse(text) : null; }
-      catch (e) { throw new Error('Ответ сервера не JSON (HTTP ' + res.status + ')'); }
-      if (!res.ok || (parsed && parsed.ok === false)) {
-        const err = new Error((parsed && parsed.error) || ('HTTP ' + res.status));
-        const missing = (parsed && parsed.media &&
-          (parsed.media.missing || parsed.media.warnings)) || [];
-        if (missing.length) {
-          err.detail = missing.map(function (w) {
-            return 'Строка ' + (w.row || '?') +
-              (w.variable ? ' [' + w.variable + ']' : '') +
-              ': ' + (w.file || '') + ' — ' + (w.reason || '');
-          }).join('\n');
+      // 1) Узнать, какие медиа реально нужны (нет в Carrot) — без пересылки всей папки.
+      const planFd = new FormData();
+      planFd.append('file', file, file.name);
+      planFd.append('templateId', templateId);
+      planFd.append('autoName', autoName);
+      planFd.append('planOnly', '1');
+      const plan = await postImportExcelForm(planFd);
+      const needed = (plan && plan.media && plan.media.needed) || [];
+
+      var toSend = [];
+      if (needed.length) {
+        const allLocal = await collectSelectedMediaFiles();
+        toSend = filterMediaFilesByNeededNames(allLocal, needed);
+        if (!toSend.length && allLocal.length) {
+          throw new Error(
+            'В выбранной папке нет нужных файлов: ' + needed.slice(0, 5).join(', ') +
+              (needed.length > 5 ? '…' : '')
+          );
         }
-        throw err;
+        if (!allLocal.length) {
+          throw new Error(
+            'Нужны локальные медиа (' + needed.length +
+              '). Выбери папку в Настройках и повтори импорт.'
+          );
+        }
       }
-      return parsed;
+
+      // 2) Импорт: Excel + только недостающие файлы.
+      const fd = new FormData();
+      fd.append('file', file, file.name);
+      fd.append('templateId', templateId);
+      fd.append('autoName', autoName);
+      toSend.forEach(function (mf) {
+        fd.append('mediaFiles', mf, mf.name);
+      });
+      return postImportExcelForm(fd);
     },
-    file.name + (folderLabel ? '\nПапка медиа: ' + folderLabel : '')
+    file.name +
+      (folderLabel ? '\nПапка медиа: ' + folderLabel : '') +
+      '\nСначала план медиа, затем только нужные файлы'
   );
 
   const created = (json && json.created) ? json.created : [];
@@ -2661,7 +2846,6 @@ if (el.excelImportForm) {
   });
 }
 
-setMediaFolderLabel(getMediaFolderLabel());
 if (el.mediaFolderPickBtn) {
   el.mediaFolderPickBtn.addEventListener('click', function () {
     pickMediaFolder();

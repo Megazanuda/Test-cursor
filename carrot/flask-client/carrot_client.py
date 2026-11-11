@@ -2627,6 +2627,61 @@ def find_local_media_file(folder: str, filename: str) -> Optional[Path]:
     return None
 
 
+def list_missing_local_media_names(
+    drafts: list[dict[str, Any]],
+    *,
+    assets: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """
+    Какие Media-имена из Excel ещё нет в Carrot (нужны из локальной папки).
+
+    Не меняет drafts. Возвращает:
+      needed — уникальные имена файлов, которых нет в Carrot
+      inCarrot — имена, которые уже есть
+      referenced — все упомянутые Media-имена (не guid)
+    """
+    index = index_assets_by_name(assets)
+    needed: list[str] = []
+    in_carrot: list[str] = []
+    referenced: list[str] = []
+    seen_needed: set[str] = set()
+    seen_ok: set[str] = set()
+    seen_ref: set[str] = set()
+
+    for draft in drafts:
+        for var in draft.get("variables") or []:
+            if not is_media_type(var.get("type")):
+                continue
+            raw = "" if var.get("value") is None else str(var.get("value")).strip()
+            if not raw:
+                continue
+            aid, aname = _parse_media_value(raw)
+            if aid and _GUID_RE.match(aid):
+                continue
+            filename = Path(aname or aid or raw).name
+            if not filename:
+                continue
+            key = _norm_name(filename)
+            if key not in seen_ref:
+                seen_ref.add(key)
+                referenced.append(filename)
+            hit = index.get(key) or index.get(Path(key).stem)
+            if hit and hit.get("id"):
+                if key not in seen_ok:
+                    seen_ok.add(key)
+                    in_carrot.append(filename)
+                continue
+            if key not in seen_needed:
+                seen_needed.add(key)
+                needed.append(filename)
+
+    return {
+        "needed": needed,
+        "inCarrot": in_carrot,
+        "referenced": referenced,
+    }
+
+
 def resolve_media_in_drafts(
     drafts: list[dict[str, Any]],
     *,
@@ -2769,5 +2824,6 @@ __all__ = [
     "read_excel_rows",
     "rows_to_event_drafts",
     "resolve_media_in_drafts",
+    "list_missing_local_media_names",
     "name_from_first_variable",
 ]
