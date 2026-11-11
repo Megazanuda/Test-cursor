@@ -838,7 +838,10 @@ function fillMediaSelect(select, currentValue) {
     const parsed = parseMediaValue(currentValue);
     const opt = document.createElement('option');
     opt.value = normalizeMediaValue(currentValue);
-    opt.textContent = parsed.name || parsed.id;
+    const looksGuid = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(parsed.id);
+    opt.textContent = looksGuid
+      ? ('⚠ нет в библиотеке: ' + (parsed.name || parsed.id))
+      : ('⚠ не привязано: ' + (parsed.name || parsed.id));
     opt.selected = true;
     select.appendChild(opt);
   }
@@ -2615,30 +2618,32 @@ async function collectSelectedMediaFiles() {
 }
 
 function mediaNeededKeySet(neededNames) {
-  const keys = Object.create(null);
+  // exact: имя с расширением → только точное совпадение.
+  // stems: имя без расширения («intro») → можно взять intro.mp4.
+  const exact = Object.create(null);
+  const stems = Object.create(null);
   var target = 0;
   (neededNames || []).forEach(function (n) {
     const base = String(n || '').split(/[/\\]/).pop().trim().toLowerCase();
     if (!base) return;
-    if (!keys[base]) {
-      keys[base] = true;
+    if (!exact[base]) {
+      exact[base] = true;
       target += 1;
     }
-    const stem = base.replace(/\.[^.]+$/, '');
-    if (stem && !keys[stem]) keys[stem] = true;
+    const hasExt = /\.[^.]+$/.test(base);
+    if (!hasExt) stems[base] = true;
   });
-  return { keys: keys, target: target };
+  return { exact: exact, stems: stems, target: target };
 }
 
 function filterMediaFilesByNeededNames(files, neededNames) {
   const pack = mediaNeededKeySet(neededNames);
-  const keys = pack.keys;
   return (files || []).filter(function (f) {
     const name = String(f.name || '').toLowerCase();
     if (!name) return false;
-    if (keys[name]) return true;
+    if (pack.exact[name]) return true;
     const stem = name.replace(/\.[^.]+$/, '');
-    return !!(stem && keys[stem]);
+    return !!(stem && pack.stems[stem]);
   });
 }
 
@@ -2647,7 +2652,6 @@ async function collectNeededMediaFiles(neededNames) {
   const needed = neededNames || [];
   if (!needed.length) return [];
   const pack = mediaNeededKeySet(needed);
-  const keys = pack.keys;
   const target = pack.target;
 
   if (mediaDirHandle) {
@@ -2658,6 +2662,7 @@ async function collectNeededMediaFiles(neededNames) {
     const out = [];
     var found = 0;
     const seenFile = Object.create(null);
+    const matchedKey = Object.create(null);
     async function walk(handle) {
       if (found >= target) return;
       for await (const entry of handle.values()) {
@@ -2667,10 +2672,14 @@ async function collectNeededMediaFiles(neededNames) {
             const name = String(entry.name || '').toLowerCase();
             if (!name || seenFile[name]) continue;
             const stem = name.replace(/\.[^.]+$/, '');
-            if (!(keys[name] || (stem && keys[stem]))) continue;
+            var matchKey = '';
+            if (pack.exact[name] && !matchedKey[name]) matchKey = name;
+            else if (stem && pack.stems[stem] && !matchedKey[stem]) matchKey = stem;
+            if (!matchKey) continue;
             const file = await entry.getFile();
             out.push(file);
             seenFile[name] = true;
+            matchedKey[matchKey] = true;
             found += 1;
           } else if (entry.kind === 'directory') {
             await walk(entry);

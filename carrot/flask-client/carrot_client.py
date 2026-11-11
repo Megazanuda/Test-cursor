@@ -814,6 +814,8 @@ class CarrotClient:
             else opts.get("media_assets_cache_ttl_s", 90)
         )
         self._media_cache_lock = threading.Lock()
+        # TUS upload использует shared Session — не потокобезопасен.
+        self._upload_lock = threading.Lock()
         self._session = requests.Session()
 
     # --- совместимость camelCase-свойств (как в JS) ---
@@ -1613,6 +1615,19 @@ class CarrotClient:
         Возвращает нормализованный ассет {id, name, assetTypeInt/type, …}.
         Значение медиа-переменной события: ``{id};{name}``.
         """
+        with self._upload_lock:
+            return self._upload_asset_locked(
+                file_bytes, filename, folder_id, chunk_size=chunk_size
+            )
+
+    def _upload_asset_locked(
+        self,
+        file_bytes: Union[bytes, bytearray],
+        filename: str,
+        folder_id: Optional[str] = None,
+        *,
+        chunk_size: int = 1024 * 1024,
+    ) -> dict[str, Any]:
         data = bytes(file_bytes or b"")
         name = (filename or "").strip()
         if not name:
@@ -2526,6 +2541,12 @@ def _norm_name(name: str) -> str:
     return os.path.basename(str(name or "").strip()).lower()
 
 
+def _has_file_extension(name: str) -> bool:
+    """True if basename looks like name.ext (not a trailing dot)."""
+    base = _norm_name(name)
+    return bool(base) and ("." in base) and bool(Path(base).suffix)
+
+
 def _parse_media_value(raw: str) -> tuple[str, str]:
     s = str(raw or "").strip()
     if not s:
@@ -2537,7 +2558,7 @@ def _parse_media_value(raw: str) -> tuple[str, str]:
 
 
 def index_assets_by_name(assets: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
-    """Индекс ассетов по имени файла (lower) и stem без расширения."""
+    """Индекс ассетов по полному имени (lower) и stem (для имён без расширения)."""
     index: dict[str, dict[str, Any]] = {}
     for asset in assets or []:
         name = str(asset.get("name") or "").strip()
@@ -2546,9 +2567,36 @@ def index_assets_by_name(assets: list[dict[str, Any]]) -> dict[str, dict[str, An
         key = _norm_name(name)
         index.setdefault(key, asset)
         stem = Path(key).stem
+        # Stem-ключ только как fallback для Excel-имён без расширения.
         if stem and stem not in index:
             index[stem] = asset
     return index
+
+
+def lookup_asset_by_filename(
+    index: dict[str, dict[str, Any]], filename: str
+) -> Optional[dict[str, Any]]:
+    """
+    Найти ассет по имени из Excel.
+
+    Если в имени есть расширение — только точное совпадение basename.
+    Stem-fallback — только для имён без расширения (например «intro»).
+    """
+    key = _norm_name(filename)
+    if not key:
+        return None
+    hit = index.get(key)
+    if hit:
+        return hit
+    if _has_file_extension(key):
+        return None
+    return index.get(Path(key).stem) or None
+
+
+def media_value_is_bound(raw: Any) -> bool:
+    """True если значение Media уже в формате guid или guid;name."""
+    aid, _aname = _parse_media_value("" if raw is None else str(raw))
+    return bool(aid and _GUID_RE.match(aid))
 
 
 def find_local_media_file(folder: str, filename: str) -> Optional[Path]:
@@ -2629,7 +2677,7 @@ def list_missing_local_media_names(
             if key not in seen_ref:
                 seen_ref.add(key)
                 referenced.append(filename)
-            hit = index.get(key) or index.get(Path(key).stem)
+            hit = lookup_asset_by_filename(index, filename)
             if hit and hit.get("id"):
                 if key not in seen_ok:
                     seen_ok.add(key)
@@ -2669,14 +2717,29 @@ def resolve_media_in_drafts(
     reused = 0
     missing: list[dict[str, Any]] = []
     folder = (media_folder or "").strip() or None
-    files_by_name: dict[str, bytes] = {}
+    files_by_exact: dict[str, bytes] = {}
+    files_by_stem: dict[str, bytes] = {}
     if media_files:
         for fname, blob in media_files.items():
             if not fname or blob is None:
                 continue
-            files_by_name[_norm_name(Path(str(fname)).name)] = bytes(blob)
+            exact = _norm_name(Path(str(fname)).name)
+            files_by_exact[exact] = bytes(blob)
+            # Stem map — только для Excel-имён без расширения.
             stem = _norm_name(Path(str(fname)).stem)
-            files_by_name.setdefault(stem, bytes(blob))
+            if stem:
+                files_by_stem.setdefault(stem, bytes(blob))
+
+    def _local_blob_for(filename: str) -> Optional[bytes]:
+        key = _norm_name(filename)
+        if not key:
+            return None
+        hit = files_by_exact.get(key)
+        if hit is not None:
+            return hit
+        if _has_file_extension(key):
+            return None
+        return files_by_stem.get(Path(key).stem)
 
     # key -> pending upload job (уникальные файлы)
     pending: dict[str, dict[str, Any]] = {}
@@ -2694,6 +2757,7 @@ def resolve_media_in_drafts(
 
             aid, aname = _parse_media_value(raw)
             if aid and _GUID_RE.match(aid):
+                # Carrot ожидает AssetId;AssetName
                 if aname:
                     var["value"] = f"{aid};{aname}"
                 else:
@@ -2703,7 +2767,7 @@ def resolve_media_in_drafts(
 
             filename = aname or aid or raw
             key = _norm_name(filename)
-            hit = index.get(key) or index.get(Path(key).stem)
+            hit = lookup_asset_by_filename(index, filename)
             if hit and hit.get("id"):
                 var["value"] = f"{hit['id']};{hit.get('name') or filename}"
                 resolved += 1
@@ -2722,9 +2786,7 @@ def resolve_media_in_drafts(
                 continue
 
             upload_name = Path(filename).name
-            blob = files_by_name.get(key) or files_by_name.get(
-                _norm_name(Path(key).stem)
-            )
+            blob = _local_blob_for(filename)
             local_path: Optional[Path] = None
             if blob is None:
                 if not folder:
@@ -2807,7 +2869,7 @@ def resolve_media_in_drafts(
 
     for job_key, var, excel_row, filename in waiting:
         asset = uploaded_by_key.get(job_key)
-        if not asset:
+        if not asset or not asset.get("id"):
             missing.append(
                 {
                     "row": excel_row,
@@ -2843,4 +2905,6 @@ __all__ = [
     "list_missing_local_media_names",
     "name_from_first_variable",
     "is_media_type",
+    "media_value_is_bound",
+    "lookup_asset_by_filename",
 ]
