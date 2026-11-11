@@ -1157,6 +1157,8 @@ body.is-loading {
   color: var(--muted);
   font-size: 0.9rem;
   line-height: 1.4;
+  white-space: pre-line;
+  max-width: 28rem;
 }
 
 dialog {

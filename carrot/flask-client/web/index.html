@@ -75,11 +75,11 @@
                   <span>Если имя пустое — брать из первой переменной</span>
                 </label>
               </div>
-              <div class="settings-row">
+              <div class="settings-row" id="settingsMediaFolderRow">
                 <span class="settings-label">Папка медиа для Excel</span>
                 <p class="settings-path" id="mediaFolderPath">папка не выбрана</p>
-                <p class="settings-hint">Вложенные папки тоже. На localhost папка запоминается; по open-ui — до перезагрузки.</p>
-                <div class="settings-actions">
+                <p class="settings-hint" id="settingsMediaFolderHint">Вложенные папки тоже. На localhost папка запоминается.</p>
+                <div class="settings-actions" id="settingsMediaFolderActions">
                   <button type="button" class="btn ghost sm" id="mediaFolderPickBtn">Выбрать папку…</button>
                   <button type="button" class="btn ghost sm" id="mediaFolderClearBtn">Сбросить</button>
                 </div>
@@ -208,7 +208,7 @@
   <dialog id="excelImportDialog">
     <form method="dialog" class="excel-import-box" id="excelImportForm">
       <h3>Импорт из Excel</h3>
-      <p class="lede">Выбери шаблон, затем Excel. Media — имена файлов.</p>
+      <p class="lede">Сначала шаблон, затем файл. Для Media — имена файлов из Carrot или из папки ниже.</p>
       <label class="excel-import-field">
         <span>Шаблон</span>
         <select id="excelTemplateSelect" class="excel-template-select"
@@ -216,6 +216,15 @@
           <option value="">— выбери шаблон —</option>
         </select>
       </label>
+      <div class="excel-import-field" id="excelMediaFolderBlock" hidden>
+        <span>Папка медиа</span>
+        <p class="settings-path" id="excelMediaFolderPath">папка не выбрана</p>
+        <p class="settings-hint">Нужна, если в Excel есть медиа, которых ещё нет в Carrot. Папка здесь не запоминается после перезагрузки.</p>
+        <div class="settings-actions">
+          <button type="button" class="btn ghost sm" id="excelMediaFolderPickBtn">Выбрать папку…</button>
+          <button type="button" class="btn ghost sm" id="excelMediaFolderClearBtn">Сбросить</button>
+        </div>
+      </div>
       <div class="confirm-actions">
         <button type="submit" value="cancel" class="btn ghost">Отмена</button>
         <button type="button" class="btn primary" id="excelPickFileBtn" disabled>Выбрать Excel…</button>

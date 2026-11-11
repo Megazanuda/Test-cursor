@@ -150,8 +150,15 @@ const el = {
   excelTemplateSelect: document.getElementById('excelTemplateSelect'),
   excelPickFileBtn: document.getElementById('excelPickFileBtn'),
   excelImportInput: document.getElementById('excelImportInput'),
+  excelMediaFolderBlock: document.getElementById('excelMediaFolderBlock'),
+  excelMediaFolderPath: document.getElementById('excelMediaFolderPath'),
+  excelMediaFolderPickBtn: document.getElementById('excelMediaFolderPickBtn'),
+  excelMediaFolderClearBtn: document.getElementById('excelMediaFolderClearBtn'),
   themeToggleBtn: document.getElementById('themeToggleBtn'),
   autoNameToggle: document.getElementById('autoNameToggle'),
+  settingsMediaFolderRow: document.getElementById('settingsMediaFolderRow'),
+  settingsMediaFolderHint: document.getElementById('settingsMediaFolderHint'),
+  settingsMediaFolderActions: document.getElementById('settingsMediaFolderActions'),
   mediaFolderPath: document.getElementById('mediaFolderPath'),
   mediaFolderPickBtn: document.getElementById('mediaFolderPickBtn'),
   mediaFolderClearBtn: document.getElementById('mediaFolderClearBtn'),
@@ -319,18 +326,22 @@ function showWarning(title, message, detail) {
 
 function showLoading(title, sub) {
   loadingDepth += 1;
-  if (el.loadingTitle) el.loadingTitle.textContent = title || 'Загрузка…';
+  updateLoading(title, sub);
+  if (el.loadingOverlay) el.loadingOverlay.hidden = false;
+  document.body.classList.add('is-loading');
+}
+
+function updateLoading(title, sub) {
+  if (title != null && el.loadingTitle) el.loadingTitle.textContent = title || 'Загрузка…';
   if (el.loadingSub) {
     if (sub) {
       el.loadingSub.hidden = false;
       el.loadingSub.textContent = sub;
-    } else {
+    } else if (sub === '') {
       el.loadingSub.hidden = true;
       el.loadingSub.textContent = '';
     }
   }
-  if (el.loadingOverlay) el.loadingOverlay.hidden = false;
-  document.body.classList.add('is-loading');
 }
 
 function hideLoading() {
@@ -2231,6 +2242,7 @@ el.sectionEvents.hidden = false;
   try {
     clearLegacyCredentialStorage();
     await restoreMediaFolderOnBoot();
+    syncMediaFolderUiPlacement();
     const health = await api('GET', '/api/health');
     const d = health.defaults || {};
     syncConnectionFields({
@@ -2322,6 +2334,15 @@ function setMediaFolderMode(mode) {
   } catch (e) { /* ignore */ }
 }
 
+function canPersistMediaFolder() {
+  return typeof window.showDirectoryPicker === 'function' &&
+    window.isSecureContext !== false;
+}
+
+function mediaFolderIsReady() {
+  return !!(mediaDirHandle || (mediaPickedFiles && mediaPickedFiles.length));
+}
+
 function setMediaFolderLabel(name, opts) {
   opts = opts || {};
   const v = String(name || '').trim();
@@ -2329,15 +2350,33 @@ function setMediaFolderLabel(name, opts) {
     if (v) localStorage.setItem(MEDIA_FOLDER_KEY, v);
     else localStorage.removeItem(MEDIA_FOLDER_KEY);
   } catch (e) { /* ignore */ }
-  if (el.mediaFolderPath) {
-    if (!v) el.mediaFolderPath.textContent = 'папка не выбрана';
-    else if (opts.needsReselect) {
-      el.mediaFolderPath.textContent = v + ' — нажми «Выбрать папку…» снова';
-    } else {
-      el.mediaFolderPath.textContent = v;
-    }
-  }
+  var text = 'папка не выбрана';
+  if (v && opts.needsReselect) text = v + ' — выбери снова';
+  else if (v) text = v;
+  if (el.mediaFolderPath) el.mediaFolderPath.textContent = text;
+  if (el.excelMediaFolderPath) el.excelMediaFolderPath.textContent = text;
+  syncMediaFolderUiPlacement();
   return v;
+}
+
+function syncMediaFolderUiPlacement() {
+  const persist = canPersistMediaFolder();
+  const ready = mediaFolderIsReady();
+  // Если браузер не умеет запоминать папку — выбор в окне импорта Excel.
+  if (el.excelMediaFolderBlock) {
+    el.excelMediaFolderBlock.hidden = !!persist;
+  }
+  if (el.settingsMediaFolderActions) {
+    el.settingsMediaFolderActions.hidden = !persist;
+  }
+  if (el.settingsMediaFolderHint) {
+    el.settingsMediaFolderHint.textContent = persist
+      ? 'Вложенные папки тоже. Папка запоминается в этом браузере.'
+      : 'На этом адресе папка не запоминается — выбери её в окне «Импорт Excel».';
+  }
+  if (el.settingsMediaFolderRow && !persist && !ready && !getMediaFolderLabel()) {
+    // строка в настройках остаётся как подсказка
+  }
 }
 
 function folderLabelFromFiles(files) {
@@ -2612,6 +2651,7 @@ function fillExcelTemplateSelect() {
 }
 
 async function openExcelImportDialog() {
+  syncMediaFolderUiPlacement();
   fillExcelTemplateSelect();
   if (el.excelPickFileBtn) {
     el.excelPickFileBtn.disabled = !(el.excelTemplateSelect && el.excelTemplateSelect.value);
@@ -2628,6 +2668,7 @@ async function openExcelImportDialog() {
   if (el.excelPickFileBtn) {
     el.excelPickFileBtn.disabled = !(el.excelTemplateSelect && el.excelTemplateSelect.value);
   }
+  syncMediaFolderUiPlacement();
 }
 
 async function postImportExcelForm(fd) {
@@ -2662,10 +2703,14 @@ async function importEventsFromExcel(file) {
   const folderLabel = getMediaFolderLabel();
   const autoName = isAutoNameEnabled() ? '1' : '0';
 
+  if (el.excelImportDialog && el.excelImportDialog.open) {
+    el.excelImportDialog.close();
+  }
+
   const json = await withLoading(
-    'Импорт Excel…',
+    'Импорт Excel',
     async function () {
-      // 1) Узнать, какие медиа реально нужны (нет в Carrot) — без пересылки всей папки.
+      updateLoading('Импорт Excel', '1/4 · Разбираю Excel и ищу нужные медиа…');
       const planFd = new FormData();
       planFd.append('file', file, file.name);
       planFd.append('templateId', templateId);
@@ -2673,9 +2718,16 @@ async function importEventsFromExcel(file) {
       planFd.append('planOnly', '1');
       const plan = await postImportExcelForm(planFd);
       const needed = (plan && plan.media && plan.media.needed) || [];
+      const inCarrot = (plan && plan.media && plan.media.inCarrot) || [];
 
       var toSend = [];
       if (needed.length) {
+        updateLoading(
+          'Импорт Excel',
+          '2/4 · Нужно медиа: ' + needed.length +
+            (inCarrot.length ? (', уже в Carrot: ' + inCarrot.length) : '') +
+            '\nЧитаю выбранную папку…'
+        );
         const allLocal = await collectSelectedMediaFiles();
         toSend = filterMediaFilesByNeededNames(allLocal, needed);
         if (!toSend.length && allLocal.length) {
@@ -2687,12 +2739,23 @@ async function importEventsFromExcel(file) {
         if (!allLocal.length) {
           throw new Error(
             'Нужны локальные медиа (' + needed.length +
-              '). Выбери папку в Настройках и повтори импорт.'
+              '). Выбери папку медиа в окне импорта и повтори.'
           );
         }
+        updateLoading(
+          'Импорт Excel',
+          '3/4 · Отправляю файлов: ' + toSend.length + ' из ' + needed.length +
+            ' и создаю ивенты…'
+        );
+      } else {
+        updateLoading(
+          'Импорт Excel',
+          '2/4 · Локальные медиа не нужны' +
+            (inCarrot.length ? (' (в Carrot уже: ' + inCarrot.length + ')') : '') +
+            '\n3/4 · Создаю ивенты…'
+        );
       }
 
-      // 2) Импорт: Excel + только недостающие файлы.
       const fd = new FormData();
       fd.append('file', file, file.name);
       fd.append('templateId', templateId);
@@ -2700,11 +2763,11 @@ async function importEventsFromExcel(file) {
       toSend.forEach(function (mf) {
         fd.append('mediaFiles', mf, mf.name);
       });
-      return postImportExcelForm(fd);
+      const result = await postImportExcelForm(fd);
+      updateLoading('Импорт Excel', '4/4 · Обновляю таблицу ивентов…');
+      return result;
     },
-    file.name +
-      (folderLabel ? '\nПапка медиа: ' + folderLabel : '') +
-      '\nСначала план медиа, затем только нужные файлы'
+    file.name + (folderLabel ? '\nПапка медиа: ' + folderLabel : '')
   );
 
   const created = (json && json.created) ? json.created : [];
@@ -2730,7 +2793,10 @@ async function importEventsFromExcel(file) {
   } else {
     showSuccess('Импорт Excel выполнен', lines.join('\n'));
   }
-  if (created.length) await refreshEventsView();
+  if (created.length) {
+    updateLoading('Импорт Excel', '4/4 · Обновляю таблицу ивентов…');
+    await refreshEventsView();
+  }
   return json;
 }
 
@@ -2765,14 +2831,23 @@ if (el.excelPickFileBtn && el.excelImportInput) {
     el.excelPickFileBtn.disabled = true;
     try {
       await importEventsFromExcel(file);
-      if (el.excelImportDialog && el.excelImportDialog.open) {
-        el.excelImportDialog.close();
-      }
     } catch (err) {
       showError('Не удалось импортировать Excel', err);
     } finally {
       el.excelPickFileBtn.disabled = !(el.excelTemplateSelect && el.excelTemplateSelect.value);
     }
+  });
+}
+if (el.excelMediaFolderPickBtn) {
+  el.excelMediaFolderPickBtn.addEventListener('click', function (ev) {
+    ev.preventDefault();
+    pickMediaFolder();
+  });
+}
+if (el.excelMediaFolderClearBtn) {
+  el.excelMediaFolderClearBtn.addEventListener('click', function (ev) {
+    ev.preventDefault();
+    clearMediaFolder();
   });
 }
 if (el.excelImportForm) {
