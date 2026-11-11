@@ -2679,15 +2679,25 @@ async function collectSelectedMediaFiles() {
   return [];
 }
 
-function filterMediaFilesByNeededNames(files, neededNames) {
+function mediaNeededKeySet(neededNames) {
   const keys = Object.create(null);
+  var target = 0;
   (neededNames || []).forEach(function (n) {
     const base = String(n || '').split(/[/\\]/).pop().trim().toLowerCase();
     if (!base) return;
-    keys[base] = true;
+    if (!keys[base]) {
+      keys[base] = true;
+      target += 1;
+    }
     const stem = base.replace(/\.[^.]+$/, '');
-    if (stem) keys[stem] = true;
+    if (stem && !keys[stem]) keys[stem] = true;
   });
+  return { keys: keys, target: target };
+}
+
+function filterMediaFilesByNeededNames(files, neededNames) {
+  const pack = mediaNeededKeySet(neededNames);
+  const keys = pack.keys;
   return (files || []).filter(function (f) {
     const name = String(f.name || '').toLowerCase();
     if (!name) return false;
@@ -2695,6 +2705,74 @@ function filterMediaFilesByNeededNames(files, neededNames) {
     const stem = name.replace(/\.[^.]+$/, '');
     return !!(stem && keys[stem]);
   });
+}
+
+/** Собрать только нужные медиа: getFile() лишь для совпадений, с ранним выходом. */
+async function collectNeededMediaFiles(neededNames) {
+  const needed = neededNames || [];
+  if (!needed.length) return [];
+  const pack = mediaNeededKeySet(needed);
+  const keys = pack.keys;
+  const target = pack.target;
+
+  if (mediaDirHandle) {
+    const ok = await ensureMediaDirPermission(mediaDirHandle, true);
+    if (!ok) {
+      throw new Error('Нет доступа к папке медиа. Нажми «Выбрать папку…» в Настройках.');
+    }
+    const out = [];
+    var found = 0;
+    const seenFile = Object.create(null);
+    async function walk(handle) {
+      if (found >= target) return;
+      for await (const entry of handle.values()) {
+        if (found >= target) return;
+        try {
+          if (entry.kind === 'file') {
+            const name = String(entry.name || '').toLowerCase();
+            if (!name || seenFile[name]) continue;
+            const stem = name.replace(/\.[^.]+$/, '');
+            if (!(keys[name] || (stem && keys[stem]))) continue;
+            const file = await entry.getFile();
+            out.push(file);
+            seenFile[name] = true;
+            found += 1;
+          } else if (entry.kind === 'directory') {
+            await walk(entry);
+          }
+        } catch (err) {
+          // Пропускаем недоступные файлы/подпапки.
+        }
+      }
+    }
+    await walk(mediaDirHandle);
+    return out;
+  }
+
+  if (mediaPickedFiles && mediaPickedFiles.length) {
+    return filterMediaFilesByNeededNames(mediaPickedFiles, needed);
+  }
+  return [];
+}
+
+async function templateNeedsMediaPlan(templateId) {
+  const tpl = (state.templates || []).find(function (t) {
+    return String(t.id) === String(templateId);
+  });
+  if (tpl && tpl.hasMediaVariables === true) return true;
+  const cached = state.templateDetails && state.templateDetails[templateId];
+  if (cached) {
+    return (cached.variables || []).some(function (v) { return isMediaType(v.type); });
+  }
+  if (tpl && tpl.hasMediaVariables === false && !(tpl.variableCount > 0)) {
+    return false;
+  }
+  try {
+    const detail = await loadTemplateDetail(templateId);
+    return (detail.variables || []).some(function (v) { return isMediaType(v.type); });
+  } catch (e) {
+    return true; // неизвестно — безопаснее planOnly
+  }
 }
 
 function applyTheme(theme) {
@@ -2824,58 +2902,72 @@ async function importEventsFromExcel(file) {
     el.excelImportDialog.close();
   }
 
+  const hasMediaVars = await templateNeedsMediaPlan(templateId);
+
   const json = await withLoading(
     'Импорт Excel',
     async function () {
-      await paintLoading('Импорт Excel', '1/4 · Разбираю Excel и ищу нужные медиа…');
-      const planFd = new FormData();
-      planFd.append('file', file, file.name);
-      planFd.append('templateId', templateId);
-      planFd.append('autoName', autoName);
-      planFd.append('planOnly', '1');
-      const plan = await postImportExcelForm(planFd);
-      const needed = (plan && plan.media && plan.media.needed) || [];
-      const inCarrot = (plan && plan.media && plan.media.inCarrot) || [];
-
+      var planId = '';
+      var needed = [];
+      var inCarrot = [];
       var toSend = [];
-      if (needed.length) {
-        await paintLoading(
-          'Импорт Excel',
-          '2/4 · Нужно медиа: ' + needed.length +
-            (inCarrot.length ? (', уже в Carrot: ' + inCarrot.length) : '') +
-            '\nЧитаю выбранную папку…'
-        );
-        const allLocal = await collectSelectedMediaFiles();
-        toSend = filterMediaFilesByNeededNames(allLocal, needed);
-        if (!toSend.length && allLocal.length) {
-          throw new Error(
-            'В выбранной папке нет нужных файлов: ' + needed.slice(0, 5).join(', ') +
-              (needed.length > 5 ? '…' : '')
+
+      if (hasMediaVars) {
+        await paintLoading('Импорт Excel', '1/4 · Разбираю Excel и ищу нужные медиа…');
+        const planFd = new FormData();
+        planFd.append('file', file, file.name);
+        planFd.append('templateId', templateId);
+        planFd.append('autoName', autoName);
+        planFd.append('planOnly', '1');
+        const plan = await postImportExcelForm(planFd);
+        planId = (plan && plan.planId) || '';
+        needed = (plan && plan.media && plan.media.needed) || [];
+        inCarrot = (plan && plan.media && plan.media.inCarrot) || [];
+
+        if (needed.length) {
+          await paintLoading(
+            'Импорт Excel',
+            '2/4 · Нужно медиа: ' + needed.length +
+              (inCarrot.length ? (', уже в Carrot: ' + inCarrot.length) : '') +
+              '\nИщу только нужные файлы…'
+          );
+          toSend = await collectNeededMediaFiles(needed);
+          if (!toSend.length) {
+            if (mediaFolderIsReady()) {
+              throw new Error(
+                'В выбранной папке нет нужных файлов: ' + needed.slice(0, 5).join(', ') +
+                  (needed.length > 5 ? '…' : '')
+              );
+            }
+            throw new Error(
+              'Нужны локальные медиа (' + needed.length +
+                '). Выбери папку медиа в окне импорта и повтори.'
+            );
+          }
+          await paintLoading(
+            'Импорт Excel',
+            '3/4 · Готовлю отправку: ' + toSend.length + ' файл(ов)…'
+          );
+        } else {
+          await paintLoading(
+            'Импорт Excel',
+            '2/4 · Локальные медиа не нужны' +
+              (inCarrot.length ? (' (в Carrot уже: ' + inCarrot.length + ')') : '') +
+              '\n3/4 · Создаю ивенты…'
           );
         }
-        if (!allLocal.length) {
-          throw new Error(
-            'Нужны локальные медиа (' + needed.length +
-              '). Выбери папку медиа в окне импорта и повтори.'
-          );
-        }
-        await paintLoading(
-          'Импорт Excel',
-          '3/4 · Готовлю отправку: ' + toSend.length + ' файл(ов)…'
-        );
       } else {
-        await paintLoading(
-          'Импорт Excel',
-          '2/4 · Локальные медиа не нужны' +
-            (inCarrot.length ? (' (в Carrot уже: ' + inCarrot.length + ')') : '') +
-            '\n3/4 · Создаю ивенты…'
-        );
+        await paintLoading('Импорт Excel', '1/2 · Медиа в шаблоне нет — создаю ивенты…');
       }
 
       const fd = new FormData();
-      fd.append('file', file, file.name);
       fd.append('templateId', templateId);
       fd.append('autoName', autoName);
+      if (planId) {
+        fd.append('planId', planId);
+      } else {
+        fd.append('file', file, file.name);
+      }
       toSend.forEach(function (mf) {
         fd.append('mediaFiles', mf, mf.name);
       });
@@ -2887,14 +2979,14 @@ async function importEventsFromExcel(file) {
           if (info.phase === 'server') {
             updateLoading(
               'Импорт Excel',
-              '3/4 · Файлы ушли на сервер' +
+              (hasMediaVars ? '3/4' : '1/2') +
+                ' · Файлы ушли на сервер' +
                 (fileCount ? (' (' + fileCount + ')') : '') +
                 '\nСоздаю ивенты…'
             );
             return;
           }
           const now = Date.now();
-          // Не дёргать DOM на каждый байт.
           if (now - lastProgressAt < 80 && info.loaded < info.total) return;
           lastProgressAt = now;
           const pct = info.total
@@ -2902,13 +2994,17 @@ async function importEventsFromExcel(file) {
             : 0;
           updateLoading(
             'Импорт Excel',
-            '3/4 · Отправка медиа: ' + pct + '%' +
+            (hasMediaVars ? '3/4' : '1/2') +
+              ' · Отправка: ' + pct + '%' +
               (fileCount ? (' · ' + fileCount + ' файл(ов)') : '') +
               '\n' + formatByteSize(info.loaded) + ' / ' + formatByteSize(info.total)
           );
         },
       });
-      await paintLoading('Импорт Excel', '4/4 · Обновляю таблицу ивентов…');
+      await paintLoading(
+        'Импорт Excel',
+        (hasMediaVars ? '4/4' : '2/2') + ' · Обновляю таблицу ивентов…'
+      );
       return result;
     },
     'Подготовка…' + (folderLabel ? '\nПапка медиа: ' + folderLabel : '')
@@ -2917,7 +3013,7 @@ async function importEventsFromExcel(file) {
   const created = (json && json.created) ? json.created : [];
   const skipped = (json && json.skipped) ? json.skipped : [];
   const media = (json && json.media) ? json.media : {};
-  state.mediaLoaded = false;
+  if (media && media.uploaded) state.mediaLoaded = false;
 
   var lines = ['Создано ивентов: ' + created.length + '.'];
   if (skipped.length) lines.push('Пропущено строк: ' + skipped.length + '.');
