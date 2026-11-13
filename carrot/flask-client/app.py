@@ -25,6 +25,7 @@ from flask import Flask, jsonify, request, send_from_directory
 from carrot_client import (
     CarrotClient,
     CarrotError,
+    is_media_type,
     read_excel_rows,
     resolve_media_in_drafts,
     rows_to_event_drafts,
@@ -268,17 +269,23 @@ def api_connect():
     body = request.get_json(silent=True) or {}
     client = ensure_client(body)
     client.authenticate()
-    persist_connection_to_env(
-        base_url=_session.get("baseUrl"),
-        login=_session.get("login"),
-        password=_session.get("password"),
-    )
+    # Писать в .env только по явному запросу (DEV UI: persistEnv=true).
+    persist = body.get("persistEnv") or body.get("persist_env")
+    if persist in (True, 1, "1", "true", "True", "yes"):
+        persist_connection_to_env(
+            base_url=_session.get("baseUrl"),
+            login=_session.get("login"),
+            password=_session.get("password"),
+        )
     return jsonify(
         {
             "ok": True,
             "baseUrl": client.base_url,
             "login": _session.get("login") or "",
             "envPath": str(ENV_PATH),
+            "envWritten": bool(
+                persist in (True, 1, "1", "true", "True", "yes")
+            ),
         }
     )
 
@@ -422,6 +429,10 @@ def api_templates():
                     "defaultInState": t.get("defaultInState"),
                     "states": t.get("states"),
                     "variableCount": len(t.get("variables") or []),
+                    "hasMediaVariables": any(
+                        is_media_type(v.get("type"))
+                        for v in (t.get("variables") or [])
+                    ),
                 }
                 for t in templates
             ],
@@ -449,8 +460,21 @@ def api_events_create():
                 "error": "Нужен массив events: [{ name, templateId, variables? }, ...]",
             }
         ), 400
+    auto_name_raw = body.get("autoName") if isinstance(body, dict) else None
+    if auto_name_raw is None and isinstance(body, dict):
+        auto_name_raw = body.get("auto_name")
+    auto_name = True
+    if auto_name_raw is not None:
+        auto_name = str(auto_name_raw).strip().lower() not in (
+            "0",
+            "false",
+            "no",
+            "off",
+            "",
+        )
+
     client = ensure_client()
-    result = client.create_events(events)
+    result = client.create_events(events, auto_name=auto_name)
     return jsonify({"ok": True, "created": result.get("created") or []})
 
 
@@ -494,7 +518,8 @@ def api_events_import_excel():
     multipart/form-data:
       file — .xlsx/.xlsm
       templateId — GUID шаблона
-      mediaFolder — опц. локальная папка для Media-файлов из Excel
+      mediaFolder — опц. локальная папка сервера для Media-файлов из Excel
+      mediaFiles — опц. файлы из выбранной в браузере папки
       hasHeader — optional 0/1 (авто: если 1-я ячейка похожа на «имя»/name)
 
     Столбцы: 1 = имя, последний = External id, между ними = переменные
@@ -519,6 +544,17 @@ def api_events_import_excel():
         or ""
     ).strip() or None
 
+    # Файлы из выбранной в браузере папки: mediaFiles / mediaFiles[] / mediaFile
+    media_files: dict[str, bytes] = {}
+    for key in ("mediaFiles", "mediaFiles[]", "mediaFile"):
+        for f in request.files.getlist(key):
+            if not f or not f.filename:
+                continue
+            name = Path(f.filename).name
+            raw_bytes = f.read()
+            if name and raw_bytes:
+                media_files[name] = raw_bytes
+
     has_header_raw = (
         request.form.get("hasHeader")
         or request.form.get("has_header")
@@ -536,6 +572,22 @@ def api_events_import_excel():
             "on",
         )
 
+    auto_name_raw = (
+        request.form.get("autoName")
+        or request.form.get("auto_name")
+        or request.args.get("autoName")
+    )
+    if auto_name_raw is None or str(auto_name_raw).strip() == "":
+        auto_name = True
+    else:
+        auto_name = str(auto_name_raw).strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "y",
+            "on",
+        )
+
     raw = upload.read()
     try:
         rows = read_excel_rows(raw)
@@ -544,7 +596,9 @@ def api_events_import_excel():
 
     client = ensure_client()
     template = client.get_normalized_template(template_id)
-    parsed = rows_to_event_drafts(rows, template, has_header=has_header)
+    parsed = rows_to_event_drafts(
+        rows, template, has_header=has_header, auto_name=auto_name
+    )
     drafts = parsed["drafts"]
     if not drafts:
         return jsonify(
@@ -577,11 +631,11 @@ def api_events_import_excel():
             drafts,
             assets=assets,
             media_folder=media_folder,
+            media_files=media_files or None,
             upload_file=_upload,
         )
         missing = media_report.get("missing") or []
         if missing:
-            # Без найденных медиа импорт не выполняем — ивенты не создаём.
             names = sorted(
                 {
                     str(m.get("file") or "").strip()
@@ -616,13 +670,12 @@ def api_events_import_excel():
                 }
             ), 400
 
-    # служебное поле _excelRow не уходит в Carrot
     events = []
     for d in drafts:
         ev = {k: v for k, v in d.items() if not k.startswith("_")}
         events.append(ev)
 
-    result = client.create_events(events)
+    result = client.create_events(events, auto_name=auto_name)
     created = result.get("created") or []
     log.info(
         "[excel] шаблон %s: строк=%s создано=%s media upload=%s reuse=%s",

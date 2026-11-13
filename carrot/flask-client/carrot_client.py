@@ -806,6 +806,17 @@ class CarrotClient:
             else opts.get("all_events_cache_ttl_ms", 120000)
         )
         self._template_name_cache: dict[str, str] = {}
+        self._media_assets_cache: Optional[list[dict[str, Any]]] = None
+        self._media_assets_cache_at = 0.0
+        self._media_assets_cache_ttl_s = float(
+            opts.get("mediaAssetsCacheTtlS")
+            if opts.get("mediaAssetsCacheTtlS") is not None
+            else opts.get("media_assets_cache_ttl_s", 90)
+        )
+        self._media_cache_lock = threading.Lock()
+        # Токен / MessageId / shared Session._request — под одним lock.
+        # Сами TUS create/PATCH идут на отдельной Session и могут параллелиться.
+        self._api_lock = threading.Lock()
         self._session = requests.Session()
 
     # --- совместимость camelCase-свойств (как в JS) ---
@@ -833,12 +844,21 @@ class CarrotClient:
     # alias
     invalidateEventsCache = invalidate_events_cache
 
+    def invalidate_media_cache(self) -> None:
+        """Сбросить кэш deep-списка медиа."""
+        with self._media_cache_lock:
+            self._media_assets_cache = None
+            self._media_assets_cache_at = 0.0
+
+    invalidateMediaCache = invalidate_media_cache
+
     def _next_message_id(self) -> int:
+        # Вызывать под self._api_lock.
         self._message_id += 1
         return self._message_id
 
     def _envelope_query(self) -> str:
-        # Как Date.toISOString() в JS.
+        # Как Date.toISOString() в JS. Вызывать под self._api_lock.
         now = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace(
             "+00:00", "Z"
         )
@@ -851,12 +871,13 @@ class CarrotClient:
         return "?" + urlencode(params)
 
     def _ensure_token(self) -> None:
+        # Вызывать под self._api_lock.
         fresh = (
             self.token
             and (time.time() * 1000 - self.token_acquired_at) < self.token_ttl_ms
         )
         if not fresh:
-            self.authenticate()
+            self._authenticate_under_lock()
 
     def _request(
         self,
@@ -866,7 +887,32 @@ class CarrotClient:
         *,
         auth: bool = True,
         _retried_auth: bool = False,
+        timeout_ms: Optional[int] = None,
+        max_retries: Optional[int] = None,
     ) -> Any:
+        with self._api_lock:
+            return self._request_locked(
+                method,
+                path,
+                body,
+                auth=auth,
+                _retried_auth=_retried_auth,
+                timeout_ms=timeout_ms,
+                max_retries=max_retries,
+            )
+
+    def _request_locked(
+        self,
+        method: str,
+        path: str,
+        body: Any = None,
+        *,
+        auth: bool = True,
+        _retried_auth: bool = False,
+        timeout_ms: Optional[int] = None,
+        max_retries: Optional[int] = None,
+    ) -> Any:
+        """Внутренний REST-вызов. Уже под self._api_lock."""
         if auth:
             self._ensure_token()
 
@@ -875,10 +921,16 @@ class CarrotClient:
         if auth and self.token:
             headers["Authorization"] = "Bearer " + self.token
 
-        timeout_s = self.timeout_ms / 1000.0
+        effective_timeout = (
+            self.timeout_ms if timeout_ms is None else int(timeout_ms)
+        )
+        effective_retries = (
+            self.max_retries if max_retries is None else int(max_retries)
+        )
+        timeout_s = max(effective_timeout, 1) / 1000.0
         last_err: Optional[CarrotError] = None
 
-        for attempt in range(self.max_retries + 1):
+        for attempt in range(effective_retries + 1):
             try:
                 kwargs: dict[str, Any] = {
                     "method": method,
@@ -893,8 +945,14 @@ class CarrotClient:
                 if res.status_code == 401 and auth and not _retried_auth:
                     self.token = None
                     self._ensure_token()
-                    return self._request(
-                        method, path, body, auth=auth, _retried_auth=True
+                    return self._request_locked(
+                        method,
+                        path,
+                        body,
+                        auth=auth,
+                        _retried_auth=True,
+                        timeout_ms=timeout_ms,
+                        max_retries=max_retries,
                     )
 
                 text = res.text or ""
@@ -957,7 +1015,11 @@ class CarrotClient:
             except Exception as err:
                 wrapped = _wrap_net_error(err, url)
                 last_err = wrapped
-                if _FATAL_NET.match(wrapped.code or "") or attempt >= self.max_retries:
+                if _FATAL_NET.match(wrapped.code or "") or attempt >= effective_retries:
+                    raise wrapped from err
+                # Таймаут чтения: для неидемпотентных POST повтор опасен —
+                # не ретраим ETIMEDOUT (сервер мог уже выполнить операцию).
+                if (wrapped.code or "") == "ETIMEDOUT":
                     raise wrapped from err
                 time.sleep(1.0 * (2**attempt))
 
@@ -966,21 +1028,26 @@ class CarrotClient:
 
     def authenticate(self) -> str:
         """Получить JWT (POST /auth/generate); при 404 переключить суффикс /api."""
+        with self._api_lock:
+            return self._authenticate_under_lock()
+
+    def _authenticate_under_lock(self) -> str:
+        """JWT login. Уже под self._api_lock (из authenticate / _ensure_token)."""
         if not self.login or not self.password:
             raise ValueError("login/password обязательны")
         try:
-            return self._authenticate_once()
+            return self._authenticate_once_locked()
         except CarrotError as err:
             if err.http_status == 404 and re.search(r"/api$", self.base_url, re.I):
                 self.base_url = re.sub(r"/api$", "", self.base_url, flags=re.I)
-                return self._authenticate_once()
+                return self._authenticate_once_locked()
             if err.http_status == 404 and not re.search(r"/api$", self.base_url, re.I):
                 self.base_url = self.base_url + "/api"
-                return self._authenticate_once()
+                return self._authenticate_once_locked()
             raise
 
-    def _authenticate_once(self) -> str:
-        data = self._request(
+    def _authenticate_once_locked(self) -> str:
+        data = self._request_locked(
             "POST",
             "/auth/generate",
             {
@@ -1299,12 +1366,18 @@ class CarrotClient:
 
     listNormalizedTemplates = list_normalized_templates
 
-    def create_events(self, entries: list[dict[str, Any]]) -> dict[str, Any]:
+    def create_events(
+        self,
+        entries: list[dict[str, Any]],
+        *,
+        auto_name: bool = True,
+    ) -> dict[str, Any]:
         """
         Создать одно или несколько событий (REST POST /events, затем WS CreateEventInDB).
 
         entries: [{ name, templateId, contentId?, templateTypeInt?, state?, comment?, variables? }]
         Пустой ExternalId подменяется на Id. Проверок уникальности имени/ExternalId нет.
+        Если auto_name и имя пустое — берётся значение первой переменной.
         """
         lst = list(entries) if isinstance(entries, list) else []
         if not lst:
@@ -1315,13 +1388,12 @@ class CarrotClient:
             e = e or {}
             if not e.get("templateId"):
                 raise ValueError(f"Событие #{i + 1}: нужен templateId")
-            if not e.get("name") or not str(e["name"]).strip():
-                raise ValueError(f"Событие #{i + 1}: нужно имя")
 
             content_id = e.get("contentId") or ""
             template_type_int = e.get("templateTypeInt")
             variables = list(e["variables"]) if isinstance(e.get("variables"), list) else []
             state = e.get("state") or "IN"
+            name = str(e.get("name") or "").strip()
 
             if not content_id or template_type_int is None or not variables:
                 tpl = self.get_normalized_template(e["templateId"])
@@ -1355,9 +1427,21 @@ class CarrotClient:
                         merged.append(nv)
                     variables = merged
 
+            if not name and auto_name:
+                name = name_from_first_variable(variables)
+            if not name:
+                raise ValueError(
+                    f"Событие #{i + 1}: нужно имя"
+                    + (
+                        " или значение первой переменной"
+                        if auto_name
+                        else ""
+                    )
+                )
+
             if not content_id:
                 raise ValueError(
-                    f"Событие «{str(e['name']).strip()}»: "
+                    f"Событие «{name}»: "
                     "у шаблона нет ContentId — создание невозможно"
                 )
 
@@ -1371,7 +1455,7 @@ class CarrotClient:
             prepared.append(
                 {
                     "id": eid,
-                    "name": str(e["name"]).strip(),
+                    "name": name,
                     "externalId": external_id,
                     "templateId": e["templateId"],
                     "contentId": content_id,
@@ -1456,54 +1540,79 @@ class CarrotClient:
         opts = opts or {}
         deep = opts.get("deep", True) is not False
         preferred_root = opts.get("folderId") or MEDIA_ROOT_FOLDER_ID
+        no_cache = bool(opts.get("noCache") or opts.get("no_cache"))
+        use_cache = (
+            deep
+            and not no_cache
+            and preferred_root == MEDIA_ROOT_FOLDER_ID
+            and self._media_assets_cache_ttl_s > 0
+        )
+        if use_cache:
+            with self._media_cache_lock:
+                age = time.time() - self._media_assets_cache_at
+                if (
+                    self._media_assets_cache is not None
+                    and age < self._media_assets_cache_ttl_s
+                ):
+                    return list(self._media_assets_cache)
 
         via_rest = self.list_media_assets_via_rest_folder(
             {"folderId": preferred_root, "deep": deep}
         )
+        assets: Optional[list[dict[str, Any]]] = None
         if via_rest["assets"]:
             print(
                 f"[media] REST /assets/folder: {len(via_rest['assets'])} "
                 f"активов, папок={via_rest['foldersOk']}"
             )
-            return via_rest["assets"]
+            assets = via_rest["assets"]
+        else:
+            rest_paths = ["/media", "/assets", "/mediaAssets", "/media/assets"]
+            for path in rest_paths:
+                r = self._try_once("GET", path)
+                if r["ok"]:
+                    flat = self._flatten_media(r["data"])
+                    if flat:
+                        print(f"[media] REST {path}: {len(flat)}")
+                        assets = flat
+                        break
 
-        rest_paths = ["/media", "/assets", "/mediaAssets", "/media/assets"]
-        for path in rest_paths:
-            r = self._try_once("GET", path)
-            if r["ok"]:
-                flat = self._flatten_media(r["data"])
-                if flat:
-                    print(f"[media] REST {path}: {len(flat)}")
-                    return flat
+        if assets is None:
+            try:
+                via_ws = self.list_media_assets_via_websocket(
+                    {"folderId": preferred_root, "deep": deep}
+                )
+                if via_ws:
+                    print(f"[media] WS 24712: {len(via_ws)} активов")
+                    assets = via_ws
+            except Exception as err:
+                hint = via_rest.get("lastErr") or str(err) or "пустой ответ"
+                raise CarrotError(
+                    "Медиа не загрузились. REST /assets/folder пуст"
+                    + ("" if via_rest.get("foldersOk") else " (папки не открылись)")
+                    + f"; WS: {hint}",
+                    code=getattr(err, "code", None),
+                    url=getattr(err, "url", None),
+                ) from err
 
-        try:
-            via_ws = self.list_media_assets_via_websocket(
-                {"folderId": preferred_root, "deep": deep}
-            )
-            if via_ws:
-                print(f"[media] WS 24712: {len(via_ws)} активов")
-                return via_ws
-        except Exception as err:
-            hint = via_rest.get("lastErr") or str(err) or "пустой ответ"
+        if assets is None:
             raise CarrotError(
-                "Медиа не загрузились. REST /assets/folder пуст"
-                + ("" if via_rest.get("foldersOk") else " (папки не открылись)")
-                + f"; WS: {hint}",
-                code=getattr(err, "code", None),
-                url=getattr(err, "url", None),
-            ) from err
-
-        raise CarrotError(
-            "Медиа не найдены: REST /assets/folder/{id} вернул 0 активов"
-            + (
-                f" (папок просмотрено: {via_rest['foldersOk']})"
-                if via_rest.get("foldersOk")
-                else " (не удалось открыть ни одну папку"
-                + (f": {via_rest['lastErr']}" if via_rest.get("lastErr") else "")
-                + ")"
+                "Медиа не найдены: REST /assets/folder/{id} вернул 0 активов"
+                + (
+                    f" (папок просмотрено: {via_rest['foldersOk']})"
+                    if via_rest.get("foldersOk")
+                    else " (не удалось открыть ни одну папку"
+                    + (f": {via_rest['lastErr']}" if via_rest.get("lastErr") else "")
+                    + ")"
+                )
+                + ". Проверь GUID корня и доступ к REST/WS 24712."
             )
-            + ". Проверь GUID корня и доступ к REST/WS 24712."
-        )
+
+        if use_cache:
+            with self._media_cache_lock:
+                self._media_assets_cache = list(assets)
+                self._media_assets_cache_at = time.time()
+        return assets
 
     listMediaAssets = list_media_assets
 
@@ -1525,6 +1634,9 @@ class CarrotClient:
 
         Возвращает нормализованный ассет {id, name, assetTypeInt/type, …}.
         Значение медиа-переменной события: ``{id};{name}``.
+
+        Потокобезопасно: TUS create/PATCH на отдельной Session, общий lock
+        только на токен / MessageId / register.
         """
         data = bytes(file_bytes or b"")
         name = (filename or "").strip()
@@ -1533,133 +1645,203 @@ class CarrotClient:
         if not data:
             raise ValueError("Пустой файл")
 
-        self._ensure_token()
         timeout_s = max(self.timeout_ms / 1000.0, 60.0)
-
-        # --- 1. create upload ---
         meta = "filename " + base64.b64encode(name.encode("utf-8")).decode("ascii")
-        create_headers = {
-            "Authorization": "Bearer " + (self.token or ""),
-            "Tus-Resumable": "1.0.0",
-            "Upload-Length": str(len(data)),
-            "Upload-Metadata": meta,
-        }
-        create_url = self.base_url + "/assets/upload" + self._envelope_query()
-        try:
-            res = self._session.post(
-                create_url, headers=create_headers, data=b"", timeout=timeout_s
-            )
-        except Exception as err:
-            raise _wrap_net_error(err, create_url) from err
 
-        if res.status_code == 401:
-            self.token = None
-            self._ensure_token()
-            create_headers["Authorization"] = "Bearer " + (self.token or "")
+        with requests.Session() as http:
+            with self._api_lock:
+                self._ensure_token()
+                token = self.token or ""
+                create_url = self.base_url + "/assets/upload" + self._envelope_query()
+
+            create_headers = {
+                "Authorization": "Bearer " + token,
+                "Tus-Resumable": "1.0.0",
+                "Upload-Length": str(len(data)),
+                "Upload-Metadata": meta,
+            }
             try:
-                res = self._session.post(
+                res = http.post(
                     create_url, headers=create_headers, data=b"", timeout=timeout_s
                 )
             except Exception as err:
                 raise _wrap_net_error(err, create_url) from err
 
-        if res.status_code not in (200, 201):
-            raise CarrotError(
-                f"TUS create failed HTTP {res.status_code}: "
-                f"{(res.text or '')[:220]}",
-                http_status=res.status_code,
-                url=create_url,
-            )
-
-        location = res.headers.get("Location") or res.headers.get("location") or ""
-        file_id = location.rstrip("/").split("/")[-1] if location else ""
-        if not file_id:
-            # иногда fileId приходит в теле
-            try:
-                body = res.json()
-                file_id = (
-                    (body.get("data") or {}).get("fileId")
-                    or body.get("fileId")
-                    or ""
-                )
-            except Exception:
-                file_id = ""
-        if not file_id:
-            raise CarrotError(
-                "TUS create: нет fileId в Location",
-                http_status=res.status_code,
-                url=create_url,
-            )
-
-        # --- 2. PATCH chunks ---
-        offset = 0
-        while offset < len(data):
-            chunk = data[offset : offset + chunk_size]
-            patch_headers = {
-                "Authorization": "Bearer " + (self.token or ""),
-                "Tus-Resumable": "1.0.0",
-                "Upload-Offset": str(offset),
-                "Content-Type": "application/offset+octet-stream",
-                "Content-Length": str(len(chunk)),
-            }
-            patch_url = (
-                self.base_url
-                + "/assets/upload/"
-                + quote(str(file_id), safe="")
-                + self._envelope_query()
-            )
-            try:
-                pres = self._session.patch(
-                    patch_url, headers=patch_headers, data=chunk, timeout=timeout_s
-                )
-            except Exception as err:
-                raise _wrap_net_error(err, patch_url) from err
-
-            if pres.status_code == 401:
-                self.token = None
-                self._ensure_token()
-                patch_headers["Authorization"] = "Bearer " + (self.token or "")
+            if res.status_code == 401:
+                with self._api_lock:
+                    self.token = None
+                    self._ensure_token()
+                    token = self.token or ""
+                    create_url = (
+                        self.base_url + "/assets/upload" + self._envelope_query()
+                    )
+                create_headers["Authorization"] = "Bearer " + token
                 try:
-                    pres = self._session.patch(
+                    res = http.post(
+                        create_url, headers=create_headers, data=b"", timeout=timeout_s
+                    )
+                except Exception as err:
+                    raise _wrap_net_error(err, create_url) from err
+
+            if res.status_code not in (200, 201):
+                raise CarrotError(
+                    f"TUS create failed HTTP {res.status_code}: "
+                    f"{(res.text or '')[:220]}",
+                    http_status=res.status_code,
+                    url=create_url,
+                )
+
+            location = res.headers.get("Location") or res.headers.get("location") or ""
+            file_id = location.rstrip("/").split("/")[-1] if location else ""
+            if not file_id:
+                try:
+                    body = res.json()
+                    file_id = (
+                        (body.get("data") or {}).get("fileId")
+                        or body.get("fileId")
+                        or ""
+                    )
+                except Exception:
+                    file_id = ""
+            if not file_id:
+                raise CarrotError(
+                    "TUS create: нет fileId в Location",
+                    http_status=res.status_code,
+                    url=create_url,
+                )
+            if "?" in str(file_id):
+                file_id = str(file_id).split("?", 1)[0]
+
+            offset = 0
+            while offset < len(data):
+                chunk = data[offset : offset + chunk_size]
+                with self._api_lock:
+                    token = self.token or ""
+                    patch_url = (
+                        self.base_url
+                        + "/assets/upload/"
+                        + quote(str(file_id), safe="")
+                        + self._envelope_query()
+                    )
+                patch_headers = {
+                    "Authorization": "Bearer " + token,
+                    "Tus-Resumable": "1.0.0",
+                    "Upload-Offset": str(offset),
+                    "Content-Type": "application/offset+octet-stream",
+                    "Content-Length": str(len(chunk)),
+                }
+                try:
+                    pres = http.patch(
                         patch_url, headers=patch_headers, data=chunk, timeout=timeout_s
                     )
                 except Exception as err:
                     raise _wrap_net_error(err, patch_url) from err
 
-            if pres.status_code not in (200, 204):
-                raise CarrotError(
-                    f"TUS patch failed HTTP {pres.status_code} @offset={offset}: "
-                    f"{(pres.text or '')[:220]}",
-                    http_status=pres.status_code,
-                    url=patch_url,
+                if pres.status_code == 401:
+                    with self._api_lock:
+                        self.token = None
+                        self._ensure_token()
+                        token = self.token or ""
+                        patch_url = (
+                            self.base_url
+                            + "/assets/upload/"
+                            + quote(str(file_id), safe="")
+                            + self._envelope_query()
+                        )
+                    patch_headers["Authorization"] = "Bearer " + token
+                    try:
+                        pres = http.patch(
+                            patch_url,
+                            headers=patch_headers,
+                            data=chunk,
+                            timeout=timeout_s,
+                        )
+                    except Exception as err:
+                        raise _wrap_net_error(err, patch_url) from err
+
+                if pres.status_code not in (200, 204):
+                    raise CarrotError(
+                        f"TUS patch failed HTTP {pres.status_code} @offset={offset}: "
+                        f"{(pres.text or '')[:220]}",
+                        http_status=pres.status_code,
+                        url=patch_url,
+                    )
+
+                off_hdr = pres.headers.get("Upload-Offset") or pres.headers.get(
+                    "upload-offset"
                 )
+                if off_hdr is not None and str(off_hdr).strip() != "":
+                    try:
+                        offset = int(off_hdr)
+                        continue
+                    except ValueError:
+                        pass
+                offset += len(chunk)
 
-            off_hdr = pres.headers.get("Upload-Offset") or pres.headers.get(
-                "upload-offset"
-            )
-            if off_hdr is not None and str(off_hdr).strip() != "":
-                try:
-                    offset = int(off_hdr)
-                    continue
-                except ValueError:
-                    pass
-            offset += len(chunk)
-
-        # --- 3. register as Asset ---
-        # Тело — JSON-строка GUID папки; пусто → Guid.Empty (корень).
-        folder = (folder_id or "").strip()
-        # По умолчанию — исторический корень медиабиблиотеки (как в §6).
-        if not folder:
-            folder = MEDIA_ROOT_FOLDER_ID
-
-        asset_raw = self._request(
-            "POST",
-            "/assets/register/" + quote(str(file_id), safe=""),
-            folder,  # requests json=str → "guid"
-        )
-        return self._normalize_asset(asset_raw, fallback_name=name)
+            folder = (folder_id or "").strip() or MEDIA_ROOT_FOLDER_ID
+            # Register на больших файлах: длинный таймаут, без ретраев.
+            size_mb = max(0, len(data) - 10 * 1024 * 1024) / (1024 * 1024)
+            register_timeout_ms = int(max(120_000, 120_000 + size_mb * 1000))
+            try:
+                asset_raw = self._request(
+                    "POST",
+                    "/assets/register/" + quote(str(file_id), safe=""),
+                    folder,
+                    timeout_ms=register_timeout_ms,
+                    max_retries=0,
+                )
+                asset = self._normalize_asset(asset_raw, fallback_name=name)
+            except CarrotError as err:
+                if self._register_may_have_succeeded(err):
+                    found = self._find_asset_by_name(name, folder)
+                    if found:
+                        asset = self._normalize_asset(found, fallback_name=name)
+                    else:
+                        raise
+                else:
+                    raise
+            self.invalidate_media_cache()
+            return asset
 
     uploadAsset = upload_asset
+
+    def _register_may_have_succeeded(self, err: CarrotError) -> bool:
+        """Таймаут или «нет во temporary» — возможен уже успешный register на сервере."""
+        if (err.code or "") == "ETIMEDOUT":
+            return True
+        msg = (str(err) or "").lower()
+        if err.error_code == 2 and (
+            "temporary storage" in msg or "file not found" in msg
+        ):
+            return True
+        if "temporary storage" in msg:
+            return True
+        return False
+
+    def _find_asset_by_name(
+        self, filename: str, folder_id: str
+    ) -> Optional[dict[str, Any]]:
+        """Искать ассет по имени в папке (после неоднозначного register)."""
+        want = (filename or "").strip().lower()
+        if not want:
+            return None
+        try:
+            via = self.list_media_assets_via_rest_folder(
+                {"folderId": folder_id or MEDIA_ROOT_FOLDER_ID, "deep": False}
+            )
+        except Exception:
+            return None
+        for raw in via.get("assets") or []:
+            if not isinstance(raw, dict):
+                continue
+            n = (
+                raw.get("name")
+                or raw.get("Name")
+                or ""
+            )
+            if str(n).strip().lower() == want:
+                return raw
+        return None
 
     def _normalize_asset(
         self, raw: Any, fallback_name: str = ""
@@ -2256,11 +2438,29 @@ def _looks_like_header(row: list[str]) -> bool:
     return first in HEADER_NAME_ALIASES
 
 
+def name_from_first_variable(variables: Optional[list[Any]]) -> str:
+    """Имя ивента из значения первой переменной (для Media — имя файла)."""
+    if not variables:
+        return ""
+    first = variables[0] if isinstance(variables[0], dict) else None
+    if not first:
+        return ""
+    raw = "" if first.get("value") is None else str(first.get("value")).strip()
+    if not raw:
+        return ""
+    if is_media_type(first.get("type")):
+        _aid, aname = _parse_media_value(raw)
+        label = aname or _aid or raw
+        return Path(str(label)).name
+    return raw
+
+
 def rows_to_event_drafts(
     rows: list[list[str]],
     template: dict[str, Any],
     *,
     has_header: Optional[bool] = None,
+    auto_name: bool = True,
 ) -> dict[str, Any]:
     """
     Преобразовать строки Excel в черновики ивентов.
@@ -2271,6 +2471,7 @@ def rows_to_event_drafts(
       N — External id
 
     Для Media-переменных в середине ожидается имя файла (не id;name).
+    Если auto_name и имя пустое — берётся значение первой переменной (в т.ч. Media).
     """
     if not rows:
         raise ValueError("Нет строк для импорта")
@@ -2299,13 +2500,9 @@ def rows_to_event_drafts(
             )
             continue
 
-        name = row[0]
+        name = (row[0] or "").strip()
         external_id = row[-1]
         mid = row[1:-1]
-
-        if not name:
-            skipped.append({"row": excel_row, "reason": "пустое имя"})
-            continue
 
         variables: list[dict[str, Any]] = []
         for vi, meta in enumerate(var_meta):
@@ -2319,6 +2516,21 @@ def rows_to_event_drafts(
                     else (meta.get("defaultValue") or "")
                 )
             variables.append(nv)
+
+        if not name and auto_name:
+            name = name_from_first_variable(variables)
+        if not name:
+            skipped.append(
+                {
+                    "row": excel_row,
+                    "reason": (
+                        "пустое имя и пустая первая переменная"
+                        if auto_name
+                        else "пустое имя"
+                    ),
+                }
+            )
+            continue
 
         drafts.append(
             {
@@ -2347,7 +2559,9 @@ def rows_to_event_drafts(
 
 
 def _norm_name(name: str) -> str:
-    return os.path.basename(str(name or "").strip()).lower()
+    base = os.path.basename(str(name or "").strip())
+    base = base.strip().strip("\"'«»").strip()
+    return base.lower()
 
 
 def _parse_media_value(raw: str) -> tuple[str, str]:
@@ -2377,7 +2591,7 @@ def index_assets_by_name(assets: list[dict[str, Any]]) -> dict[str, dict[str, An
 
 def find_local_media_file(folder: str, filename: str) -> Optional[Path]:
     """
-    Найти файл в папке по имени (с расширением или без).
+    Найти файл в папке (и во всех вложенных) по имени с расширением или без.
 
     Только внутри folder (path traversal блокируется).
     """
@@ -2390,21 +2604,27 @@ def find_local_media_file(folder: str, filename: str) -> Optional[Path]:
     if not wanted or wanted in (".", ".."):
         return None
 
-    candidate = (root / wanted).resolve()
-    try:
-        candidate.relative_to(root_resolved)
-    except ValueError as err:
-        raise ValueError("Имя файла выходит за пределы папки медиа") from err
+    def _inside(path: Path) -> bool:
+        try:
+            path.resolve().relative_to(root_resolved)
+            return True
+        except ValueError:
+            return False
 
-    if candidate.is_file():
-        return candidate
+    # Точное имя: сначала в корне, затем рекурсивно.
+    direct = (root / wanted).resolve()
+    if direct.is_file() and _inside(direct):
+        return direct
+    for path in sorted(root_resolved.rglob(wanted)):
+        if path.is_file() and _inside(path):
+            return path
 
-    # без расширения — первое совпадение по stem
+    # Без расширения — первое совпадение по stem (включая вложенные).
     stem = Path(wanted).stem.lower()
     if not stem:
         return None
-    for path in sorted(root_resolved.iterdir()):
-        if path.is_file() and path.stem.lower() == stem:
+    for path in sorted(root_resolved.rglob("*")):
+        if path.is_file() and path.stem.lower() == stem and _inside(path):
             return path
     return None
 
@@ -2414,21 +2634,37 @@ def resolve_media_in_drafts(
     *,
     assets: list[dict[str, Any]],
     media_folder: Optional[str] = None,
+    media_files: Optional[dict[str, bytes]] = None,
     upload_file: Optional[Callable[[bytes, str], dict[str, Any]]] = None,
+    upload_workers: int = 4,
 ) -> dict[str, Any]:
     """
     Для Media-переменных: значение из Excel = имя файла.
 
     1) если уже «guid;name» — оставить
     2) если ассет с таким именем есть в Carrot — подставить id;name
-    3) иначе искать в media_folder и upload_file(...)
+    3) иначе взять из media_files (имя → bytes) или media_folder и upload_file(...)
+
+    Уникальные файлы заливаются параллельно (upload_workers), если
+    upload_file потокобезопасен (CarrotClient.upload_asset — да).
     """
     index = index_assets_by_name(assets)
     resolved = 0
-    uploaded = 0
     reused = 0
     missing: list[dict[str, Any]] = []
     folder = (media_folder or "").strip() or None
+    files_by_name: dict[str, bytes] = {}
+    if media_files:
+        for fname, blob in media_files.items():
+            if not fname or blob is None:
+                continue
+            files_by_name[_norm_name(Path(str(fname)).name)] = bytes(blob)
+            stem = _norm_name(Path(str(fname)).stem)
+            files_by_name.setdefault(stem, bytes(blob))
+
+    # key -> job; waiting — переменные, ждущие этого upload
+    pending: dict[str, dict[str, Any]] = {}
+    waiting: list[tuple[str, dict[str, Any], Any, str]] = []
 
     for draft in drafts:
         excel_row = draft.get("_excelRow")
@@ -2441,7 +2677,6 @@ def resolve_media_in_drafts(
 
             aid, aname = _parse_media_value(raw)
             if aid and _GUID_RE.match(aid):
-                # уже готовое значение Carrot
                 if aname:
                     var["value"] = f"{aid};{aname}"
                 else:
@@ -2458,17 +2693,6 @@ def resolve_media_in_drafts(
                 reused += 1
                 continue
 
-            if not folder:
-                missing.append(
-                    {
-                        "row": excel_row,
-                        "variable": var.get("name"),
-                        "file": filename,
-                        "reason": "медиа нет в Carrot; укажи папку в Настройках",
-                    }
-                )
-                continue
-
             if upload_file is None:
                 missing.append(
                     {
@@ -2480,48 +2704,114 @@ def resolve_media_in_drafts(
                 )
                 continue
 
-            try:
-                local = find_local_media_file(folder, filename)
-            except ValueError as err:
-                missing.append(
-                    {
-                        "row": excel_row,
-                        "variable": var.get("name"),
-                        "file": filename,
-                        "reason": str(err),
-                    }
-                )
-                continue
+            upload_name = Path(filename).name
+            blob = files_by_name.get(key) or files_by_name.get(
+                _norm_name(Path(key).stem)
+            )
+            local_path: Optional[Path] = None
+            if blob is None:
+                if not folder:
+                    missing.append(
+                        {
+                            "row": excel_row,
+                            "variable": var.get("name"),
+                            "file": filename,
+                            "reason": "медиа нет в Carrot; выбери папку в Настройках",
+                        }
+                    )
+                    continue
+                try:
+                    local_path = find_local_media_file(folder, filename)
+                except ValueError as err:
+                    missing.append(
+                        {
+                            "row": excel_row,
+                            "variable": var.get("name"),
+                            "file": filename,
+                            "reason": str(err),
+                        }
+                    )
+                    continue
+                if local_path is None:
+                    missing.append(
+                        {
+                            "row": excel_row,
+                            "variable": var.get("name"),
+                            "file": filename,
+                            "reason": f"файл не найден в папке {folder}",
+                        }
+                    )
+                    continue
+                upload_name = local_path.name
 
-            if local is None:
-                missing.append(
-                    {
-                        "row": excel_row,
-                        "variable": var.get("name"),
-                        "file": filename,
-                        "reason": f"файл не найден в папке {folder}",
-                    }
-                )
-                continue
+            if key not in pending:
+                pending[key] = {
+                    "blob": blob,
+                    "path": str(local_path) if local_path is not None else None,
+                    "upload_name": upload_name,
+                }
+            waiting.append((key, var, excel_row, filename))
 
-            asset = upload_file(local.read_bytes(), local.name)
-            index[_norm_name(asset.get("name") or local.name)] = asset
-            stem = Path(_norm_name(asset.get("name") or local.name)).stem
-            if stem:
-                index.setdefault(stem, asset)
-            var["value"] = f"{asset['id']};{asset.get('name') or local.name}"
-            resolved += 1
-            uploaded += 1
+    uploaded_by_key: dict[str, dict[str, Any]] = {}
+    upload_errors: dict[str, str] = {}
+
+    def _do_upload(job_key: str, job: dict[str, Any]) -> tuple[str, Optional[dict[str, Any]], str]:
+        try:
+            data = job.get("blob")
+            if data is None and job.get("path"):
+                data = Path(job["path"]).read_bytes()
+            if not data:
+                return job_key, None, "пустой файл для загрузки"
+            assert upload_file is not None
+            asset = upload_file(bytes(data), str(job["upload_name"]))
+            return job_key, asset, ""
+        except Exception as err:  # noqa: BLE001
+            return job_key, None, str(err) or "ошибка загрузки"
+
+    if pending and upload_file is not None:
+        workers = min(max(1, int(upload_workers) or 1), len(pending))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futs = [
+                pool.submit(_do_upload, job_key, job)
+                for job_key, job in pending.items()
+            ]
+            for fut in as_completed(futs):
+                job_key, asset, err_msg = fut.result()
+                if asset is None or not asset.get("id"):
+                    upload_errors[job_key] = err_msg or "не удалось загрузить"
+                    continue
+                uploaded_by_key[job_key] = asset
+                aname = asset.get("name") or pending[job_key]["upload_name"]
+                index[_norm_name(aname)] = asset
+                stem = Path(_norm_name(aname)).stem
+                if stem:
+                    index.setdefault(stem, asset)
+
+    for job_key, var, excel_row, filename in waiting:
+        asset = uploaded_by_key.get(job_key)
+        if not asset or not asset.get("id"):
+            missing.append(
+                {
+                    "row": excel_row,
+                    "variable": var.get("name"),
+                    "file": filename,
+                    "reason": upload_errors.get(job_key) or "не удалось загрузить",
+                }
+            )
+            continue
+        name = asset.get("name") or pending.get(job_key, {}).get("upload_name") or filename
+        var["value"] = f"{asset['id']};{name}"
+        resolved += 1
 
     return {
         "resolved": resolved,
-        "uploaded": uploaded,
+        "uploaded": len(uploaded_by_key),
         "reused": reused,
         "missing": missing,
-        # совместимость со старым UI
         "warnings": missing,
         "ok": not missing,
     }
+
 
 __all__ = [
     "CarrotClient",
@@ -2532,4 +2822,6 @@ __all__ = [
     "read_excel_rows",
     "rows_to_event_drafts",
     "resolve_media_in_drafts",
+    "name_from_first_variable",
+    "is_media_type",
 ]
