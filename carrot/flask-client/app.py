@@ -26,7 +26,7 @@ from flask import Flask, jsonify, request, send_from_directory
 from carrot_client import (
     CarrotClient,
     CarrotError,
-    list_missing_local_media_names,
+    is_media_type,
     read_excel_rows,
     resolve_media_in_drafts,
     rows_to_event_drafts,
@@ -547,6 +547,10 @@ def api_templates():
                     "defaultInState": t.get("defaultInState"),
                     "states": t.get("states"),
                     "variableCount": len(t.get("variables") or []),
+                    "hasMediaVariables": any(
+                        is_media_type(v.get("type"))
+                        for v in (t.get("variables") or [])
+                    ),
                 }
                 for t in templates
             ],
@@ -635,8 +639,6 @@ def api_events_import_excel():
       mediaFolder — опц. локальная папка сервера для Media-файлов из Excel
       mediaFiles — опц. файлы из выбранной в браузере папки
       hasHeader — optional 0/1 (авто: если 1-я ячейка похожа на «имя»/name)
-      planOnly — optional 0/1: только список медиа, которые нужно прислать
-                 с клиента (без создания ивентов)
 
     Столбцы: 1 = имя, последний = External id, между ними = переменные
     шаблона в порядке template.variables. Для Media — имя файла.
@@ -704,19 +706,6 @@ def api_events_import_excel():
             "on",
         )
 
-    plan_only_raw = (
-        request.form.get("planOnly")
-        or request.form.get("plan_only")
-        or request.args.get("planOnly")
-    )
-    plan_only = str(plan_only_raw or "").strip().lower() in (
-        "1",
-        "true",
-        "yes",
-        "y",
-        "on",
-    )
-
     raw = upload.read()
     try:
         rows = read_excel_rows(raw)
@@ -739,33 +728,6 @@ def api_events_import_excel():
                 "variableNames": parsed["variableNames"],
             }
         ), 400
-
-    if plan_only:
-        media_plan: dict[str, Any] = {
-            "needed": [],
-            "inCarrot": [],
-            "referenced": [],
-        }
-        if parsed.get("mediaVarIndexes"):
-            try:
-                assets = client.list_media_assets({"deep": True}) or []
-            except Exception as err:  # noqa: BLE001
-                log.warning("[excel] plan: список медиа недоступен: %s", err)
-                assets = []
-            media_plan = list_missing_local_media_names(drafts, assets=assets)
-        return jsonify(
-            {
-                "ok": True,
-                "planOnly": True,
-                "draftCount": len(drafts),
-                "skipped": parsed["skipped"],
-                "headerSkipped": parsed["headerSkipped"],
-                "variableNames": parsed["variableNames"],
-                "templateId": template_id,
-                "templateName": template.get("name") or "",
-                "media": media_plan,
-            }
-        )
 
     media_report: dict[str, Any] = {
         "resolved": 0,
@@ -792,7 +754,6 @@ def api_events_import_excel():
         )
         missing = media_report.get("missing") or []
         if missing:
-            # Без найденных медиа импорт не выполняем — ивенты не создаём.
             names = sorted(
                 {
                     str(m.get("file") or "").strip()
@@ -827,7 +788,6 @@ def api_events_import_excel():
                 }
             ), 400
 
-    # служебное поле _excelRow не уходит в Carrot
     events = []
     for d in drafts:
         ev = {k: v for k, v in d.items() if not k.startswith("_")}
