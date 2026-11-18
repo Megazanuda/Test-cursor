@@ -245,10 +245,10 @@ function humanizeError(err) {
     title = 'Проблема с медиа';
     message = raw;
     hint = 'Папка в Настройках и имена в Excel.';
-  } else if (/excel|openpyxl|xlsx/.test(lower)) {
+  } else if (/excel|openpyxl|xlrd|xlsx|\.xls/.test(lower)) {
     title = 'Ошибка Excel';
     message = raw;
-    hint = 'Нужен .xlsx: имя | переменные | External id.';
+    hint = 'Подходят .xlsx, .xlsm, .xltx и .xls. Колонки: имя | переменные | External id.';
   }
 
   return { title: title, message: message, detail: raw === message ? '' : raw, hint: hint };
@@ -2515,39 +2515,16 @@ function pickMediaFolderViaInput() {
     );
     return;
   }
-  el.mediaFolderFallbackInput.value = '';
-  el.mediaFolderFallbackInput.click();
+  const input = el.mediaFolderFallbackInput;
+  // Без accept Windows/Chrome показывает в папке все файлы, не фильтр media.
+  input.removeAttribute('accept');
+  input.value = '';
+  input.click();
 }
 
 async function pickMediaFolder() {
-  const secureOk = window.isSecureContext !== false;
-  const hasPicker = typeof window.showDirectoryPicker === 'function';
-  // По http://LAN-IP showDirectoryPicker отсутствует или бесполезен.
-  if (hasPicker && secureOk) {
-    try {
-      const handle = await window.showDirectoryPicker({ mode: 'read' });
-      mediaDirHandle = handle;
-      mediaPickedFiles = [];
-      const label = handle.name || 'выбранная папка';
-      setMediaFolderMode('handle');
-      setMediaFolderLabel(label);
-      try { await saveMediaDirHandle(handle); }
-      catch (e) { /* ignore persist errors */ }
-      var scanned = 0;
-      try { scanned = (await collectMediaFilesFromDir(handle)).length; }
-      catch (e) { scanned = 0; }
-      toast(
-        'Папка медиа: ' + label +
-          (scanned ? (' · файлов (с вложенными): ' + scanned) : '') +
-          ' · запомнена',
-        'ok'
-      );
-      return;
-    } catch (err) {
-      if (err && err.name === 'AbortError') return;
-      toast('Directory picker недоступен, открываю обычный выбор папки…', 'err');
-    }
-  }
+  // Всегда webkitdirectory: в диалоге видны файлы внутри папки.
+  // showDirectoryPicker показывает только каталоги — файлы там не видны.
   pickMediaFolderViaInput();
 }
 

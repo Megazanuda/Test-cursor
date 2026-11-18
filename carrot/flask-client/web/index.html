@@ -81,6 +81,7 @@
                   <button type="button" class="btn ghost sm" id="mediaFolderPickBtn">Выбрать папку…</button>
                   <button type="button" class="btn ghost sm" id="mediaFolderClearBtn">Сбросить</button>
                 </div>
+                <!-- Без accept: в диалоге папки видны все файлы, не только media. -->
                 <input type="file" id="mediaFolderFallbackInput" hidden
                   webkitdirectory directory multiple />
               </div>
@@ -226,7 +227,7 @@
         <button type="button" class="btn primary" id="excelPickFileBtn" disabled>Выбрать Excel…</button>
       </div>
       <input type="file" id="excelImportInput" hidden
-        accept=".xlsx,.xlsm,.xltx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" />
+        accept=".xlsx,.xlsm,.xltx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" />
     </form>
   </dialog>
 
