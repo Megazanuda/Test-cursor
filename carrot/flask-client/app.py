@@ -516,7 +516,7 @@ def api_events_import_excel():
     Создать ивенты из Excel по выбранному шаблону.
 
     multipart/form-data:
-      file — .xlsx/.xlsm
+      file — .xlsx / .xlsm / .xltx / .xls
       templateId — GUID шаблона
       mediaFolder — опц. локальная папка сервера для Media-файлов из Excel
       mediaFiles — опц. файлы из выбранной в браузере папки

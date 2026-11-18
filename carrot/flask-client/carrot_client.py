@@ -18,7 +18,9 @@ from urllib.parse import quote, urlencode, urlparse
 
 import requests
 import websocket
+import xlrd
 from openpyxl import load_workbook
+from xlrd.biffh import XLRDError
 
 
 # ===== errors =====
@@ -2359,44 +2361,99 @@ def is_media_type(type_name: Any) -> bool:
     return str(type_name or "").strip().lower() == "media"
 
 
-def read_excel_rows(file_bytes: bytes) -> list[list[str]]:
-    """
-    Прочитать первый лист .xlsx/.xlsm как матрицу строк.
+def _trim_excel_rows(rows: list[list[str]]) -> list[list[str]]:
+    """Убрать пустые хвосты строк и полностью пустые строки."""
+    out: list[list[str]] = []
+    for cells in rows:
+        while cells and cells[-1] == "":
+            cells.pop()
+        if any(cells):
+            out.append(cells)
+    return out
 
-    Пустые строки в конце отбрасываются. Ячейки → строки.
-    """
-    if not file_bytes:
-        raise ValueError("Пустой Excel-файл")
 
-    try:
-        wb = load_workbook(
-            filename=io.BytesIO(file_bytes),
-            read_only=True,
-            data_only=True,
-        )
-    except Exception as err:  # noqa: BLE001
-        raise ValueError(
-            "Не удалось открыть Excel. Нужен .xlsx/.xlsm (не старый .xls)."
-        ) from err
-
+def _read_excel_rows_openpyxl(file_bytes: bytes) -> list[list[str]]:
+    """Первый лист OOXML (.xlsx / .xlsm / .xltx)."""
+    wb = load_workbook(
+        filename=io.BytesIO(file_bytes),
+        read_only=True,
+        data_only=True,
+    )
     try:
         ws = wb.active
         if ws is None:
             raise ValueError("В книге нет активного листа")
         rows: list[list[str]] = []
         for row in ws.iter_rows(values_only=True):
-            cells = [_cell_str(c) for c in (row or ())]
-            while cells and cells[-1] == "":
-                cells.pop()
-            if not any(cells):
-                continue
-            rows.append(cells)
+            rows.append([_cell_str(c) for c in (row or ())])
+        return _trim_excel_rows(rows)
     finally:
         wb.close()
 
-    if not rows:
-        raise ValueError("В Excel нет данных")
-    return rows
+
+def _read_excel_rows_xlrd(file_bytes: bytes) -> list[list[str]]:
+    """Первый лист старого BIFF (.xls)."""
+    try:
+        book = xlrd.open_workbook(file_contents=file_bytes)
+    except XLRDError as err:
+        raise ValueError(str(err) or "xlrd: не удалось открыть .xls") from err
+    if book.nsheets < 1:
+        raise ValueError("В книге нет листов")
+    sheet = book.sheet_by_index(0)
+    rows: list[list[str]] = []
+    for r in range(sheet.nrows):
+        rows.append([_cell_str(sheet.cell_value(r, c)) for c in range(sheet.ncols)])
+    return _trim_excel_rows(rows)
+
+
+def _excel_format_hint(file_bytes: bytes) -> str:
+    head = file_bytes[:8]
+    if head.startswith(b"PK"):
+        return "xlsx/xlsm"
+    if head.startswith(b"\xd0\xcf\x11\xe0"):
+        return "xls"
+    return "unknown"
+
+
+def read_excel_rows(file_bytes: bytes) -> list[list[str]]:
+    """
+    Прочитать первый лист Excel как матрицу строк.
+
+    Поддерживаются:
+      - .xlsx / .xlsm / .xltx (openpyxl)
+      - .xls (xlrd, BIFF)
+
+    Пустые строки в конце отбрасываются. Ячейки → строки.
+    """
+    if not file_bytes:
+        raise ValueError("Пустой Excel-файл")
+
+    kind = _excel_format_hint(file_bytes)
+    errors: list[str] = []
+
+    # Сначала формат по сигнатуре, потом запасной ридер.
+    readers: list[tuple[str, Callable[[bytes], list[list[str]]]]]
+    if kind == "xls":
+        readers = [("xls", _read_excel_rows_xlrd), ("xlsx", _read_excel_rows_openpyxl)]
+    else:
+        readers = [("xlsx", _read_excel_rows_openpyxl), ("xls", _read_excel_rows_xlrd)]
+
+    for _label, reader in readers:
+        try:
+            rows = reader(file_bytes)
+            if not rows:
+                raise ValueError("В Excel нет данных")
+            return rows
+        except ValueError as err:
+            errors.append(str(err))
+        except Exception as err:  # noqa: BLE001
+            errors.append(str(err) or err.__class__.__name__)
+
+    detail = "; ".join(e for e in errors if e)[:220]
+    raise ValueError(
+        "Не удалось открыть Excel. Нужен .xlsx, .xlsm, .xltx или .xls"
+        + (f" ({detail})" if detail else "")
+    )
 
 
 def _looks_like_header(row: list[str]) -> bool:
