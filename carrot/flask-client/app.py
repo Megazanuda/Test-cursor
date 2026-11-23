@@ -522,7 +522,8 @@ def api_events_import_excel():
       mediaFiles — опц. файлы из выбранной в браузере папки
       hasHeader — optional 0/1 (авто: если 1-я ячейка похожа на «имя»/name)
 
-    Столбцы: 1 = имя, последний = External id, между ними = переменные
+    Столбцы: 1 = имя (если только цифры — имя из колонки 2, переменные
+    сдвигаются), последний = External id, между ними = переменные
     шаблона в порядке template.variables. Для Media — имя файла.
     """
     upload = request.files.get("file")
