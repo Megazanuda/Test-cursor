@@ -1550,33 +1550,41 @@ class CarrotClient:
 
         created: list[dict[str, Any]] = []
         need_ws: list[dict[str, Any]] = []
+        var_errors: list[str] = []
         for ev in prepared:
-            # Guide V.3 §6: POST /events/create. Переменные — как в editVariables:
-            # только name/value, остальное сервер берёт из шаблона.
+            # Guide V.3: POST /events/create создаёт ивент с переменными шаблона,
+            # значения задаются отдельно через PATCH /events/{id}/editVariables.
+            values = [
+                {
+                    "name": v.get("name"),
+                    "value": "" if v.get("value") is None else str(v["value"]),
+                }
+                for v in ev["variables"]
+                if v.get("name")
+            ]
             rest_body = {
                 "eventName": ev["name"],
-                "name": ev["name"],
                 "externalId": ev["externalId"],
                 "templateId": ev["templateId"],
                 "state": ev["state"],
                 "comment": ev["comment"],
-                "variables": [
-                    {
-                        "name": v.get("name"),
-                        "value": "" if v.get("value") is None else str(v["value"]),
-                    }
-                    for v in ev["variables"]
-                    if v.get("name")
-                ],
             }
             r = self._try_once("POST", "/events/create", rest_body)
             if r["ok"]:
-                data = r.get("data")
-                new_id = ev["id"]
-                if isinstance(data, dict):
-                    new_id = data.get("id") or data.get("eventId") or new_id
-                elif isinstance(data, str) and data.strip():
-                    new_id = data.strip()
+                new_id = self._created_event_id(r.get("data"), ev["externalId"])
+                if not new_id:
+                    var_errors.append(
+                        f"«{ev['name']}»: id созданного ивента не найден в ответе"
+                    )
+                    continue
+                if values:
+                    er = self._try_once(
+                        "PATCH",
+                        "/events/" + quote(str(new_id), safe="") + "/editVariables",
+                        values,
+                    )
+                    if not er["ok"]:
+                        var_errors.append(f"«{ev['name']}»: {er.get('message')}")
                 created.append({"id": new_id, "name": ev["name"], "via": "rest"})
                 continue
             err = r.get("error")
@@ -1612,9 +1620,35 @@ class CarrotClient:
             )
 
         self.invalidate_events_cache()
+        if var_errors:
+            raise CarrotError(
+                f"Создано ивентов: {len(created)}, но значения переменных "
+                "не записаны: " + "; ".join(var_errors)
+            )
         return {"created": created}
 
     createEvents = create_events
+
+    def _created_event_id(self, data: Any, external_id: str) -> str:
+        if isinstance(data, str) and data.strip():
+            return data.strip()
+        if isinstance(data, dict):
+            for k in ("id", "Id", "eventId", "EventId"):
+                if data.get(k):
+                    return str(data[k])
+            inner = data.get("event") or data.get("Event")
+            if isinstance(inner, dict) and (inner.get("id") or inner.get("Id")):
+                return str(inner.get("id") or inner.get("Id"))
+        self.invalidate_events_cache()
+        events = self.list_events()
+        if isinstance(events, dict):
+            events = events.get("data") or events.get("events") or []
+        for e in events if isinstance(events, list) else []:
+            if isinstance(e, dict) and str(
+                e.get("externalId") or e.get("ExternalId") or ""
+            ) == str(external_id):
+                return str(e.get("id") or e.get("Id") or "")
+        return ""
 
     def create_events_via_websocket(
         self, events: list[dict[str, Any]]
