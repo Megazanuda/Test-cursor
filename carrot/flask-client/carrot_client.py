@@ -754,6 +754,101 @@ def _wrap_net_error(err: BaseException, url: str) -> CarrotError:
     )
 
 
+_EMPTY_GUID = "00000000-0000-0000-0000-000000000000"
+_ID_KEYS = (
+    "id",
+    "Id",
+    "ID",
+    "variableId",
+    "VariableId",
+    "VariableID",
+    "varId",
+    "VarId",
+)
+_FIELD_KEYS = (
+    "fieldId",
+    "FieldId",
+    "FieldID",
+    "fieldID",
+    "linkedFieldId",
+    "LinkedFieldId",
+    "LinkedFieldID",
+    "sceneFieldId",
+    "objectId",
+    "ObjectId",
+    "ObjectID",
+)
+
+
+def _clean_guid(value: Any) -> str:
+    text = "" if value is None else str(value).strip()
+    if not text or text.lower() == _EMPTY_GUID:
+        return ""
+    return text
+
+
+def _ci_pick(obj: Any, *names: str) -> Any:
+    """Первое непустое поле без учёта регистра имени ключа."""
+    if not isinstance(obj, dict):
+        return None
+    wanted = {n.lower() for n in names}
+    for key, val in obj.items():
+        if str(key).lower() in wanted and val not in (None, ""):
+            return val
+    return None
+
+
+def _binding_from_dict(node: Any, depth: int = 0) -> tuple[str, str]:
+    """id / fieldId переменной, включая вложенный объект и ключи ID/FieldID."""
+    if not isinstance(node, dict) or depth > 3:
+        return "", ""
+    vid = _clean_guid(_ci_pick(node, *_ID_KEYS))
+    fid = _clean_guid(_ci_pick(node, *_FIELD_KEYS))
+    if vid or fid:
+        return vid, fid
+    for val in node.values():
+        if isinstance(val, dict):
+            nested_id, nested_field = _binding_from_dict(val, depth + 1)
+            if nested_id or nested_field:
+                return nested_id, nested_field
+    return "", ""
+
+
+def _index_bindings_by_name(
+    node: Any, acc: dict[str, dict[str, str]], depth: int = 0
+) -> None:
+    """Имя переменной → id/fieldId по всему JSON шаблона или контента."""
+    if depth > 7:
+        return
+    if isinstance(node, list):
+        for item in node:
+            _index_bindings_by_name(item, acc, depth + 1)
+        return
+    if not isinstance(node, dict):
+        return
+    name = _ci_pick(node, "name", "Name", "title", "Title")
+    vid, fid = _binding_from_dict(node)
+    # Сам шаблон тоже имеет name+id — его не путаем с переменной.
+    is_template = _ci_pick(node, "contentId", "ContentId", "templateTypeInt", "TemplateTypeInt")
+    if name and (vid or fid) and not is_template:
+        key = str(name).strip().casefold()
+        slot = acc.setdefault(key, {"id": "", "fieldId": ""})
+        if vid and not slot["id"]:
+            slot["id"] = vid
+        if fid and not slot["fieldId"]:
+            slot["fieldId"] = fid
+    for val in node.values():
+        if isinstance(val, (dict, list)):
+            _index_bindings_by_name(val, acc, depth + 1)
+
+
+def _apply_binding(var: dict[str, Any], binding: dict[str, str]) -> None:
+    if not _clean_guid(var.get("id")) and binding.get("id"):
+        var["id"] = binding["id"]
+    if not _clean_guid(var.get("fieldId")) and binding.get("fieldId"):
+        var["fieldId"] = binding["fieldId"]
+
+
 class CarrotClient:
     """Минимальный REST-клиент Carrot Broadcast с WS-fallback для create/delete/media."""
 
@@ -1353,12 +1448,13 @@ class CarrotClient:
                 if v.get("defaultValue") is not None
                 else (v["DefaultValue"] if v.get("DefaultValue") is not None else "")
             )
+            vid, fid = _binding_from_dict(v)
             nv = {
-                "id": v.get("id") or v.get("Id") or "",
+                "id": vid,
                 "name": v.get("name") or v.get("Name") or "",
                 "type": v.get("type") or v.get("Type") or "Text",
                 "value": value,
-                "fieldId": v.get("fieldId") or v.get("FieldId") or "",
+                "fieldId": fid,
                 "defaultValue": default_value,
                 "resetMedia": (
                     v["resetMedia"]
@@ -1403,6 +1499,15 @@ class CarrotClient:
             if nv["name"]:
                 variables.append(nv)
 
+        # id/fieldId могут лежать не в linkVars, а в соседнем массиве полей того же JSON.
+        if any(not v.get("id") or not v.get("fieldId") for v in variables):
+            by_name: dict[str, dict[str, str]] = {}
+            _index_bindings_by_name(t, by_name)
+            for nv in variables:
+                hit = by_name.get(str(nv.get("name") or "").strip().casefold())
+                if hit:
+                    _apply_binding(nv, hit)
+
         return {
             "id": tid,
             "name": name,
@@ -1423,9 +1528,40 @@ class CarrotClient:
         tpl = self.normalize_template(raw)
         if not tpl or not tpl.get("id"):
             raise CarrotError(f"Шаблон не найден или пустой ответ: {template_id}")
+        self._fill_bindings_from_content(tpl)
         if tpl.get("name"):
             self._template_name_cache[tpl["id"]] = tpl["name"]
         return tpl
+
+    def _fill_bindings_from_content(self, tpl: dict[str, Any]) -> None:
+        """Если в шаблоне нет fieldId — поискать поля сцены в контенте."""
+        variables = tpl.get("variables") or []
+        if not variables or not any(
+            not _clean_guid(v.get("fieldId")) for v in variables
+        ):
+            return
+        content_id = _clean_guid(tpl.get("contentId"))
+        if not content_id:
+            return
+        encoded = quote(content_id, safe="")
+        for path in (
+            "/contents/" + encoded,
+            "/content/" + encoded,
+            "/templates/" + quote(str(tpl.get("id") or ""), safe="") + "/content",
+        ):
+            found = self._try_once("GET", path)
+            if not found.get("ok") or found.get("data") is None:
+                continue
+            by_name: dict[str, dict[str, str]] = {}
+            _index_bindings_by_name(found["data"], by_name)
+            if not by_name:
+                continue
+            for var in variables:
+                hit = by_name.get(str(var.get("name") or "").strip().casefold())
+                if hit:
+                    _apply_binding(var, hit)
+            if all(_clean_guid(v.get("fieldId")) for v in variables):
+                return
 
     getNormalizedTemplate = get_normalized_template
 
@@ -1473,8 +1609,12 @@ class CarrotClient:
             variables = list(e["variables"]) if isinstance(e.get("variables"), list) else []
             state = e.get("state") or "IN"
             name = str(e.get("name") or "").strip()
+            missing_binding = (not variables) or any(
+                not _clean_guid(v.get("id")) or not _clean_guid(v.get("fieldId"))
+                for v in variables
+            )
 
-            if not content_id or template_type_int is None or not variables:
+            if not content_id or template_type_int is None or missing_binding:
                 tpl = self.get_normalized_template(e["templateId"])
                 if not content_id:
                     content_id = tpl["contentId"]
@@ -1493,11 +1633,20 @@ class CarrotClient:
                         )
                         variables.append(nv)
                 else:
-                    by_name = {v["name"]: v for v in tpl["variables"]}
+                    by_name = {
+                        str(v.get("name") or "").strip().casefold(): v
+                        for v in tpl["variables"]
+                    }
                     merged = []
                     for v in variables:
-                        meta = by_name.get(v.get("name"), {})
+                        meta = by_name.get(str(v.get("name") or "").strip().casefold(), {})
                         nv = {**meta, **v}
+                        if not _clean_guid(v.get("id")) and _clean_guid(meta.get("id")):
+                            nv["id"] = meta["id"]
+                        if not _clean_guid(v.get("fieldId")) and _clean_guid(meta.get("fieldId")):
+                            nv["fieldId"] = meta["fieldId"]
+                        if not str(v.get("type") or "").strip() and meta.get("type"):
+                            nv["type"] = meta["type"]
                         nv["value"] = (
                             (meta.get("defaultValue") or "")
                             if v.get("value") is None
