@@ -2531,7 +2531,10 @@ async function pickMediaFolder() {
 function onMediaFolderFallbackPicked() {
   const input = el.mediaFolderFallbackInput;
   const list = input && input.files ? Array.prototype.slice.call(input.files) : [];
-  if (!list.length) return;
+  if (!list.length) {
+    showWarning('Папка пустая', 'Браузер не передал ни одного файла из выбранной папки.');
+    return;
+  }
   mediaDirHandle = null;
   clearStoredMediaDirHandle();
   // Включая файлы из вложенных папок (webkitRelativePath: folder/sub/file).
@@ -2649,6 +2652,58 @@ async function openExcelImportDialog() {
   syncMediaFolderUiPlacement();
 }
 
+function normMediaName(name) {
+  const base = String(name || '').trim().split(/[/\\]/).pop() || '';
+  return base.replace(/^["'«»]+|["'«»]+$/g, '').trim().toLowerCase();
+}
+
+function mediaNameStem(name) {
+  const i = name.lastIndexOf('.');
+  return i > 0 ? name.slice(0, i) : name;
+}
+
+/** Оставить из папки только файлы, которых по Excel нет в Carrot. */
+async function pickNeededMediaFiles(file, templateId, mediaFiles) {
+  const fd = new FormData();
+  fd.append('file', file, file.name);
+  fd.append('templateId', templateId);
+  fd.append('autoName', isAutoNameEnabled() ? '1' : '0');
+  const res = await fetch('/api/events/import-excel/media-plan', { method: 'POST', body: fd });
+  var plan = null;
+  try { plan = await res.json(); } catch (e) { plan = null; }
+  // План не получен — импорт сам вернёт понятную ошибку; шлём всё.
+  if (!res.ok || !plan || plan.ok === false || !Array.isArray(plan.needed)) return mediaFiles;
+  const wanted = new Set();
+  plan.needed.forEach(function (n) {
+    const k = normMediaName(n);
+    if (!k) return;
+    wanted.add(k);
+    wanted.add(mediaNameStem(k));
+  });
+  return mediaFiles.filter(function (f) {
+    const k = normMediaName(f.name);
+    return wanted.has(k) || wanted.has(mediaNameStem(k));
+  });
+}
+
+function postFormWithProgress(url, formData, onProgress) {
+  return new Promise(function (resolve, reject) {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', url);
+    xhr.upload.onprogress = function (e) {
+      if (e.lengthComputable && onProgress) {
+        onProgress(Math.min(100, Math.floor((e.loaded / e.total) * 100)));
+      }
+    };
+    xhr.upload.onload = function () { if (onProgress) onProgress(100); };
+    xhr.onload = function () {
+      resolve({ ok: xhr.status >= 200 && xhr.status < 300, status: xhr.status, text: xhr.responseText });
+    };
+    xhr.onerror = function () { reject(new Error('Сеть: запрос к серверу прерван')); };
+    xhr.send(formData);
+  });
+}
+
 async function importEventsFromExcel(file) {
   if (!file) return;
   const templateId = el.excelTemplateSelect && el.excelTemplateSelect.value;
@@ -2665,7 +2720,11 @@ async function importEventsFromExcel(file) {
     'Импорт Excel…',
     async function () {
       updateLoading('Импорт Excel', 'Читаю папку медиа…');
-      const mediaFiles = await collectSelectedMediaFiles();
+      var mediaFiles = await collectSelectedMediaFiles();
+      if (mediaFiles.length) {
+        updateLoading('Импорт Excel', 'Проверяю, каких медиа нет в Carrot…');
+        mediaFiles = await pickNeededMediaFiles(file, templateId, mediaFiles);
+      }
       const fd = new FormData();
       fd.append('file', file, file.name);
       fd.append('templateId', templateId);
@@ -2673,14 +2732,16 @@ async function importEventsFromExcel(file) {
       mediaFiles.forEach(function (mf) {
         fd.append('mediaFiles', mf, mf.name);
       });
-      updateLoading(
-        'Импорт Excel',
-        'Отправляю Excel' +
-          (mediaFiles.length ? (' и медиа (' + mediaFiles.length + ' файл(ов))') : '') +
-          '…'
-      );
-      const res = await fetch('/api/events/import-excel', { method: 'POST', body: fd });
-      const text = await res.text();
+      const what = 'Отправляю Excel' +
+        (mediaFiles.length ? (' и медиа (' + mediaFiles.length + ' файл(ов))') : '');
+      updateLoading('Импорт Excel', what + '…');
+      const res = await postFormWithProgress('/api/events/import-excel', fd, function (pct) {
+        updateLoading(
+          'Импорт Excel',
+          pct < 100 ? (what + ': ' + pct + '%') : 'Создаю ивенты и загружаю медиа в Carrot…'
+        );
+      });
+      const text = res.text;
       var parsed = null;
       try { parsed = text ? JSON.parse(text) : null; }
       catch (e) { throw new Error('Ответ сервера не JSON (HTTP ' + res.status + ')'); }

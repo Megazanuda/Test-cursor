@@ -28,6 +28,7 @@ from carrot_client import (
     CarrotClient,
     CarrotError,
     is_media_type,
+    media_files_needed,
     read_excel_rows,
     resolve_media_in_drafts,
     rows_to_event_drafts,
@@ -50,6 +51,8 @@ app = Flask(
     static_url_path="",
 )
 app.config["JSON_AS_ASCII"] = False
+# Werkzeug по умолчанию режет multipart на 1000 частях — папка медиа больше.
+app.config["MAX_FORM_PARTS"] = 100_000
 
 logging.basicConfig(
     level=logging.INFO,
@@ -629,6 +632,47 @@ def api_check_media_folder():
             "sample": sample,
         }
     )
+
+
+@app.post("/api/events/import-excel/media-plan")
+def api_events_import_excel_media_plan():
+    """
+    Какие медиафайлы из Excel нужно прислать (их ещё нет в Carrot).
+
+    multipart/form-data: file, templateId, autoName?, hasHeader? — как у import-excel.
+    Ответ: { ok, needed: [имя файла, ...] }.
+    """
+    upload = request.files.get("file")
+    template_id = (request.form.get("templateId") or "").strip()
+    if not upload or not upload.filename or not template_id:
+        return jsonify({"ok": False, "error": "Нужны file и templateId"}), 400
+    has_header_raw = (request.form.get("hasHeader") or "").strip().lower()
+    has_header = (
+        None if not has_header_raw else has_header_raw in ("1", "true", "yes", "y", "on")
+    )
+    auto_name_raw = (request.form.get("autoName") or "").strip().lower()
+    auto_name = (
+        True if not auto_name_raw else auto_name_raw in ("1", "true", "yes", "y", "on")
+    )
+    try:
+        rows = read_excel_rows(upload.read())
+    except ValueError as err:
+        return jsonify({"ok": False, "error": str(err)}), 400
+
+    client = ensure_client()
+    template = client.get_normalized_template(template_id)
+    parsed = rows_to_event_drafts(
+        rows, template, has_header=has_header, auto_name=auto_name
+    )
+    needed: list[str] = []
+    if parsed.get("mediaVarIndexes") and parsed["drafts"]:
+        try:
+            assets = client.list_media_assets({"deep": True}) or []
+        except Exception as err:  # noqa: BLE001
+            log.warning("[excel] список медиа недоступен: %s", err)
+            assets = []
+        needed = media_files_needed(parsed["drafts"], assets)
+    return jsonify({"ok": True, "needed": needed})
 
 
 @app.post("/api/events/import-excel")

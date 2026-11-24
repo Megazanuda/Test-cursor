@@ -2841,6 +2841,30 @@ def find_local_media_file(folder: str, filename: str) -> Optional[Path]:
     return None
 
 
+def media_files_needed(
+    drafts: list[dict[str, Any]], assets: list[dict[str, Any]]
+) -> list[str]:
+    """Имена медиафайлов из Excel, которых ещё нет в Carrot (их надо залить)."""
+    index = index_assets_by_name(assets)
+    out: dict[str, str] = {}
+    for draft in drafts:
+        for var in draft.get("variables") or []:
+            if not is_media_type(var.get("type")):
+                continue
+            raw = "" if var.get("value") is None else str(var.get("value")).strip()
+            if not raw:
+                continue
+            aid, aname = _parse_media_value(raw)
+            if aid and _GUID_RE.match(aid):
+                continue
+            filename = aname or aid or raw
+            key = _norm_name(filename)
+            if index.get(key) or index.get(Path(key).stem):
+                continue
+            out.setdefault(key, Path(key).name)
+    return list(out.values())
+
+
 def resolve_media_in_drafts(
     drafts: list[dict[str, Any]],
     *,
