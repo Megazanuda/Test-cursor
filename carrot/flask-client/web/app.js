@@ -2118,20 +2118,7 @@ async function submitCreateForms() {
       'К созданию: ' + payload.length
     );
     const created = (data && data.created) ? data.created : [];
-    const edited = created.filter(function (c) { return c && c.variablesEdited; }).length;
-    if (data && data.warnings && data.warnings.length) {
-      showWarning(
-        'Ивенты созданы с предупреждениями',
-        'Создано: ' + created.length + '.\n' + data.warnings.join('\n')
-      );
-    } else {
-      showSuccess(
-        'Ивенты созданы',
-        'Создано: ' + created.length +
-          (edited ? ('. editVariables: ' + edited) : '. Значения ушли в CreateEventInDB') +
-          '.'
-      );
-    }
+    showSuccess('Ивенты созданы', 'Создано: ' + created.length + '.');
     state.createForms = [blankCreateForm()];
     setCreateSelection([], null);
     renderCreateForms();
