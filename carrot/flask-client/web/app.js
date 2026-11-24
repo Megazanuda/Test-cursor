@@ -2119,19 +2119,16 @@ async function submitCreateForms() {
     );
     const created = (data && data.created) ? data.created : [];
     const edited = created.filter(function (c) { return c && c.variablesEdited; }).length;
-    if (data && data.bindingWarning) {
+    if (data && data.warnings && data.warnings.length) {
       showWarning(
-        'Ивенты созданы, значения частично не записались',
-        data.bindingWarning +
-          (data.warnings && data.warnings.length
-            ? ('\n' + data.warnings.join('\n'))
-            : '')
+        'Ивенты созданы с предупреждениями',
+        'Создано: ' + created.length + '.\n' + data.warnings.join('\n')
       );
     } else {
       showSuccess(
         'Ивенты созданы',
         'Создано: ' + created.length +
-          (edited ? ('. Значения записаны через editVariables: ' + edited) : '') +
+          (edited ? ('. editVariables: ' + edited) : '. Значения ушли в CreateEventInDB') +
           '.'
       );
     }
