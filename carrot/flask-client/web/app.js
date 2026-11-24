@@ -2118,7 +2118,17 @@ async function submitCreateForms() {
       'К созданию: ' + payload.length
     );
     const created = (data && data.created) ? data.created : [];
-    showSuccess('Ивенты созданы', 'Создано: ' + created.length + '.');
+    if (data && data.bindingWarning) {
+      showWarning(
+        'Ивенты созданы, но FieldId пуст',
+        data.bindingWarning +
+          (data.warnings && data.warnings.length
+            ? ('\n' + data.warnings.join('\n'))
+            : '')
+      );
+    } else {
+      showSuccess('Ивенты созданы', 'Создано: ' + created.length + '.');
+    }
     state.createForms = [blankCreateForm()];
     setCreateSelection([], null);
     renderCreateForms();

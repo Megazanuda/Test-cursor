@@ -1528,27 +1528,101 @@ class CarrotClient:
         tpl = self.normalize_template(raw)
         if not tpl or not tpl.get("id"):
             raise CarrotError(f"Шаблон не найден или пустой ответ: {template_id}")
-        self._fill_bindings_from_content(tpl)
+        self._ensure_variable_bindings(tpl)
         if tpl.get("name"):
             self._template_name_cache[tpl["id"]] = tpl["name"]
         return tpl
 
+    def _vars_missing_field_id(self, variables: list[dict[str, Any]]) -> bool:
+        return any(not _clean_guid(v.get("fieldId")) for v in (variables or []))
+
+    def _emit_linkvar_diag(self, tpl: dict[str, Any], note: str) -> None:
+        """DEV: показать сырые ключи LinkVars, если FieldId так и не нашёлся."""
+        raw = tpl.get("raw") if isinstance(tpl.get("raw"), dict) else {}
+        link = (
+            raw.get("linkVars")
+            or raw.get("LinkVars")
+            or raw.get("variables")
+            or raw.get("Variables")
+            or []
+        )
+        sample: list[dict[str, Any]] = []
+        if isinstance(link, list):
+            for item in link[:3]:
+                if not isinstance(item, dict):
+                    continue
+                sample.append(
+                    {
+                        str(k): ("" if val is None else str(val)[:120])
+                        for k, val in item.items()
+                    }
+                )
+        self._emit_traffic(
+            method="DIAG",
+            url="template/" + str(tpl.get("id") or ""),
+            note=note,
+            response_body={
+                "templateTopKeys": sorted(str(k) for k in raw.keys()),
+                "linkVarCount": len(link) if isinstance(link, list) else 0,
+                "linkVarSample": sample,
+                "normalized": [
+                    {
+                        "name": v.get("name"),
+                        "id": v.get("id"),
+                        "fieldId": v.get("fieldId"),
+                        "type": v.get("type"),
+                    }
+                    for v in (tpl.get("variables") or [])[:5]
+                ],
+            },
+        )
+
+    def _apply_bindings_map(
+        self, variables: list[dict[str, Any]], by_name: dict[str, dict[str, str]]
+    ) -> int:
+        filled = 0
+        for var in variables:
+            key = str(var.get("name") or "").strip().casefold()
+            hit = by_name.get(key)
+            if not hit:
+                continue
+            before = _clean_guid(var.get("fieldId"))
+            _apply_binding(var, hit)
+            if not before and _clean_guid(var.get("fieldId")):
+                filled += 1
+        return filled
+
     def _fill_bindings_from_content(self, tpl: dict[str, Any]) -> None:
         """Если в шаблоне нет fieldId — поискать поля сцены в контенте."""
         variables = tpl.get("variables") or []
-        if not variables or not any(
-            not _clean_guid(v.get("fieldId")) for v in variables
-        ):
+        if not variables or not self._vars_missing_field_id(variables):
             return
         content_id = _clean_guid(tpl.get("contentId"))
-        if not content_id:
-            return
-        encoded = quote(content_id, safe="")
-        for path in (
-            "/contents/" + encoded,
-            "/content/" + encoded,
-            "/templates/" + quote(str(tpl.get("id") or ""), safe="") + "/content",
-        ):
+        tid = quote(str(tpl.get("id") or ""), safe="")
+        encoded = quote(content_id, safe="") if content_id else ""
+        paths: list[str] = []
+        if encoded:
+            paths.extend(
+                [
+                    "/contents/" + encoded,
+                    "/content/" + encoded,
+                    "/api/contents/" + encoded,
+                    "/api/content/" + encoded,
+                    "/graphicContents/" + encoded,
+                    "/scenes/" + encoded,
+                    "/contents/" + encoded + "/fields",
+                ]
+            )
+        if tid:
+            paths.extend(
+                [
+                    "/templates/" + tid + "/content",
+                    "/templates/" + tid + "/fields",
+                    "/templates/" + tid + "/linkVars",
+                    "/api/templates/" + tid + "/content",
+                ]
+            )
+        for path in paths:
             found = self._try_once("GET", path)
             if not found.get("ok") or found.get("data") is None:
                 continue
@@ -1556,12 +1630,150 @@ class CarrotClient:
             _index_bindings_by_name(found["data"], by_name)
             if not by_name:
                 continue
-            for var in variables:
-                hit = by_name.get(str(var.get("name") or "").strip().casefold())
-                if hit:
-                    _apply_binding(var, hit)
-            if all(_clean_guid(v.get("fieldId")) for v in variables):
+            self._apply_bindings_map(variables, by_name)
+            if not self._vars_missing_field_id(variables):
+                self._emit_traffic(
+                    method="GET",
+                    url=(self.base_url or "") + path,
+                    status=200,
+                    note="FieldId взяты из контента/полей шаблона",
+                )
                 return
+
+    def _fill_bindings_from_existing_events(self, tpl: dict[str, Any]) -> None:
+        """
+        FieldId часто есть только у уже созданных ивентов (Carrot UI),
+        а в REST-шаблоне пустой. Копируем привязку по имени переменной.
+        """
+        variables = tpl.get("variables") or []
+        if not variables or not self._vars_missing_field_id(variables):
+            return
+        tid = _clean_guid(tpl.get("id"))
+        if not tid:
+            return
+
+        cache = getattr(self, "_binding_cache", None)
+        if cache is None:
+            self._binding_cache = {}
+            cache = self._binding_cache
+        cached = cache.get(tid)
+        if cached:
+            self._apply_bindings_map(variables, cached)
+            if not self._vars_missing_field_id(variables):
+                self._emit_traffic(
+                    method="CACHE",
+                    url="template-bindings/" + tid,
+                    note="FieldId из кэша (ранее найдены у существующего ивента)",
+                )
+                return
+
+        try:
+            headers = self.list_events() or []
+        except Exception as err:  # noqa: BLE001
+            self._emit_traffic(
+                method="GET",
+                url=(self.base_url or "") + "/events",
+                error=str(err),
+                note="не удалось получить список ивентов для FieldId",
+            )
+            return
+        if isinstance(headers, dict):
+            headers = (
+                headers.get("items")
+                or headers.get("events")
+                or headers.get("data")
+                or []
+            )
+        if not isinstance(headers, list):
+            return
+
+        by_name: dict[str, dict[str, str]] = {}
+        scanned = 0
+        matched = 0
+        for header in headers[:100]:
+            if not isinstance(header, dict):
+                continue
+            eid = header.get("id") or header.get("Id") or header.get("ID")
+            if not eid:
+                continue
+            found = self._try_once(
+                "GET", "/events/" + quote(str(eid), safe="")
+            )
+            scanned += 1
+            if not found.get("ok") or not isinstance(found.get("data"), dict):
+                continue
+            data = found["data"]
+            etid = _clean_guid(
+                _ci_pick(data, "templateId", "TemplateId", "TemplateID")
+            )
+            if etid != tid:
+                continue
+            matched += 1
+            link = (
+                data.get("variables")
+                or data.get("Variables")
+                or data.get("linkVars")
+                or data.get("LinkVars")
+                or []
+            )
+            if not isinstance(link, list):
+                continue
+            for item in link:
+                if not isinstance(item, dict):
+                    continue
+                name = _ci_pick(item, "name", "Name")
+                vid, fid = _binding_from_dict(item)
+                if not name or (not vid and not fid):
+                    continue
+                key = str(name).strip().casefold()
+                slot = by_name.setdefault(key, {"id": "", "fieldId": ""})
+                if vid and not slot["id"]:
+                    slot["id"] = vid
+                if fid and not slot["fieldId"]:
+                    slot["fieldId"] = fid
+            needed = {
+                str(v.get("name") or "").strip().casefold() for v in variables
+            }
+            if needed and all(
+                _clean_guid((by_name.get(n) or {}).get("fieldId")) for n in needed
+            ):
+                break
+            if matched >= 8:
+                break
+
+        filled = self._apply_bindings_map(variables, by_name)
+        if by_name:
+            cache[tid] = by_name
+        self._emit_traffic(
+            method="GET",
+            url=(self.base_url or "") + "/events",
+            note=(
+                "FieldId из существующих ивентов того же шаблона: "
+                f"scanned={scanned}, matchedTemplate={matched}, filled={filled}"
+            ),
+            response_body={
+                "bindings": {
+                    k: v for k, v in list(by_name.items())[:12]
+                }
+            },
+        )
+
+    def _ensure_variable_bindings(self, tpl: dict[str, Any]) -> None:
+        """Добрать id/fieldId: контент → существующие ивенты → диагностика."""
+        variables = tpl.get("variables") or []
+        if not variables or not self._vars_missing_field_id(variables):
+            return
+        self._fill_bindings_from_content(tpl)
+        if not self._vars_missing_field_id(variables):
+            return
+        self._fill_bindings_from_existing_events(tpl)
+        if self._vars_missing_field_id(variables):
+            self._emit_linkvar_diag(
+                tpl,
+                "FieldId пуст после шаблона/контента/соседних ивентов. "
+                "Создай один ивент из этого шаблона в Carrot UI — "
+                "следующие импорты смогут скопировать FieldId.",
+            )
 
     getNormalizedTemplate = get_normalized_template
 
@@ -1680,6 +1892,12 @@ class CarrotClient:
             else:
                 external_id = eid
 
+            # Id переменной в CreateEventInDB — стабильный id из шаблона/соседа;
+            # если его нет, новый GUID лучше пустой строки.
+            for v in variables:
+                if not _clean_guid(v.get("id")):
+                    v["id"] = str(uuid.uuid4())
+
             prepared.append(
                 {
                     "id": eid,
@@ -1698,6 +1916,18 @@ class CarrotClient:
 
         created: list[dict[str, Any]] = []
         need_ws: list[dict[str, Any]] = []
+        binding_warnings: list[str] = []
+        for ev in prepared:
+            missing_fields = [
+                str(v.get("name") or "")
+                for v in (ev.get("variables") or [])
+                if not _clean_guid(v.get("fieldId"))
+            ]
+            if missing_fields:
+                binding_warnings.append(
+                    f"«{ev.get('name')}»: нет FieldId у {', '.join(missing_fields[:5])}"
+                    + ("…" if len(missing_fields) > 5 else "")
+                )
         for ev in prepared:
             rest_body = {
                 "id": ev["id"],
@@ -1764,7 +1994,21 @@ class CarrotClient:
             )
 
         self.invalidate_events_cache()
-        return {"created": created}
+        out: dict[str, Any] = {"created": created}
+        if binding_warnings:
+            out["warnings"] = binding_warnings
+            out["bindingWarning"] = (
+                "У переменных пустой FieldId — дашборд покажет значения, "
+                "но движок их не подставит. Создай один ивент из этого шаблона "
+                "в Carrot UI, затем повтори создание здесь."
+            )
+            self._emit_traffic(
+                method="WARN",
+                url="create_events",
+                note=out["bindingWarning"],
+                response_body={"warnings": binding_warnings},
+            )
+        return out
 
     createEvents = create_events
 

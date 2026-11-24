@@ -357,6 +357,43 @@ def api_dev_traffic_clear():
     return jsonify({"ok": True, "cleared": True, "stats": traffic_log.stats()})
 
 
+@app.get("/api/dev/template/<template_id>")
+def api_dev_template_raw(template_id: str):
+    """Сырой шаблон + нормализация — чтобы увидеть ключи LinkVars/FieldId."""
+    client = ensure_client()
+    raw = client.get_template(template_id)
+    normalized = client.normalize_template(raw)
+    link = []
+    raw_obj = raw
+    if isinstance(raw, dict) and raw.get("template") and not raw.get("id") and not raw.get("Id"):
+        raw_obj = raw.get("template")
+    if isinstance(raw_obj, dict):
+        link = (
+            raw_obj.get("linkVars")
+            or raw_obj.get("LinkVars")
+            or raw_obj.get("variables")
+            or raw_obj.get("Variables")
+            or []
+        )
+    sample = []
+    if isinstance(link, list):
+        for item in link[:5]:
+            if isinstance(item, dict):
+                sample.append({str(k): item.get(k) for k in item.keys()})
+    return jsonify(
+        {
+            "ok": True,
+            "dev": True,
+            "rawTopKeys": sorted(str(k) for k in raw_obj.keys())
+            if isinstance(raw_obj, dict)
+            else [],
+            "linkVarSample": sample,
+            "normalizedVariables": (normalized or {}).get("variables"),
+            "raw": raw,
+        }
+    )
+
+
 # ---------------------------------------------------------------------------
 # API (совместимо с rest-client/web-server.js)
 # ---------------------------------------------------------------------------
@@ -596,7 +633,12 @@ def api_events_create():
 
     client = ensure_client()
     result = client.create_events(events, auto_name=auto_name)
-    return jsonify({"ok": True, "created": result.get("created") or []})
+    payload = {"ok": True, "created": result.get("created") or []}
+    if result.get("warnings"):
+        payload["warnings"] = result["warnings"]
+    if result.get("bindingWarning"):
+        payload["bindingWarning"] = result["bindingWarning"]
+    return jsonify(payload)
 
 
 @app.post("/api/settings/check-media-folder")
@@ -807,18 +849,21 @@ def api_events_import_excel():
         media_report.get("uploaded"),
         media_report.get("reused"),
     )
-    return jsonify(
-        {
-            "ok": True,
-            "created": created,
-            "skipped": parsed["skipped"],
-            "headerSkipped": parsed["headerSkipped"],
-            "variableNames": parsed["variableNames"],
-            "templateId": template_id,
-            "templateName": template.get("name") or "",
-            "media": media_report,
-        }
-    )
+    excel_payload = {
+        "ok": True,
+        "created": created,
+        "skipped": parsed["skipped"],
+        "headerSkipped": parsed["headerSkipped"],
+        "variableNames": parsed["variableNames"],
+        "templateId": template_id,
+        "templateName": template.get("name") or "",
+        "media": media_report,
+    }
+    if result.get("warnings"):
+        excel_payload["warnings"] = result["warnings"]
+    if result.get("bindingWarning"):
+        excel_payload["bindingWarning"] = result["bindingWarning"]
+    return jsonify(excel_payload)
 
 
 @app.post("/api/events/delete")
