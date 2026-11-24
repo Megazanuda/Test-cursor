@@ -820,6 +820,17 @@ class CarrotClient:
         # Сами TUS create/PATCH идут на отдельной Session и могут параллелиться.
         self._api_lock = threading.Lock()
         self._session = requests.Session()
+        # DEV: колбэк трафика (channel=carrot). Сигнатура: fn(dict)
+        self.traffic_hook = opts.get("traffic_hook") or opts.get("trafficHook")
+
+    def _emit_traffic(self, **kwargs: Any) -> None:
+        hook = getattr(self, "traffic_hook", None)
+        if not callable(hook):
+            return
+        try:
+            hook({**kwargs, "channel": kwargs.get("channel") or "carrot"})
+        except Exception:
+            pass
 
     # --- совместимость camelCase-свойств (как в JS) ---
     @property
@@ -933,6 +944,7 @@ class CarrotClient:
         last_err: Optional[CarrotError] = None
 
         for attempt in range(effective_retries + 1):
+            t0 = time.time()
             try:
                 kwargs: dict[str, Any] = {
                     "method": method,
@@ -943,8 +955,20 @@ class CarrotClient:
                 if body is not None:
                     kwargs["json"] = body
                 res = self._session.request(**kwargs)
+                duration_ms = (time.time() - t0) * 1000.0
 
                 if res.status_code == 401 and auth and not _retried_auth:
+                    self._emit_traffic(
+                        method=method,
+                        url=url,
+                        status=res.status_code,
+                        duration_ms=duration_ms,
+                        request_headers=headers,
+                        request_body=body,
+                        response_headers=dict(res.headers),
+                        response_body=(res.text or "")[:2000],
+                        note="401 → refresh token + retry",
+                    )
                     self.token = None
                     self._ensure_token()
                     return self._request_locked(
@@ -968,6 +992,17 @@ class CarrotClient:
                         looks_html = bool(
                             re.search(r"<html|<!doctype html|<head|<body", text, re.I)
                         )
+                        self._emit_traffic(
+                            method=method,
+                            url=url,
+                            status=res.status_code,
+                            duration_ms=duration_ms,
+                            request_headers=headers,
+                            request_body=body,
+                            response_headers=dict(res.headers),
+                            response_body=preview,
+                            error="non-JSON response",
+                        )
                         raise CarrotError(
                             f"Ответ не JSON (HTTP {res.status_code}, Content-Type: {ctype}). "
                             + (
@@ -990,6 +1025,17 @@ class CarrotClient:
                             " Путь не найден. В .env нужен http://хост:порт/api — "
                             "без /auth/generate на конце и без второго /api."
                         )
+                    self._emit_traffic(
+                        method=method,
+                        url=url,
+                        status=res.status_code,
+                        duration_ms=duration_ms,
+                        request_headers=headers,
+                        request_body=body,
+                        response_headers=dict(res.headers),
+                        response_body=json_data if json_data is not None else preview,
+                        error=f"HTTP {res.status_code}",
+                    )
                     raise CarrotError(
                         f"HTTP {res.status_code} {res.reason} [{method} {url}]{hint}"
                         + (f" | ответ: {preview}" if preview else ""),
@@ -1004,6 +1050,17 @@ class CarrotClient:
                     and isinstance(data.get("errorCode"), int)
                     and data["errorCode"] != 0
                 ):
+                    self._emit_traffic(
+                        method=method,
+                        url=url,
+                        status=res.status_code,
+                        duration_ms=duration_ms,
+                        request_headers=headers,
+                        request_body=body,
+                        response_headers=dict(res.headers),
+                        response_body=json_data,
+                        error=f"errorCode={data['errorCode']}",
+                    )
                     raise CarrotError(
                         f"Carrot {ERROR_NAMES.get(data['errorCode'], data['errorCode'])}: "
                         f"{data.get('description') or ''}",
@@ -1011,11 +1068,31 @@ class CarrotClient:
                         description=data.get("description"),
                     )
 
+                self._emit_traffic(
+                    method=method,
+                    url=url,
+                    status=res.status_code,
+                    duration_ms=duration_ms,
+                    request_headers=headers,
+                    request_body=body,
+                    response_headers=dict(res.headers),
+                    response_body=json_data if json_data is not None else None,
+                )
                 return data
             except CarrotError:
                 raise
             except Exception as err:
+                duration_ms = (time.time() - t0) * 1000.0
                 wrapped = _wrap_net_error(err, url)
+                self._emit_traffic(
+                    method=method,
+                    url=url,
+                    status=None,
+                    duration_ms=duration_ms,
+                    request_headers=headers,
+                    request_body=body,
+                    error=str(wrapped),
+                )
                 last_err = wrapped
                 if _FATAL_NET.match(wrapped.code or "") or attempt >= effective_retries:
                     raise wrapped from err
@@ -1513,8 +1590,29 @@ class CarrotClient:
             need_ws.append(ev)
 
         if need_ws:
+            self._emit_traffic(
+                method="WS",
+                url=self.ws_url or "",
+                note="CreateEventInDB — REST не принял, создание через websocket",
+                request_body={
+                    "count": len(need_ws),
+                    "names": [e.get("name") for e in need_ws],
+                },
+            )
             ws_created = self.create_events_via_websocket(need_ws)
             created.extend(ws_created)
+        else:
+            self._emit_traffic(
+                method="POST",
+                url=(self.base_url or "") + "/events",
+                status=200,
+                note="создание через REST POST /events; websocket CreateEventInDB не вызывался",
+                request_body={
+                    "via": "rest",
+                    "ids": [c.get("id") for c in created],
+                    "names": [c.get("name") for c in created],
+                },
+            )
 
         self.invalidate_events_cache()
         return {"created": created}
