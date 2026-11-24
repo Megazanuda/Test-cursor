@@ -1554,6 +1554,7 @@ class CarrotClient:
             # Guide V.3 §6: POST /events/create. Переменные — как в editVariables:
             # только name/value, остальное сервер берёт из шаблона.
             rest_body = {
+                "eventName": ev["name"],
                 "name": ev["name"],
                 "externalId": ev["externalId"],
                 "templateId": ev["templateId"],
