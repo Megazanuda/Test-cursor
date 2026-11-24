@@ -2118,16 +2118,22 @@ async function submitCreateForms() {
       'К созданию: ' + payload.length
     );
     const created = (data && data.created) ? data.created : [];
+    const edited = created.filter(function (c) { return c && c.variablesEdited; }).length;
     if (data && data.bindingWarning) {
       showWarning(
-        'Ивенты созданы, но FieldId пуст',
+        'Ивенты созданы, значения частично не записались',
         data.bindingWarning +
           (data.warnings && data.warnings.length
             ? ('\n' + data.warnings.join('\n'))
             : '')
       );
     } else {
-      showSuccess('Ивенты созданы', 'Создано: ' + created.length + '.');
+      showSuccess(
+        'Ивенты созданы',
+        'Создано: ' + created.length +
+          (edited ? ('. Значения записаны через editVariables: ' + edited) : '') +
+          '.'
+      );
     }
     state.createForms = [blankCreateForm()];
     setCreateSelection([], null);

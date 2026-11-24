@@ -132,29 +132,61 @@ def _bool_attr(v: Any) -> str:
 
 
 def variable_to_xml(v: dict[str, Any]) -> str:
-    """Сериализовать переменную события в XML-атрибуты Variable."""
-    return (
-        "<Variable"
-        f' Id="{xml_escape(v.get("id") or "")}"'
-        f' Name="{xml_escape(v.get("name") or "")}"'
-        f' Type="{xml_escape(v.get("type") or "Text")}"'
+    """Сериализовать переменную события в XML-атрибуты Variable.
+
+    Пустой FieldId/Id не пишем: иначе CreateEventInDB затирает привязки
+    шаблона пустой строкой, и движок не видит значения.
+    """
+    parts = ["<Variable"]
+    vid = _clean_guid(v.get("id"))
+    if vid:
+        parts.append(f' Id="{xml_escape(vid)}"')
+    parts.append(f' Name="{xml_escape(v.get("name") or "")}"')
+    parts.append(f' Type="{xml_escape(v.get("type") or "Text")}"')
+    parts.append(
         f' Value="{xml_escape("" if v.get("value") is None else v["value"])}"'
-        f' FieldId="{xml_escape(v.get("fieldId") or "")}"'
-        f' ResetMedia="{_bool_attr(True if v.get("resetMedia") is None else v["resetMedia"])}"'
-        f' UseTimecode="{_bool_attr(False if v.get("useTimecode") is None else v["useTimecode"])}"'
-        f' Loop="{_bool_attr(False if v.get("loop") is None else v["loop"])}"'
-        f' Locked="{_bool_attr(False if v.get("locked") is None else v["locked"])}"'
-        f' DefaultValue="{xml_escape("" if v.get("defaultValue") is None else v["defaultValue"])}"'
-        f' MinValue="{xml_escape("" if v.get("minValue") is None else v["minValue"])}"'
-        f' MaxValue="{xml_escape("" if v.get("maxValue") is None else v["maxValue"])}"'
-        f' UseDataVars="{_bool_attr(False if v.get("useDataVars") is None else v["useDataVars"])}"'
-        " />"
     )
+    fid = _clean_guid(v.get("fieldId"))
+    if fid:
+        parts.append(f' FieldId="{xml_escape(fid)}"')
+    parts.append(
+        f' ResetMedia="{_bool_attr(True if v.get("resetMedia") is None else v["resetMedia"])}"'
+    )
+    parts.append(
+        f' UseTimecode="{_bool_attr(False if v.get("useTimecode") is None else v["useTimecode"])}"'
+    )
+    parts.append(
+        f' Loop="{_bool_attr(False if v.get("loop") is None else v["loop"])}"'
+    )
+    parts.append(
+        f' Locked="{_bool_attr(False if v.get("locked") is None else v["locked"])}"'
+    )
+    parts.append(
+        f' DefaultValue="{xml_escape("" if v.get("defaultValue") is None else v["defaultValue"])}"'
+    )
+    parts.append(
+        f' MinValue="{xml_escape("" if v.get("minValue") is None else v["minValue"])}"'
+    )
+    parts.append(
+        f' MaxValue="{xml_escape("" if v.get("maxValue") is None else v["maxValue"])}"'
+    )
+    parts.append(
+        f' UseDataVars="{_bool_attr(False if v.get("useDataVars") is None else v["useDataVars"])}"'
+    )
+    parts.append(" />")
+    return "".join(parts)
 
 
 def event_create_to_xml(event: dict[str, Any], message_id: int) -> str:
     """Собрать команду CreateEventInDB (AppName ticker-web / Playlists)."""
-    vars_xml = "".join(variable_to_xml(v) for v in (event.get("variables") or []))
+    # На создании не шлём переменные с пустым FieldId — каркас берёт шаблон,
+    # значения дописываем через editVariables после EventAdded.
+    create_vars = [
+        v
+        for v in (event.get("variables") or [])
+        if _clean_guid(v.get("fieldId"))
+    ]
+    vars_xml = "".join(variable_to_xml(v) for v in create_vars)
     ext = event.get("externalId")
     if ext is not None and str(ext).strip() != "":
         external_id = str(ext).strip()
@@ -1892,12 +1924,6 @@ class CarrotClient:
             else:
                 external_id = eid
 
-            # Id переменной в CreateEventInDB — стабильный id из шаблона/соседа;
-            # если его нет, новый GUID лучше пустой строки.
-            for v in variables:
-                if not _clean_guid(v.get("id")):
-                    v["id"] = str(uuid.uuid4())
-
             prepared.append(
                 {
                     "id": eid,
@@ -1916,20 +1942,30 @@ class CarrotClient:
 
         created: list[dict[str, Any]] = []
         need_ws: list[dict[str, Any]] = []
-        binding_warnings: list[str] = []
-        for ev in prepared:
-            missing_fields = [
-                str(v.get("name") or "")
+        warnings: list[str] = []
+
+        def _create_rest_body(ev: dict[str, Any]) -> dict[str, Any]:
+            # Каркас без переменных с пустым FieldId — привязки возьмёт шаблон.
+            bound = [
+                {
+                    "id": v.get("id"),
+                    "name": v.get("name"),
+                    "type": v.get("type"),
+                    "value": "" if v.get("value") is None else str(v["value"]),
+                    "fieldId": v.get("fieldId"),
+                    "defaultValue": v.get("defaultValue"),
+                    "resetMedia": v.get("resetMedia"),
+                    "useTimecode": v.get("useTimecode"),
+                    "loop": v.get("loop"),
+                    "locked": v.get("locked"),
+                    "minValue": v.get("minValue"),
+                    "maxValue": v.get("maxValue"),
+                    "useDataVars": v.get("useDataVars"),
+                }
                 for v in (ev.get("variables") or [])
-                if not _clean_guid(v.get("fieldId"))
+                if _clean_guid(v.get("fieldId"))
             ]
-            if missing_fields:
-                binding_warnings.append(
-                    f"«{ev.get('name')}»: нет FieldId у {', '.join(missing_fields[:5])}"
-                    + ("…" if len(missing_fields) > 5 else "")
-                )
-        for ev in prepared:
-            rest_body = {
+            return {
                 "id": ev["id"],
                 "name": ev["name"],
                 "externalId": ev["externalId"],
@@ -1938,28 +1974,63 @@ class CarrotClient:
                 "templateTypeInt": ev["templateTypeInt"],
                 "state": ev["state"],
                 "comment": ev["comment"],
-                "variables": [
-                    {
-                        "id": v.get("id"),
-                        "name": v.get("name"),
-                        "type": v.get("type"),
-                        "value": "" if v.get("value") is None else str(v["value"]),
-                        "fieldId": v.get("fieldId"),
-                        "defaultValue": v.get("defaultValue"),
-                        "resetMedia": v.get("resetMedia"),
-                        "useTimecode": v.get("useTimecode"),
-                        "loop": v.get("loop"),
-                        "locked": v.get("locked"),
-                        "minValue": v.get("minValue"),
-                        "maxValue": v.get("maxValue"),
-                        "useDataVars": v.get("useDataVars"),
-                    }
-                    for v in ev["variables"]
-                ],
+                "variables": bound,
             }
+
+        def _apply_values_after_create(ev: dict[str, Any], via: str) -> dict[str, Any]:
+            """После создания выставить значения через editVariables (name+value)."""
+            vals = [
+                {
+                    "name": v.get("name"),
+                    "value": "" if v.get("value") is None else str(v["value"]),
+                }
+                for v in (ev.get("variables") or [])
+                if str(v.get("name") or "").strip()
+            ]
+            row: dict[str, Any] = {
+                "id": ev["id"],
+                "name": ev["name"],
+                "via": via,
+            }
+            if not vals:
+                return row
+            try:
+                self.edit_variables(ev["id"], vals)
+                row["variablesEdited"] = True
+                self._emit_traffic(
+                    method="PATCH",
+                    url=(self.base_url or "")
+                    + "/events/"
+                    + str(ev["id"])
+                    + "/editVariables",
+                    status=200,
+                    note="значения переменных после create (editVariables)",
+                    request_body=vals,
+                )
+            except Exception as err:  # noqa: BLE001
+                row["variablesEdited"] = False
+                msg = (
+                    f"«{ev.get('name')}»: editVariables не удалось — "
+                    f"{err}"
+                )
+                warnings.append(msg)
+                self._emit_traffic(
+                    method="PATCH",
+                    url=(self.base_url or "")
+                    + "/events/"
+                    + str(ev["id"])
+                    + "/editVariables",
+                    error=str(err),
+                    note="editVariables после create не удался",
+                    request_body=vals,
+                )
+            return row
+
+        for ev in prepared:
+            rest_body = _create_rest_body(ev)
             r = self._try_once("POST", "/events", rest_body)
             if r["ok"]:
-                created.append({"id": ev["id"], "name": ev["name"], "via": "rest"})
+                created.append(_apply_values_after_create(ev, "rest"))
                 continue
             err = r.get("error")
             if isinstance(err, CarrotError) and err.error_code:
@@ -1972,20 +2043,38 @@ class CarrotClient:
             self._emit_traffic(
                 method="WS",
                 url=self.ws_url or "",
-                note="CreateEventInDB — REST не принял, создание через websocket",
+                note=(
+                    "CreateEventInDB — каркас без пустых FieldId; "
+                    "значения затем через editVariables"
+                ),
                 request_body={
                     "count": len(need_ws),
                     "names": [e.get("name") for e in need_ws],
+                    "createVariables": [
+                        sum(
+                            1
+                            for v in (e.get("variables") or [])
+                            if _clean_guid(v.get("fieldId"))
+                        )
+                        for e in need_ws
+                    ],
                 },
             )
             ws_created = self.create_events_via_websocket(need_ws)
-            created.extend(ws_created)
+            # ws_created уже [{id,name,via}]; допишем значения по prepared
+            by_id = {e["id"]: e for e in need_ws}
+            for row in ws_created:
+                ev = by_id.get(row.get("id"))
+                if ev:
+                    created.append(_apply_values_after_create(ev, "websocket"))
+                else:
+                    created.append(row)
         else:
             self._emit_traffic(
                 method="POST",
                 url=(self.base_url or "") + "/events",
                 status=200,
-                note="создание через REST POST /events; websocket CreateEventInDB не вызывался",
+                note="создание через REST POST /events; затем editVariables",
                 request_body={
                     "via": "rest",
                     "ids": [c.get("id") for c in created],
@@ -1995,18 +2084,11 @@ class CarrotClient:
 
         self.invalidate_events_cache()
         out: dict[str, Any] = {"created": created}
-        if binding_warnings:
-            out["warnings"] = binding_warnings
+        if warnings:
+            out["warnings"] = warnings
             out["bindingWarning"] = (
-                "У переменных пустой FieldId — дашборд покажет значения, "
-                "но движок их не подставит. Создай один ивент из этого шаблона "
-                "в Carrot UI, затем повтори создание здесь."
-            )
-            self._emit_traffic(
-                method="WARN",
-                url="create_events",
-                note=out["bindingWarning"],
-                response_body={"warnings": binding_warnings},
+                "Ивент создан, но часть значений не записалась через editVariables. "
+                "Проверь PATCH /events/{id}/editVariables в DEV-панели."
             )
         return out
 
