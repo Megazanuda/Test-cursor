@@ -81,6 +81,7 @@
                   <button type="button" class="btn ghost sm" id="mediaFolderPickBtn">Выбрать папку…</button>
                   <button type="button" class="btn ghost sm" id="mediaFolderClearBtn">Сбросить</button>
                 </div>
+                <!-- Без accept: в диалоге папки видны все файлы, не только media. -->
                 <input type="file" id="mediaFolderFallbackInput" hidden
                   webkitdirectory directory multiple />
               </div>
@@ -226,9 +227,34 @@
         <button type="button" class="btn primary" id="excelPickFileBtn" disabled>Выбрать Excel…</button>
       </div>
       <input type="file" id="excelImportInput" hidden
-        accept=".xlsx,.xlsm,.xltx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" />
+        accept=".xlsx,.xlsm,.xltx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" />
     </form>
   </dialog>
+
+  <!-- DEV traffic panel -->
+  <aside id="devTrafficPanel" class="dev-traffic" hidden>
+    <header class="dev-traffic-head">
+      <strong>DEV · трафик</strong>
+      <span class="dev-traffic-stats" id="devTrafficStats"></span>
+      <div class="dev-traffic-actions">
+        <label class="dev-traffic-filter">
+          <input type="checkbox" id="devTrafficUi" checked /> UI
+        </label>
+        <label class="dev-traffic-filter">
+          <input type="checkbox" id="devTrafficCarrot" checked /> Carrot
+        </label>
+        <button type="button" class="btn ghost sm" id="devTrafficPauseBtn">Пауза</button>
+        <button type="button" class="btn ghost sm" id="devTrafficClearBtn">Очистить</button>
+        <button type="button" class="btn ghost sm" id="devTrafficCloseBtn">Скрыть</button>
+      </div>
+    </header>
+    <div class="dev-traffic-body">
+      <ul class="dev-traffic-list" id="devTrafficList"></ul>
+      <pre class="dev-traffic-detail" id="devTrafficDetail">Выбери запрос слева</pre>
+    </div>
+  </aside>
+  <button type="button" class="dev-traffic-fab" id="devTrafficFab"
+    title="DEV: показать запросы/ответы">DEV</button>
 
   <script src="/app.js"></script>
 </body>

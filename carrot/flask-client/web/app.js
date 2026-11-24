@@ -245,10 +245,10 @@ function humanizeError(err) {
     title = 'Проблема с медиа';
     message = raw;
     hint = 'Папка в Настройках и имена в Excel.';
-  } else if (/excel|openpyxl|xlsx/.test(lower)) {
+  } else if (/excel|openpyxl|xlrd|xlsx|\.xls/.test(lower)) {
     title = 'Ошибка Excel';
     message = raw;
-    hint = 'Нужен .xlsx: имя | переменные | External id.';
+    hint = 'Подходят .xlsx, .xlsm, .xltx и .xls. Колонки: имя | переменные | External id.';
   }
 
   return { title: title, message: message, detail: raw === message ? '' : raw, hint: hint };
@@ -2515,46 +2515,26 @@ function pickMediaFolderViaInput() {
     );
     return;
   }
-  el.mediaFolderFallbackInput.value = '';
-  el.mediaFolderFallbackInput.click();
+  const input = el.mediaFolderFallbackInput;
+  // Без accept Windows/Chrome показывает в папке все файлы, не фильтр media.
+  input.removeAttribute('accept');
+  input.value = '';
+  input.click();
 }
 
 async function pickMediaFolder() {
-  const secureOk = window.isSecureContext !== false;
-  const hasPicker = typeof window.showDirectoryPicker === 'function';
-  // По http://LAN-IP showDirectoryPicker отсутствует или бесполезен.
-  if (hasPicker && secureOk) {
-    try {
-      const handle = await window.showDirectoryPicker({ mode: 'read' });
-      mediaDirHandle = handle;
-      mediaPickedFiles = [];
-      const label = handle.name || 'выбранная папка';
-      setMediaFolderMode('handle');
-      setMediaFolderLabel(label);
-      try { await saveMediaDirHandle(handle); }
-      catch (e) { /* ignore persist errors */ }
-      var scanned = 0;
-      try { scanned = (await collectMediaFilesFromDir(handle)).length; }
-      catch (e) { scanned = 0; }
-      toast(
-        'Папка медиа: ' + label +
-          (scanned ? (' · файлов (с вложенными): ' + scanned) : '') +
-          ' · запомнена',
-        'ok'
-      );
-      return;
-    } catch (err) {
-      if (err && err.name === 'AbortError') return;
-      toast('Directory picker недоступен, открываю обычный выбор папки…', 'err');
-    }
-  }
+  // Всегда webkitdirectory: в диалоге видны файлы внутри папки.
+  // showDirectoryPicker показывает только каталоги — файлы там не видны.
   pickMediaFolderViaInput();
 }
 
 function onMediaFolderFallbackPicked() {
   const input = el.mediaFolderFallbackInput;
   const list = input && input.files ? Array.prototype.slice.call(input.files) : [];
-  if (!list.length) return;
+  if (!list.length) {
+    showWarning('Папка пустая', 'Браузер не передал ни одного файла из выбранной папки.');
+    return;
+  }
   mediaDirHandle = null;
   clearStoredMediaDirHandle();
   // Включая файлы из вложенных папок (webkitRelativePath: folder/sub/file).
@@ -2672,6 +2652,58 @@ async function openExcelImportDialog() {
   syncMediaFolderUiPlacement();
 }
 
+function normMediaName(name) {
+  const base = String(name || '').trim().split(/[/\\]/).pop() || '';
+  return base.replace(/^["'«»]+|["'«»]+$/g, '').trim().toLowerCase();
+}
+
+function mediaNameStem(name) {
+  const i = name.lastIndexOf('.');
+  return i > 0 ? name.slice(0, i) : name;
+}
+
+/** Оставить из папки только файлы, которых по Excel нет в Carrot. */
+async function pickNeededMediaFiles(file, templateId, mediaFiles) {
+  const fd = new FormData();
+  fd.append('file', file, file.name);
+  fd.append('templateId', templateId);
+  fd.append('autoName', isAutoNameEnabled() ? '1' : '0');
+  const res = await fetch('/api/events/import-excel/media-plan', { method: 'POST', body: fd });
+  var plan = null;
+  try { plan = await res.json(); } catch (e) { plan = null; }
+  // План не получен — импорт сам вернёт понятную ошибку; шлём всё.
+  if (!res.ok || !plan || plan.ok === false || !Array.isArray(plan.needed)) return mediaFiles;
+  const wanted = new Set();
+  plan.needed.forEach(function (n) {
+    const k = normMediaName(n);
+    if (!k) return;
+    wanted.add(k);
+    wanted.add(mediaNameStem(k));
+  });
+  return mediaFiles.filter(function (f) {
+    const k = normMediaName(f.name);
+    return wanted.has(k) || wanted.has(mediaNameStem(k));
+  });
+}
+
+function postFormWithProgress(url, formData, onProgress) {
+  return new Promise(function (resolve, reject) {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', url);
+    xhr.upload.onprogress = function (e) {
+      if (e.lengthComputable && onProgress) {
+        onProgress(Math.min(100, Math.floor((e.loaded / e.total) * 100)));
+      }
+    };
+    xhr.upload.onload = function () { if (onProgress) onProgress(100); };
+    xhr.onload = function () {
+      resolve({ ok: xhr.status >= 200 && xhr.status < 300, status: xhr.status, text: xhr.responseText });
+    };
+    xhr.onerror = function () { reject(new Error('Сеть: запрос к серверу прерван')); };
+    xhr.send(formData);
+  });
+}
+
 async function importEventsFromExcel(file) {
   if (!file) return;
   const templateId = el.excelTemplateSelect && el.excelTemplateSelect.value;
@@ -2688,7 +2720,11 @@ async function importEventsFromExcel(file) {
     'Импорт Excel…',
     async function () {
       updateLoading('Импорт Excel', 'Читаю папку медиа…');
-      const mediaFiles = await collectSelectedMediaFiles();
+      var mediaFiles = await collectSelectedMediaFiles();
+      if (mediaFiles.length) {
+        updateLoading('Импорт Excel', 'Проверяю, каких медиа нет в Carrot…');
+        mediaFiles = await pickNeededMediaFiles(file, templateId, mediaFiles);
+      }
       const fd = new FormData();
       fd.append('file', file, file.name);
       fd.append('templateId', templateId);
@@ -2696,14 +2732,16 @@ async function importEventsFromExcel(file) {
       mediaFiles.forEach(function (mf) {
         fd.append('mediaFiles', mf, mf.name);
       });
-      updateLoading(
-        'Импорт Excel',
-        'Отправляю Excel' +
-          (mediaFiles.length ? (' и медиа (' + mediaFiles.length + ' файл(ов))') : '') +
-          '…'
-      );
-      const res = await fetch('/api/events/import-excel', { method: 'POST', body: fd });
-      const text = await res.text();
+      const what = 'Отправляю Excel' +
+        (mediaFiles.length ? (' и медиа (' + mediaFiles.length + ' файл(ов))') : '');
+      updateLoading('Импорт Excel', what + '…');
+      const res = await postFormWithProgress('/api/events/import-excel', fd, function (pct) {
+        updateLoading(
+          'Импорт Excel',
+          pct < 100 ? (what + ': ' + pct + '%') : 'Создаю ивенты и загружаю медиа в Carrot…'
+        );
+      });
+      const text = res.text;
       var parsed = null;
       try { parsed = text ? JSON.parse(text) : null; }
       catch (e) { throw new Error('Ответ сервера не JSON (HTTP ' + res.status + ')'); }
@@ -2843,3 +2881,185 @@ document.addEventListener('click', function (event) {
     menu.removeAttribute('open');
   }
 });
+
+/* ===== DEV traffic panel ===== */
+(function initDevTrafficPanel() {
+  const panel = document.getElementById('devTrafficPanel');
+  const fab = document.getElementById('devTrafficFab');
+  const listEl = document.getElementById('devTrafficList');
+  const detailEl = document.getElementById('devTrafficDetail');
+  const statsEl = document.getElementById('devTrafficStats');
+  const pauseBtn = document.getElementById('devTrafficPauseBtn');
+  const clearBtn = document.getElementById('devTrafficClearBtn');
+  const closeBtn = document.getElementById('devTrafficCloseBtn');
+  const uiCb = document.getElementById('devTrafficUi');
+  const carrotCb = document.getElementById('devTrafficCarrot');
+  if (!panel || !fab || !listEl || !detailEl) return;
+
+  const OPEN_KEY = 'carrot-dev-traffic-open';
+  var entriesById = Object.create(null);
+  var order = [];
+  var selectedId = null;
+  var paused = false;
+  var timer = null;
+
+  function wantOpen() {
+    try {
+      if (localStorage.getItem(OPEN_KEY) === '1') return true;
+    } catch (e) { /* ignore */ }
+    return /(?:^|[?&])dev=1(?:&|$)/.test(location.search);
+  }
+
+  function setOpen(open) {
+    panel.hidden = !open;
+    fab.hidden = !!open;
+    try { localStorage.setItem(OPEN_KEY, open ? '1' : '0'); } catch (e) { /* ignore */ }
+    if (open) startPoll();
+    else stopPoll();
+  }
+
+  function stopPoll() {
+    if (timer) { clearInterval(timer); timer = null; }
+  }
+
+  function startPoll() {
+    stopPoll();
+    poll();
+    timer = setInterval(poll, 1000);
+  }
+
+  function channelAllowed(ch) {
+    if (ch === 'ui') return !uiCb || uiCb.checked;
+    if (ch === 'carrot') return !carrotCb || carrotCb.checked;
+    return true;
+  }
+
+  function statusClass(st) {
+    if (st == null) return 'dev-st-err';
+    if (st >= 200 && st < 400) return 'dev-st-ok';
+    return 'dev-st-err';
+  }
+
+  function shortUrl(url) {
+    if (!url) return '';
+    try {
+      const u = new URL(url, location.origin);
+      return u.pathname + (u.search ? '?…' : '');
+    } catch (e) {
+      return String(url).slice(0, 80);
+    }
+  }
+
+  function renderList() {
+    listEl.innerHTML = '';
+    order.forEach(function (id) {
+      const e = entriesById[id];
+      if (!e || !channelAllowed(e.channel)) return;
+      const li = document.createElement('li');
+      if (id === selectedId) li.className = 'active';
+      li.dataset.id = id;
+      const ch = document.createElement('span');
+      ch.className = 'dev-ch' + (e.channel === 'ui' ? ' ui' : '');
+      ch.textContent = e.channel || '?';
+      const st = document.createElement('span');
+      st.className = statusClass(e.status);
+      st.textContent = ' ' + (e.status != null ? e.status : 'ERR') + ' ';
+      const meta = document.createElement('span');
+      meta.className = 'dev-meta';
+      meta.textContent = (e.method || '') + ' ' + shortUrl(e.url) +
+        (e.durationMs != null ? ' · ' + e.durationMs + 'ms' : '') +
+        (e.note ? ' · ' + e.note : '') +
+        (e.error ? ' · ' + e.error : '');
+      li.appendChild(ch);
+      li.appendChild(st);
+      li.appendChild(meta);
+      li.addEventListener('click', function () {
+        selectedId = id;
+        renderList();
+        renderDetail(e);
+      });
+      listEl.appendChild(li);
+    });
+  }
+
+  function renderDetail(e) {
+    if (!e) {
+      detailEl.textContent = 'Выбери запрос слева';
+      return;
+    }
+    const payload = {
+      id: e.id,
+      ts: e.ts ? new Date(e.ts * 1000).toISOString() : null,
+      channel: e.channel,
+      method: e.method,
+      url: e.url,
+      status: e.status,
+      durationMs: e.durationMs,
+      note: e.note,
+      error: e.error,
+      requestHeaders: e.requestHeaders,
+      requestBody: e.requestBody,
+      responseHeaders: e.responseHeaders,
+      responseBody: e.responseBody
+    };
+    detailEl.textContent = JSON.stringify(payload, null, 2);
+  }
+
+  function mergeEntries(list) {
+    (list || []).forEach(function (e) {
+      if (!e || !e.id) return;
+      if (!entriesById[e.id]) order.unshift(e.id);
+      entriesById[e.id] = e;
+    });
+    if (order.length > 400) {
+      const drop = order.splice(400);
+      drop.forEach(function (id) { delete entriesById[id]; });
+    }
+  }
+
+  async function poll() {
+    if (paused || panel.hidden) return;
+    try {
+      const data = await api('GET', '/api/dev/traffic?limit=120');
+      mergeEntries(data.entries || []);
+      if (statsEl && data.stats) {
+        statsEl.textContent = 'всего ' + data.stats.total +
+          ' · ui ' + data.stats.ui +
+          ' · carrot ' + data.stats.carrot;
+      }
+      renderList();
+      if (selectedId && entriesById[selectedId]) renderDetail(entriesById[selectedId]);
+    } catch (err) {
+      if (statsEl) statsEl.textContent = 'ошибка опроса: ' + (err.message || err);
+    }
+  }
+
+  fab.addEventListener('click', function () { setOpen(true); });
+  if (closeBtn) closeBtn.addEventListener('click', function () { setOpen(false); });
+  if (pauseBtn) {
+    pauseBtn.addEventListener('click', function () {
+      paused = !paused;
+      pauseBtn.textContent = paused ? 'Продолжить' : 'Пауза';
+      if (!paused) poll();
+    });
+  }
+  if (clearBtn) {
+    clearBtn.addEventListener('click', async function () {
+      try {
+        await api('POST', '/api/dev/traffic/clear', {});
+        entriesById = Object.create(null);
+        order = [];
+        selectedId = null;
+        renderList();
+        renderDetail(null);
+        toast('DEV-лог очищен', 'ok');
+      } catch (err) {
+        showError('Не удалось очистить DEV-лог', err);
+      }
+    });
+  }
+  if (uiCb) uiCb.addEventListener('change', renderList);
+  if (carrotCb) carrotCb.addEventListener('change', renderList);
+
+  setOpen(wantOpen());
+})();

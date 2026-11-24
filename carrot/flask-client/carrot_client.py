@@ -18,7 +18,9 @@ from urllib.parse import quote, urlencode, urlparse
 
 import requests
 import websocket
+import xlrd
 from openpyxl import load_workbook
+from xlrd.biffh import XLRDError
 
 
 # ===== errors =====
@@ -818,6 +820,17 @@ class CarrotClient:
         # Сами TUS create/PATCH идут на отдельной Session и могут параллелиться.
         self._api_lock = threading.Lock()
         self._session = requests.Session()
+        # DEV: колбэк трафика (channel=carrot). Сигнатура: fn(dict)
+        self.traffic_hook = opts.get("traffic_hook") or opts.get("trafficHook")
+
+    def _emit_traffic(self, **kwargs: Any) -> None:
+        hook = getattr(self, "traffic_hook", None)
+        if not callable(hook):
+            return
+        try:
+            hook({**kwargs, "channel": kwargs.get("channel") or "carrot"})
+        except Exception:
+            pass
 
     # --- совместимость camelCase-свойств (как в JS) ---
     @property
@@ -931,6 +944,7 @@ class CarrotClient:
         last_err: Optional[CarrotError] = None
 
         for attempt in range(effective_retries + 1):
+            t0 = time.time()
             try:
                 kwargs: dict[str, Any] = {
                     "method": method,
@@ -941,8 +955,20 @@ class CarrotClient:
                 if body is not None:
                     kwargs["json"] = body
                 res = self._session.request(**kwargs)
+                duration_ms = (time.time() - t0) * 1000.0
 
                 if res.status_code == 401 and auth and not _retried_auth:
+                    self._emit_traffic(
+                        method=method,
+                        url=url,
+                        status=res.status_code,
+                        duration_ms=duration_ms,
+                        request_headers=headers,
+                        request_body=body,
+                        response_headers=dict(res.headers),
+                        response_body=(res.text or "")[:2000],
+                        note="401 → refresh token + retry",
+                    )
                     self.token = None
                     self._ensure_token()
                     return self._request_locked(
@@ -966,6 +992,17 @@ class CarrotClient:
                         looks_html = bool(
                             re.search(r"<html|<!doctype html|<head|<body", text, re.I)
                         )
+                        self._emit_traffic(
+                            method=method,
+                            url=url,
+                            status=res.status_code,
+                            duration_ms=duration_ms,
+                            request_headers=headers,
+                            request_body=body,
+                            response_headers=dict(res.headers),
+                            response_body=preview,
+                            error="non-JSON response",
+                        )
                         raise CarrotError(
                             f"Ответ не JSON (HTTP {res.status_code}, Content-Type: {ctype}). "
                             + (
@@ -988,6 +1025,17 @@ class CarrotClient:
                             " Путь не найден. В .env нужен http://хост:порт/api — "
                             "без /auth/generate на конце и без второго /api."
                         )
+                    self._emit_traffic(
+                        method=method,
+                        url=url,
+                        status=res.status_code,
+                        duration_ms=duration_ms,
+                        request_headers=headers,
+                        request_body=body,
+                        response_headers=dict(res.headers),
+                        response_body=json_data if json_data is not None else preview,
+                        error=f"HTTP {res.status_code}",
+                    )
                     raise CarrotError(
                         f"HTTP {res.status_code} {res.reason} [{method} {url}]{hint}"
                         + (f" | ответ: {preview}" if preview else ""),
@@ -1002,6 +1050,17 @@ class CarrotClient:
                     and isinstance(data.get("errorCode"), int)
                     and data["errorCode"] != 0
                 ):
+                    self._emit_traffic(
+                        method=method,
+                        url=url,
+                        status=res.status_code,
+                        duration_ms=duration_ms,
+                        request_headers=headers,
+                        request_body=body,
+                        response_headers=dict(res.headers),
+                        response_body=json_data,
+                        error=f"errorCode={data['errorCode']}",
+                    )
                     raise CarrotError(
                         f"Carrot {ERROR_NAMES.get(data['errorCode'], data['errorCode'])}: "
                         f"{data.get('description') or ''}",
@@ -1009,11 +1068,31 @@ class CarrotClient:
                         description=data.get("description"),
                     )
 
+                self._emit_traffic(
+                    method=method,
+                    url=url,
+                    status=res.status_code,
+                    duration_ms=duration_ms,
+                    request_headers=headers,
+                    request_body=body,
+                    response_headers=dict(res.headers),
+                    response_body=json_data if json_data is not None else None,
+                )
                 return data
             except CarrotError:
                 raise
             except Exception as err:
+                duration_ms = (time.time() - t0) * 1000.0
                 wrapped = _wrap_net_error(err, url)
+                self._emit_traffic(
+                    method=method,
+                    url=url,
+                    status=None,
+                    duration_ms=duration_ms,
+                    request_headers=headers,
+                    request_body=body,
+                    error=str(wrapped),
+                )
                 last_err = wrapped
                 if _FATAL_NET.match(wrapped.code or "") or attempt >= effective_retries:
                     raise wrapped from err
@@ -1373,7 +1452,8 @@ class CarrotClient:
         auto_name: bool = True,
     ) -> dict[str, Any]:
         """
-        Создать одно или несколько событий (REST POST /events, затем WS CreateEventInDB).
+        Создать одно или несколько событий (REST POST /events/create; если путь
+        недоступен — WS CreateEventInDB).
 
         entries: [{ name, templateId, contentId?, templateTypeInt?, state?, comment?, variables? }]
         Пустой ExternalId подменяется на Id. Проверок уникальности имени/ExternalId нет.
@@ -1470,38 +1550,42 @@ class CarrotClient:
 
         created: list[dict[str, Any]] = []
         need_ws: list[dict[str, Any]] = []
+        var_errors: list[str] = []
         for ev in prepared:
+            # Guide V.3: POST /events/create создаёт ивент с переменными шаблона,
+            # значения задаются отдельно через PATCH /events/{id}/editVariables.
+            values = [
+                {
+                    "name": v.get("name"),
+                    "value": "" if v.get("value") is None else str(v["value"]),
+                }
+                for v in ev["variables"]
+                if v.get("name")
+            ]
             rest_body = {
-                "id": ev["id"],
-                "name": ev["name"],
+                "eventName": ev["name"],
                 "externalId": ev["externalId"],
                 "templateId": ev["templateId"],
-                "contentId": ev["contentId"],
-                "templateTypeInt": ev["templateTypeInt"],
                 "state": ev["state"],
                 "comment": ev["comment"],
-                "variables": [
-                    {
-                        "id": v.get("id"),
-                        "name": v.get("name"),
-                        "type": v.get("type"),
-                        "value": "" if v.get("value") is None else str(v["value"]),
-                        "fieldId": v.get("fieldId"),
-                        "defaultValue": v.get("defaultValue"),
-                        "resetMedia": v.get("resetMedia"),
-                        "useTimecode": v.get("useTimecode"),
-                        "loop": v.get("loop"),
-                        "locked": v.get("locked"),
-                        "minValue": v.get("minValue"),
-                        "maxValue": v.get("maxValue"),
-                        "useDataVars": v.get("useDataVars"),
-                    }
-                    for v in ev["variables"]
-                ],
             }
-            r = self._try_once("POST", "/events", rest_body)
+            r = self._try_once("POST", "/events/create", rest_body)
             if r["ok"]:
-                created.append({"id": ev["id"], "name": ev["name"], "via": "rest"})
+                new_id = self._created_event_id(r.get("data"), ev["externalId"])
+                if not new_id:
+                    var_errors.append(
+                        f"«{ev['name']}»: id созданного ивента не найден в ответе"
+                    )
+                    continue
+                if values:
+                    er = self._try_once(
+                        "PATCH",
+                        "/events/" + quote(str(new_id), safe="") + "/editVariables",
+                        values,
+                    )
+                    if not er["ok"]:
+                        var_errors.append(f"«{ev['name']}»: {er.get('message')}")
+                created.append({"id": new_id, "name": ev["name"], "via": "rest"})
                 continue
             err = r.get("error")
             if isinstance(err, CarrotError) and err.error_code:
@@ -1511,13 +1595,60 @@ class CarrotClient:
             need_ws.append(ev)
 
         if need_ws:
+            self._emit_traffic(
+                method="WS",
+                url=self.ws_url or "",
+                note="CreateEventInDB — REST /events/create не принял, создание через websocket",
+                request_body={
+                    "count": len(need_ws),
+                    "names": [e.get("name") for e in need_ws],
+                },
+            )
             ws_created = self.create_events_via_websocket(need_ws)
             created.extend(ws_created)
+        else:
+            self._emit_traffic(
+                method="POST",
+                url=(self.base_url or "") + "/events/create",
+                status=200,
+                note="создание через REST POST /events/create; websocket не вызывался",
+                request_body={
+                    "via": "rest",
+                    "ids": [c.get("id") for c in created],
+                    "names": [c.get("name") for c in created],
+                },
+            )
 
         self.invalidate_events_cache()
+        if var_errors:
+            raise CarrotError(
+                f"Создано ивентов: {len(created)}, но значения переменных "
+                "не записаны: " + "; ".join(var_errors)
+            )
         return {"created": created}
 
     createEvents = create_events
+
+    def _created_event_id(self, data: Any, external_id: str) -> str:
+        if isinstance(data, str) and data.strip():
+            return data.strip()
+        if isinstance(data, dict):
+            for k in ("id", "Id", "eventId", "EventId"):
+                if data.get(k):
+                    return str(data[k])
+            inner = data.get("event") or data.get("Event")
+            if isinstance(inner, dict) and (inner.get("id") or inner.get("Id")):
+                return str(inner.get("id") or inner.get("Id"))
+        self.invalidate_events_cache()
+        events = self.list_events()
+        if isinstance(events, dict):
+            events = events.get("data") or events.get("events") or []
+        for e in events if isinstance(events, list) else []:
+            if isinstance(e, dict) and str(
+                e.get("externalId") or e.get("ExternalId") or ""
+            ) == str(external_id):
+                return str(e.get("id") or e.get("Id") or "")
+        return ""
 
     def create_events_via_websocket(
         self, events: list[dict[str, Any]]
@@ -2391,44 +2522,99 @@ def is_media_type(type_name: Any) -> bool:
     return str(type_name or "").strip().lower() == "media"
 
 
-def read_excel_rows(file_bytes: bytes) -> list[list[str]]:
-    """
-    Прочитать первый лист .xlsx/.xlsm как матрицу строк.
+def _trim_excel_rows(rows: list[list[str]]) -> list[list[str]]:
+    """Убрать пустые хвосты строк и полностью пустые строки."""
+    out: list[list[str]] = []
+    for cells in rows:
+        while cells and cells[-1] == "":
+            cells.pop()
+        if any(cells):
+            out.append(cells)
+    return out
 
-    Пустые строки в конце отбрасываются. Ячейки → строки.
-    """
-    if not file_bytes:
-        raise ValueError("Пустой Excel-файл")
 
-    try:
-        wb = load_workbook(
-            filename=io.BytesIO(file_bytes),
-            read_only=True,
-            data_only=True,
-        )
-    except Exception as err:  # noqa: BLE001
-        raise ValueError(
-            "Не удалось открыть Excel. Нужен .xlsx/.xlsm (не старый .xls)."
-        ) from err
-
+def _read_excel_rows_openpyxl(file_bytes: bytes) -> list[list[str]]:
+    """Первый лист OOXML (.xlsx / .xlsm / .xltx)."""
+    wb = load_workbook(
+        filename=io.BytesIO(file_bytes),
+        read_only=True,
+        data_only=True,
+    )
     try:
         ws = wb.active
         if ws is None:
             raise ValueError("В книге нет активного листа")
         rows: list[list[str]] = []
         for row in ws.iter_rows(values_only=True):
-            cells = [_cell_str(c) for c in (row or ())]
-            while cells and cells[-1] == "":
-                cells.pop()
-            if not any(cells):
-                continue
-            rows.append(cells)
+            rows.append([_cell_str(c) for c in (row or ())])
+        return _trim_excel_rows(rows)
     finally:
         wb.close()
 
-    if not rows:
-        raise ValueError("В Excel нет данных")
-    return rows
+
+def _read_excel_rows_xlrd(file_bytes: bytes) -> list[list[str]]:
+    """Первый лист старого BIFF (.xls)."""
+    try:
+        book = xlrd.open_workbook(file_contents=file_bytes)
+    except XLRDError as err:
+        raise ValueError(str(err) or "xlrd: не удалось открыть .xls") from err
+    if book.nsheets < 1:
+        raise ValueError("В книге нет листов")
+    sheet = book.sheet_by_index(0)
+    rows: list[list[str]] = []
+    for r in range(sheet.nrows):
+        rows.append([_cell_str(sheet.cell_value(r, c)) for c in range(sheet.ncols)])
+    return _trim_excel_rows(rows)
+
+
+def _excel_format_hint(file_bytes: bytes) -> str:
+    head = file_bytes[:8]
+    if head.startswith(b"PK"):
+        return "xlsx/xlsm"
+    if head.startswith(b"\xd0\xcf\x11\xe0"):
+        return "xls"
+    return "unknown"
+
+
+def read_excel_rows(file_bytes: bytes) -> list[list[str]]:
+    """
+    Прочитать первый лист Excel как матрицу строк.
+
+    Поддерживаются:
+      - .xlsx / .xlsm / .xltx (openpyxl)
+      - .xls (xlrd, BIFF)
+
+    Пустые строки в конце отбрасываются. Ячейки → строки.
+    """
+    if not file_bytes:
+        raise ValueError("Пустой Excel-файл")
+
+    kind = _excel_format_hint(file_bytes)
+    errors: list[str] = []
+
+    # Сначала формат по сигнатуре, потом запасной ридер.
+    readers: list[tuple[str, Callable[[bytes], list[list[str]]]]]
+    if kind == "xls":
+        readers = [("xls", _read_excel_rows_xlrd), ("xlsx", _read_excel_rows_openpyxl)]
+    else:
+        readers = [("xlsx", _read_excel_rows_openpyxl), ("xls", _read_excel_rows_xlrd)]
+
+    for _label, reader in readers:
+        try:
+            rows = reader(file_bytes)
+            if not rows:
+                raise ValueError("В Excel нет данных")
+            return rows
+        except ValueError as err:
+            errors.append(str(err))
+        except Exception as err:  # noqa: BLE001
+            errors.append(str(err) or err.__class__.__name__)
+
+    detail = "; ".join(e for e in errors if e)[:220]
+    raise ValueError(
+        "Не удалось открыть Excel. Нужен .xlsx, .xlsm, .xltx или .xls"
+        + (f" ({detail})" if detail else "")
+    )
 
 
 def _looks_like_header(row: list[str]) -> bool:
@@ -2455,6 +2641,12 @@ def name_from_first_variable(variables: Optional[list[Any]]) -> str:
     return raw
 
 
+def _is_digits_only_name(value: Any) -> bool:
+    """True, если ячейка — непустая строка только из цифр (0-9)."""
+    s = "" if value is None else str(value).strip()
+    return bool(s) and s.isdigit()
+
+
 def rows_to_event_drafts(
     rows: list[list[str]],
     template: dict[str, Any],
@@ -2469,6 +2661,10 @@ def rows_to_event_drafts(
       1 — имя ивента
       2..N-1 — значения переменных шаблона (по порядку template.variables)
       N — External id
+
+    Если в 1-й колонке только цифры — это не имя: берём имя из следующей
+    колонки, а переменные сдвигаются на один столбец вправо
+    (цифровая колонка пропускается).
 
     Для Media-переменных в середине ожидается имя файла (не id;name).
     Если auto_name и имя пустое — берётся значение первой переменной (в т.ч. Media).
@@ -2502,7 +2698,23 @@ def rows_to_event_drafts(
 
         name = (row[0] or "").strip()
         external_id = row[-1]
-        mid = row[1:-1]
+        # Ведущая колонка из одних цифр — не имя ивента, а номер/id строки.
+        if _is_digits_only_name(name):
+            if len(row) < 3:
+                skipped.append(
+                    {
+                        "row": excel_row,
+                        "reason": (
+                            "первая колонка только цифры — нужна следующая "
+                            "колонка для имени и External id"
+                        ),
+                    }
+                )
+                continue
+            name = (row[1] or "").strip()
+            mid = row[2:-1]
+        else:
+            mid = row[1:-1]
 
         variables: list[dict[str, Any]] = []
         for vi, meta in enumerate(var_meta):
@@ -2627,6 +2839,30 @@ def find_local_media_file(folder: str, filename: str) -> Optional[Path]:
         if path.is_file() and path.stem.lower() == stem and _inside(path):
             return path
     return None
+
+
+def media_files_needed(
+    drafts: list[dict[str, Any]], assets: list[dict[str, Any]]
+) -> list[str]:
+    """Имена медиафайлов из Excel, которых ещё нет в Carrot (их надо залить)."""
+    index = index_assets_by_name(assets)
+    out: dict[str, str] = {}
+    for draft in drafts:
+        for var in draft.get("variables") or []:
+            if not is_media_type(var.get("type")):
+                continue
+            raw = "" if var.get("value") is None else str(var.get("value")).strip()
+            if not raw:
+                continue
+            aid, aname = _parse_media_value(raw)
+            if aid and _GUID_RE.match(aid):
+                continue
+            filename = aname or aid or raw
+            key = _norm_name(filename)
+            if index.get(key) or index.get(Path(key).stem):
+                continue
+            out.setdefault(key, Path(key).name)
+    return list(out.values())
 
 
 def resolve_media_in_drafts(
